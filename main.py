@@ -6,7 +6,7 @@ from tkinter import messagebox, simpledialog
 from time import sleep
 import math
 
-# Try to connect to robot, but handle connection errors gracefully
+# Connect to the robot arm, if connection fails, run in demo mode
 try:
     from dobot_util import Dobot
     robot = Dobot("192.168.1.6", logging=True)
@@ -18,38 +18,38 @@ except Exception as e:
     robot = None
     ROBOT_CONNECTED = False
 
-# ---- Robot Parameters (from move_to_point.py) ----
-L1, L2 = 200.0, 200.0          # mm
-J1_LIMITS = (-85.0, 85.0)      # deg
-J2_LIMITS = (-135.0, 135.0)    # deg
-Z_LIMITS  = (5.0, 245.0)       # mm
+# Calculate inverse kinematics for a 2-link planar arm
+def Ikinematics(x, y, z=200.0, r=0.0):
+    L1 = 200.0  # Length of first arm segment
+    L2 = 200.0  # Length of second arm segment
 
-def scara_ik(x, y, z=200.0, r=0.0, l1=L1, l2=L2):
-    """Return list of valid IK solutions (j1_deg, j2_deg, z, r) within joint limits."""
-    if not (Z_LIMITS[0] <= z <= Z_LIMITS[1]):
-        return []
-    r2 = x*x + y*y
-    cos_th2 = (r2 - l1*l1 - l2*l2) / (2*l1*l2)
-    if cos_th2 < -1 or cos_th2 > 1:
-        return []  # out of reach by distance
+    # Set Limitiations for the arm
+    J1_min, J1_max = -85.0, 85.0
+    J2_min, J2_max = -135.0, 135.0
+    z_min, z_max = 5.0, 245.0
 
-    th2a = math.acos(cos_th2)
-    sols = []
-    for th2 in ( th2a, -th2a ):  # elbow-up, elbow-down
-        k1 = l1 + l2*math.cos(th2)
-        k2 = l2*math.sin(th2)
-        th1 = math.atan2(y, x) - math.atan2(k2, k1)
+    # Check if the target position is within the arm's reach and limits
+    if not (J1_min <= x <= J1_max and J2_min <= y <= J2_max and z_min <= z <= z_max):
+        raise ValueError("Target position out of reach or exceeds joint limits")
+    
+    # Inverse kinematics calculations
+    D = (x**2 + y**2 - L1**2 - L2**2) / (2 * L1 * L2)
+    if abs(D) > 1:
+        raise ValueError("Target position out of reach")
+    theta2 = math.atan2(math.sqrt(1 - D**2), D)
+    theta1 = math.atan2(y, x) - math.atan2(L2 * math.sin(theta2), L1 + L2 * math.cos(theta2))
 
-        j1 = (math.degrees(th1) + 180) % 360 - 180
-        j2 = (math.degrees(th2) + 180) % 360 - 180
+    # Convert radians to degrees
+    theta1_deg = math.degrees(theta1)
+    theta2_deg = math.degrees(theta2)
 
-        if J1_LIMITS[0] <= j1 <= J1_LIMITS[1] and J2_LIMITS[0] <= j2 <= J2_LIMITS[1]:
-            sols.append((j1, j2, z, r))
-    return sols
+    # A list of parameters for the robot
+    parameters = [theta1_deg, theta2_deg, z, 0]
+    return parameters
 
 # ---- Robot Control Function ----
 def move_to_point(x, y, z=200, r=0):
-    sols = scara_ik(x, y, z, r)
+    sols = Ikinematics(x, y, z, r)
     if ROBOT_CONNECTED and robot:
         robot.dashboard.enable()
         if sols:
@@ -66,7 +66,7 @@ def move_to_point(x, y, z=200, r=0):
         else:
             print(f"DEMO MODE: Unreachable target: ({x},{y},{z},{r})")
 
-limit = 500
+limit = 450
 x = np.linspace(-limit, limit, 1000)
 y = np.linspace(-limit, limit, 1000)
 X, Y = np.meshgrid(x, y)
@@ -95,7 +95,7 @@ valid_scatters = []
 
 # Tkinter app setup
 root = tk.Tk()
-root.title("Interactive Point Plotter v2 - With Z-Value Input")
+root.title("Arm Manual Control Interface")
 
 # Create main container
 main_container = tk.Frame(root)
@@ -106,64 +106,73 @@ left_container = tk.Frame(main_container)
 left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
 
 # Manual input frame (above the plot)
-manual_frame = tk.Frame(left_container, bg="lightblue", relief=tk.RAISED, bd=2)
+manual_frame = tk.Frame(left_container)
 manual_frame.pack(fill=tk.X, padx=5, pady=5)
 
-tk.Label(manual_frame, text="Manual Point Input", font=("Arial", 12, "bold"), bg="lightblue").pack(pady=5)
+tk.Label(manual_frame, text="Manual Point Input", font=("Arial", 12, "bold"), ).pack(pady=5)
 
 # Input fields frame
-input_fields_frame = tk.Frame(manual_frame, bg="lightblue")
+input_fields_frame = tk.Frame(manual_frame)
 input_fields_frame.pack(pady=5)
 
 # X input
-x_frame = tk.Frame(input_fields_frame, bg="lightblue")
+x_frame = tk.Frame(input_fields_frame)
 x_frame.pack(side=tk.LEFT, padx=10)
-tk.Label(x_frame, text="X (mm):", bg="lightblue").pack()
+tk.Label(x_frame, text="X (mm):").pack()
 x_manual_entry = tk.Entry(x_frame, width=8)
 x_manual_entry.pack()
 
 # Y input
-y_frame = tk.Frame(input_fields_frame, bg="lightblue")
+y_frame = tk.Frame(input_fields_frame)
 y_frame.pack(side=tk.LEFT, padx=10)
-tk.Label(y_frame, text="Y (mm):", bg="lightblue").pack()
+tk.Label(y_frame, text="Y (mm):").pack()
 y_manual_entry = tk.Entry(y_frame, width=8)
 y_manual_entry.pack()
 
 # Z input
-z_frame = tk.Frame(input_fields_frame, bg="lightblue")
+z_frame = tk.Frame(input_fields_frame)
 z_frame.pack(side=tk.LEFT, padx=10)
-tk.Label(z_frame, text="Z (mm):", bg="lightblue").pack()
+tk.Label(z_frame, text="Z (mm):").pack()
 z_manual_entry = tk.Entry(z_frame, width=8)
 z_manual_entry.insert(0, "200")  # Default value
 z_manual_entry.pack()
 
 # Claw control frame
-claw_frame = tk.Frame(input_fields_frame, bg="lightblue")
+claw_frame = tk.Frame(input_fields_frame)
 claw_frame.pack(side=tk.LEFT, padx=10)
-tk.Label(claw_frame, text="Claw:", bg="lightblue").pack()
+tk.Label(claw_frame, text="Claw:").pack()
 
 # Radio buttons for claw control
 claw_var = tk.IntVar(value=0)  # Default to OFF (0)
-claw_radio_frame = tk.Frame(claw_frame, bg="lightblue")
+claw_radio_frame = tk.Frame(claw_frame)
 claw_radio_frame.pack()
 
-tk.Radiobutton(claw_radio_frame, text="OFF", variable=claw_var, value=0, bg="lightblue").pack(side=tk.LEFT)
-tk.Radiobutton(claw_radio_frame, text="ON", variable=claw_var, value=1, bg="lightblue").pack(side=tk.LEFT)
+tk.Radiobutton(claw_radio_frame, text="OFF", variable=claw_var, value=0, ).pack(side=tk.LEFT)
+tk.Radiobutton(claw_radio_frame, text="ON", variable=claw_var, value=1, ).pack(side=tk.LEFT)
 
 # Add manual point button
 add_manual_button = tk.Button(input_fields_frame, text="Add Point", command=lambda: add_manual_point(), 
                              bg="lightgreen", padx=20)
 add_manual_button.pack(side=tk.LEFT, padx=20)
 
-# Create matplotlib figure
-fig, ax = plt.subplots(figsize=(6,6))
-ax.imshow(final_region, extent=(-limit, limit, -limit, limit), origin='lower', cmap='Greys', alpha=0.5)
-ax.set_xlim(-limit, limit)
-ax.set_ylim(-limit, limit)
-ax.set_xlabel("x")
-ax.set_ylabel("y")
-ax.set_title("Click on the plot to add valid points inside the region")
-ax.grid(True)
+# Create a graph to plot the valid region
+fig, ax = plt.subplots(figsize=(4,4))
+ax.set_title("Arm Valid Region")
+fig.tight_layout()
+
+#set x and y axis limits, with 100s interval ticks and 50s minor ticks
+ax.set_xlim(-450, 450)
+ax.set_ylim(-250, 450)
+ax.set_xticks(np.arange(-400, 401, 100))
+ax.set_yticks(np.arange(-300, 401, 100))
+ax.grid(which='major', linestyle='-', linewidth=0.8)
+ax.set_xticks(np.arange(-450, 451, 50), minor=True)
+ax.set_yticks(np.arange(-300, 451, 50), minor=True)
+ax.grid(which='minor', linestyle='--', linewidth=0.5)
+ax.set_aspect('equal', 'box') 
+
+# Setup the valid region plot in light grey
+ax.contourf(X, Y, final_region, levels=[0.5, 1], colors=['lightgrey'], alpha=0.5)
 
 # Embed matplotlib figure into Tkinter
 canvas = FigureCanvasTkAgg(fig, master=left_container)
@@ -449,7 +458,7 @@ error_button = tk.Button(frame, text="Clear Errors", command=dobot_error_reset, 
 error_button.pack(pady=5)
 
 # Button to add test points from list
-test_points_button = tk.Button(frame, text="Add Test Points", command=add_test_points_from_list, bg="lightblue")
+test_points_button = tk.Button(frame, text="Add Test Points", command=add_test_points_from_list, )
 test_points_button.pack(pady=5)
 
 # Custom dialog for Z-value and claw state
@@ -498,8 +507,8 @@ def get_point_settings(px, py):
         try:
             z_val = float(z_entry.get())
             if 5.0 <= z_val <= 245.0:
-                result['z'] = z_val
-                result['claw'] = claw_dialog_var.get()
+                #result['z'] = z_val
+                #result['claw'] = claw_dialog_var.get()
                 dialog.destroy()
             else:
                 messagebox.showerror("Invalid Z-Value", "Z-value must be between 5 and 245 mm")
