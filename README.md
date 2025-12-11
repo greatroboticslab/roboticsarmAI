@@ -74,9 +74,9 @@ If you'd like, I can update this section with exact button names and screenshots
 ## Images
 ![GUI Screenshot](images\example_forARM.png)
 
-![Control Box](images\arm_side2.JPG.jpg)
+![Control Box](images\arm_side2.JPG)
 
-![Robot Back Panel](images\arm_side1.JPG.jpg)
+![Robot Back Panel](images\arm_side1.JPG)
 
 ## Mac compatibility
 This project works on macOS with these small adjustments. Use `python3` on macOS and create/activate the virtual environment as shown below.
