@@ -72,11 +72,11 @@ When you start the application with `python main.py`, the GUI window will open a
 If you'd like, I can update this section with exact button names and screenshots once you tell me what the GUI controls (or if you want, I can open `Interface.py` and extract the real control names for a precise README entry).
 
 ## Images
-![GUI Screenshot](gui_screenshot.png)
+[GUI Screenshot](gui_screenshot.png)
 
-![Control Box](control_box.jpg)
+[Control Box](control_box.jpg)
 
-![Robot Back Panel](robot_back.jpg)
+[Robot Back Panel](robot_back.jpg)
 
 ## Mac compatibility
 This project works on macOS with these small adjustments. Use `python3` on macOS and create/activate the virtual environment as shown below.
