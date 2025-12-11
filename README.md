@@ -1,5 +1,4 @@
 # Robotic Arm Controller
-# Robotic Arm Controller
 
 A Python application that controls a robotic arm by inputting **Cartesian coordinates (X, Y, Z)**.
 
@@ -73,19 +72,11 @@ When you start the application with `python main.py`, the GUI window will open a
 If you'd like, I can update this section with exact button names and screenshots once you tell me what the GUI controls (or if you want, I can open `Interface.py` and extract the real control names for a precise README entry).
 
 ## Images
-The GUI and robot photos shown in this repository are included as attachments. To display them in this README, add the following files to the project at `docs/images/`:
+![GUI Screenshot](gui_screenshot.png)
 
-- `docs/images/gui_screenshot.png` — GUI screenshot showing the plot, input fields and FIFO list.
-- `docs/images/control_box.jpg` — Control / emergency-stop box and Dobot controller.
-- `docs/images/robot_back.jpg` — Back of the robot with connector and encoder headers.
+![Control Box](control_box.jpg)
 
-Once those files are present, they will appear in the README when rendered. Example Markdown that is already included below will reference these paths and show the images.
-
-![GUI Screenshot](docs/images/gui_screenshot.png)
-
-![Control Box](docs/images/control_box.jpg)
-
-![Robot Back Panel](docs/images/robot_back.jpg)
+![Robot Back Panel](robot_back.jpg)
 
 ## Mac compatibility
 This project works on macOS with these small adjustments. Use `python3` on macOS and create/activate the virtual environment as shown below.
