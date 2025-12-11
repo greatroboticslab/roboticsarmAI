@@ -69,8 +69,6 @@ When you start the application with `python main.py`, the GUI window will open a
 2. Confirm order in the FIFO list.
 3. Click `Send` to move the arm through the points in order.
 
-If you'd like, I can update this section with exact button names and screenshots once you tell me what the GUI controls (or if you want, I can open `Interface.py` and extract the real control names for a precise README entry).
-
 ## Images
 ![GUI Screenshot](images/example_forARM.png)
 
