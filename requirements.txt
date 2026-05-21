@@ -3,3 +3,4 @@ strenum
 matplotlib
 customtkinter
 pyserial
+ikpy

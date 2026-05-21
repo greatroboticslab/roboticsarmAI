@@ -1,60 +1,75 @@
 import customtkinter # Library for Desktop app
 
+from main import initialize_robot
+
 class InfoFrame(customtkinter.CTkFrame):
     def __init__(self, master, point_frame):
         super().__init__(master)
         self.point_frame = point_frame
-
         self.grid_columnconfigure((0,1,2,3,4,5), weight=1)
 
-        # Title
-        self.title = customtkinter.CTkLabel(self, text="Adress", fg_color="gray30", corner_radius=6)
-        self.title.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="ew", columnspan=6)
+        # --- Row 0 & 1: Address ---
+        self.title_addr = customtkinter.CTkLabel(self, text="Address", fg_color="gray30", corner_radius=6)
+        self.title_addr.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="ew", columnspan=6)
 
-        self.title = customtkinter.CTkLabel(self, text="Robot IP:")
-        self.title.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
-        self.x_input = customtkinter.CTkEntry(self, placeholder_text="192.168.1.6")
-        self.x_input.grid(row=1, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
+        self.ip_label = customtkinter.CTkLabel(self, text="Robot IP:")
+        self.ip_label.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        self.ip_input = customtkinter.CTkEntry(self, placeholder_text="192.168.1.6") # Renamed from x_input
+        self.ip_input.grid(row=1, column=1, padx=10, pady=5, sticky="ew", columnspan=2)
+        
+        self.confirm_button = customtkinter.CTkButton(self, text="Confirm", command=self.upload)
+        self.confirm_button.grid(row=1, column=5, padx=10, pady=10, sticky="ew")
 
-        # Title
-        self.title = customtkinter.CTkLabel(self, text="Inputs", fg_color="gray30", corner_radius=6)
-        self.title.grid(row=2, column=0, padx=10, pady=(10, 0), sticky="ew", columnspan=6)
-        # Upload Button
-        self.upload_button = customtkinter.CTkButton(self, text="Confirm", command=self.upload)
-        self.upload_button.grid(row=1, column=5, padx=10, pady=10, sticky="ew")
+        # --- Row 2 & 3: Standard Inputs ---
+        self.title_inp = customtkinter.CTkLabel(self, text="Inputs", fg_color="gray30", corner_radius=6)
+        self.title_inp.grid(row=2, column=0, padx=10, pady=(10, 0), sticky="ew", columnspan=6)
 
-        # X, Y, Z Inputs
         self.x_input = customtkinter.CTkEntry(self, placeholder_text="X")
         self.x_input.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
-
         self.y_input = customtkinter.CTkEntry(self, placeholder_text="Y")
         self.y_input.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
-
         self.z_input = customtkinter.CTkEntry(self, placeholder_text="Z")
         self.z_input.grid(row=3, column=2, padx=10, pady=5, sticky="ew")
 
-        # Radio Buttons for Open/Close
         self.state_var = customtkinter.StringVar(value="open")
         self.open_radio = customtkinter.CTkRadioButton(self, text="Open", variable=self.state_var, value="open")
         self.open_radio.grid(row=3, column=3, padx=10, pady=5, sticky="w")
-
         self.close_radio = customtkinter.CTkRadioButton(self, text="Close", variable=self.state_var, value="close")
         self.close_radio.grid(row=3, column=4, padx=10, pady=5, sticky="w")
 
-        # Upload Button
         self.upload_button = customtkinter.CTkButton(self, text="Upload", command=self.upload)
         self.upload_button.grid(row=3, column=5, padx=10, pady=10, sticky="ew")
 
+        # --- Row 4, 5, 6: Manual Controls (NEW) ---
+        self.title_man = customtkinter.CTkLabel(self, text="Manual Controls", fg_color="gray30", corner_radius=6)
+        self.title_man.grid(row=4, column=0, padx=10, pady=(20, 0), sticky="ew", columnspan=6)
+
+        self.up_btn = customtkinter.CTkButton(self, text="Z Up (W)", command=lambda: self.master.manual_z(10))
+        self.up_btn.grid(row=5, column=0, padx=5, pady=10, sticky="ew", columnspan=2)
+        self.down_btn = customtkinter.CTkButton(self, text="Z Down (S)", command=lambda: self.master.manual_z(-10))
+        self.down_btn.grid(row=5, column=2, padx=5, pady=10, sticky="ew", columnspan=2)
+
+        self.claw_active = False
+        self.claw_btn = customtkinter.CTkButton(self, text="Claw: OFF", fg_color="darkred", command=self.toggle_claw_ui)
+        self.claw_btn.grid(row=5, column=4, padx=5, pady=10, sticky="ew", columnspan=2)
+
+        self.manual_enabled = customtkinter.BooleanVar(value=False)
+        self.safety_switch = customtkinter.CTkSwitch(self, text="Enable Keyboard Control", variable=self.manual_enabled)
+        self.safety_switch.grid(row=6, column=0, padx=10, pady=10, sticky="ew", columnspan=6)
+
+    def toggle_claw_ui(self):
+        self.claw_active = not self.claw_active
+        self.claw_btn.configure(text="Claw: ON" if self.claw_active else "Claw: OFF", 
+                                 fg_color="green" if self.claw_active else "darkred")
+        self.master.manual_claw(1 if self.claw_active else 0)
+
     def upload(self):
-        x = self.x_input.get()
-        y = self.y_input.get()
-        z = self.z_input.get()
-        state = self.state_var.get()
-
-        if x and y and z:
-            command_text = f"({x}, {y}, {z}) -- ({state})"
-            self.point_frame.add_command(command_text)
-
+        target_ip = self.ip_input.get() or "192.168.1.6" 
+        success = initialize_robot(target_ip)
+        if success:
+            self.point_frame.add_command(f"System: {target_ip} Connected")
+        else:
+            self.point_frame.update_commands("System: Demo Mode")
 
 class GraphFrame(customtkinter.CTkFrame):
     def __init__(self, master):
