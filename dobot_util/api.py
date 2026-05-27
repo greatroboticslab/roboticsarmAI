@@ -23,6 +23,13 @@ class Dobot:
 
 # Add these methods inside the Movement class in api.py
 class Movement(DobotSocketConnection):
+
+    SAFE_LIMITS = {
+        "J1": (-83.0, 83.0),
+        "J2": (-128.0, 128.0),
+        "J3": (7.0, 243.0), # Z-axis (M1 Pro)
+        "J4": (-358.0, 358.0)
+    }
     def __init__(self, ip: str, urdf_file: URDF = None):
         super().__init__(ip, MOVEMENT_PORT)
         self.simulator = Simulator(urdf_file) if urdf_file else None
@@ -49,7 +56,29 @@ class Movement(DobotSocketConnection):
         opt_error, _ = self.send_command("Sync()")
         return opt_error
 
+    def safe_move_jog(self, cmd: str, current_joints: list) -> Optional[DobotError]:
+        if not cmd or cmd == "stop":
+            opt_error, _ = self.send_command("MoveJog()")
+            return opt_error
 
+        # Extract axis (J1) and direction (+)
+        axis_key = cmd[:2].upper() 
+        direction = cmd[2]         
+        axis_idx = int(axis_key[1]) - 1
+
+        # Check against boundaries
+        low, high = self.SAFE_LIMITS.get(axis_key, (-999, 999))
+        current_val = current_joints[axis_idx]
+
+        if (direction == "+" and current_val >= high) or \
+           (direction == "-" and current_val <= low):
+            print(f"Safety Trigger: {axis_key} at {current_val}. Jog blocked.")
+            self.send_command("MoveJog()") # Force stop
+            return None
+
+        opt_error, _ = self.send_command(f"MoveJog({cmd})")
+        return opt_error
+    
     # MovJ
     def move_joint(
         self, joints: list[float]) -> Optional[DobotError]:
@@ -275,8 +304,19 @@ class Dashboard(DobotSocketConnection):
 
 # TODO: Create a numpy type which houses all needed values
 # NOTE: Different for CR version
-   
+
+# Find the Feedback class and replace its get_feedback method:
 class Feedback(DobotSocketConnection):
     def __init__(self, ip: str):
         super().__init__(ip, REALTIME_FEEDBACK_PORT)
-    
+        # Port 30004 needs a smaller timeout for high-frequency reads
+        self.socket.settimeout(0.1) 
+
+    def get_feedback(self):
+        try:
+            # Port 30004 sends exactly 1440 bytes
+            data = self.socket.recv(1440)
+            if len(data) >= 1440:
+                return np.frombuffer(data, dtype=FeedbackType)
+        except Exception:
+            return None
