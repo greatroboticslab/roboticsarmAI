@@ -21,11 +21,35 @@ class Dobot:
         self.dashboard: Dashboard = Dashboard(ip)
     
 
+# Add these methods inside the Movement class in api.py
 class Movement(DobotSocketConnection):
-    def __init__(self, ip: str, urdf_file: URDF):
+    def __init__(self, ip: str, urdf_file: URDF = None):
         super().__init__(ip, MOVEMENT_PORT)
         self.simulator = Simulator(urdf_file) if urdf_file else None
-    
+
+    def joint_mov_j(self, joints: list[float]) -> Optional[DobotError]:
+            """
+            Sends direct joint commands (J1, J2, J3, J4).
+            Matches the M1 Pro 'JointMovJ' protocol requirement.
+            """
+            # Formats the list [10.0, 20.0, 50.0, 0.0] into "10.0, 20.0, 50.0, 0.0"
+            inner = ', '.join(map(str, joints))
+            
+            # We catch the error ID but ignore the second return value (usually empty)
+            opt_error, _ = self.send_command(f"JointMovJ({inner})")
+            
+            # Returning this allows your main.py to do: if error: print("Point unreachable")
+            return opt_error
+
+    def sync(self) -> Optional[DobotError]:
+        """
+        Blocks the TCP/IP buffer until the physical robot stops moving.
+        Essential for sequential drawing paths.
+        """
+        opt_error, _ = self.send_command("Sync()")
+        return opt_error
+
+
     # MovJ
     def move_joint(
         self, joints: list[float]) -> Optional[DobotError]:
@@ -118,6 +142,15 @@ class Dashboard(DobotSocketConnection):
 
     def enable(self) -> Optional[DobotError]:
         opt_error, ret_val = self.send_command("EnableRobot()")
+        return opt_error
+    
+    def clear_error(self) -> Optional[DobotError]:
+        """
+        Clears the alarms of the robot. 
+        After clearing, you may need to call 'continue_script' or 'continue' 
+        to restart the motion queue. [cite: 456, 459]
+        """
+        opt_error, ret_val = self.send_command("ClearError()")
         return opt_error
 
     def disable(self) -> Optional[DobotError]:
