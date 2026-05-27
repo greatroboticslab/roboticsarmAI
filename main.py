@@ -138,6 +138,9 @@ def initialize_robot(ip="192.168.1.6"):
         ROBOT_CONNECTED = True
         print("Robot connected and enabled successfully!")
         threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
+        robot.dashboard.send_command("CoordinateL(0)")
+        robot.dashboard.set_user(0)
+        robot.dashboard.set_tool(0)
         return True
 
     except Exception as e:
@@ -222,9 +225,6 @@ def move_to_point(x, y, z=200, r=0):
         messagebox.showwarning("Robot Busy", "Cannot send move command while jogging!")
         return
     
-    if not points:
-        messagebox.showwarning("No Points", "Please add points first!")
-        return
     
     try:
         sols = Ikinematics(x, y, z, r)
@@ -294,7 +294,9 @@ def handle_manual_claw():
     global m_claw
     m_claw = 1 if m_claw == 0 else 0
     if ROBOT_CONNECTED and robot:
-        robot.dashboard.set_digital_output(1, m_claw)
+        robot.dashboard.set_digital_output(17, m_claw)
+        print("Robot told to toggle claw")
+        print(m_claw)
     claw_overdrive_btn.config(text=f"Claw: {'ON' if m_claw else 'OFF'}", bg="green" if m_claw else "red")
 
 limit = 450
@@ -564,13 +566,13 @@ def add_dobot_instructions():
                 # Control claw using digital output
                 if ROBOT_CONNECTED and robot:
                     if(claw_text == "ON"):
-                        robot.dashboard.set_digital_output(2, 1)
+                        robot.dashboard.set_digital_output(17, 1)
                         sleep(1)  # Ensure claw has time to activate
-                        robot.dashboard.set_digital_output(2, 0)
+                        robot.dashboard.set_digital_output(17, 0)
                     else:
-                        robot.dashboard.set_digital_output(1, 1)
+                        robot.dashboard.set_digital_output(17, 1)
                         sleep(1)  # Ensure claw has time to deactivate
-                        robot.dashboard.set_digital_output(1, 0)
+                        robot.dashboard.set_digital_output(17, 0)
                     print(f"Claw set to {claw_text}")
                 else:
                     print(f"DEMO MODE: Would set claw to {claw_text}")
