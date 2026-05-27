@@ -21,6 +21,8 @@ from time import sleep
 import math
 from dobot_util import Dobot
 
+import threading
+
 # Ported directly from HongboRobot_ActualRobot_AI_Points.m
 DRAWING_POINTS = np.array([
     [230, -30], [240, -30], [255, -30], [270, -30], [285, -30], [300, -30], [315, -30], [330, -30], [345, -30], [360, -30],
@@ -51,6 +53,31 @@ DRAWING_POINTS = np.array([
     [265, 30], [275, 40], [285, 50], [300, 65], [315, 50], [325, 40], [335, 30],
     [360, -30], [300, -30], [230, -30]
 ])
+
+
+# --- NEW: Global Robot State ---
+robot_data = {
+    "joints": [0.0, 0.0, 0.0, 0.0],
+    "cartesian": [0.0, 0.0, 0.0, 0.0],
+    
+}
+is_jogging = False
+
+def feedback_loop(robot_inst):
+    """Thread function to constantly read Port 30004."""
+    while True:
+        try:
+            data = robot_inst.feedback.get_feedback()
+            if data is not None:
+                # Store data in our global dictionary
+                robot_data["joints"] = data[0]['q_actual'][:4].tolist()
+                robot_data["cartesian"] = data[0]['tool_vector_actual'][:4].tolist()
+        except:
+            pass
+        sleep(0.02) # 50Hz frequency
+
+# Add this line where you initialize your robot connection:
+
 
 class RobotManager:
     def __init__(self, ip="192.168.1.6", urdf_path=None):
@@ -110,6 +137,7 @@ def initialize_robot(ip="192.168.1.6"):
         
         ROBOT_CONNECTED = True
         print("Robot connected and enabled successfully!")
+        threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
         return True
 
     except Exception as e:
@@ -190,6 +218,14 @@ def Ikinematics(x, y, z=200.0, r=0.0):
 
 # ---- Robot Control Function ----
 def move_to_point(x, y, z=200, r=0):
+    if is_jogging:
+        messagebox.showwarning("Robot Busy", "Cannot send move command while jogging!")
+        return
+    
+    if not points:
+        messagebox.showwarning("No Points", "Please add points first!")
+        return
+    
     try:
         sols = Ikinematics(x, y, z, r)
         
@@ -220,12 +256,32 @@ def move_to_point(x, y, z=200, r=0):
 m_x, m_y, m_z = 250.0, 0.0, 200.0 
 m_claw = 0 
 
-def handle_manual_move(dx, dy):
-    if not manual_active.get(): return # This will work once manual_active is created below
-    global m_x, m_y
-    m_x += dx
-    m_y += dy
-    move_to_point(m_x, m_y, m_z)
+# --- NEW: Jogging Handlers ---
+# --- NEW AREA B: CONTINUOUS JOG HANDLERS ---
+# --- REFINED AREA B ---
+def handle_jog_press(axis_cmd):
+    global is_jogging
+    # Check 1: Is robot actually connected?
+    # Check 2: Are we already jogging? (Prevents Windows key-repeat spam)
+    if not ROBOT_CONNECTED or is_jogging or not manual_active.get():
+        return
+        
+    # Get current joints from the background thread's latest data
+    current_j = robot_data["joints"]
+    
+    # Send the safe command
+    error = robot.movement.safe_move_jog(axis_cmd, current_j)
+    
+    if not error:
+        is_jogging = True
+
+def handle_jog_release(event):
+    global is_jogging
+    if ROBOT_CONNECTED:
+        robot.movement.safe_move_jog("stop", [])
+        is_jogging = False
+
+
 
 def handle_manual_z(dz):
     if not manual_active.get(): return
@@ -775,6 +831,14 @@ def get_point_settings(px, py):
 
 # Event handler for clicking on the plot
 def onclick(event):
+
+    # --- ADD THIS CHECK AT THE VERY TOP ---
+    global is_jogging
+    if is_jogging:
+        print("Click ignored: Robot is currently jogging.")
+        return 
+    # --------------------------------------
+
     if event.xdata is None or event.ydata is None:
         return
     px, py = event.xdata, event.ydata
@@ -828,6 +892,28 @@ def manual_joint_move():
     except ValueError:
         messagebox.showerror("Input Error", "Please enter valid numbers for joints.")
 
+
+# Create a global variable for the 'live' marker so we can move it
+live_robot_dot = ax.plot([], [], 'ro', markersize=10, label='Live Robot')[0]
+
+def update_gui_from_feedback():
+    """Refreshes the plot and labels with the robot's actual position."""
+    if ROBOT_CONNECTED:
+        # 1. Get Cartesian X, Y from the real-time data
+        curr_x = robot_data["cartesian"][0]
+        curr_y = robot_data["cartesian"][1]
+        
+        # 2. Update the red dot on the plot
+        live_robot_dot.set_data([curr_x], [curr_y])
+        
+        # 3. Redraw only the idle parts of the canvas (prevents lag)
+        fig.canvas.draw_idle() 
+
+    # Schedule this function to run again in 100ms (10 times per second)
+    root.after(100, update_gui_from_feedback)
+
+
+
 # Connect the click event
 fig.canvas.mpl_connect('button_press_event', onclick)
 
@@ -837,13 +923,32 @@ instructions = tk.Label(frame, text="Instructions:\n1. Click points on plot OR\n
 instructions.pack(pady=10)
 
 # --- KEYBOARD BINDINGS ---
-root.bind("<Up>",    lambda e: handle_manual_move(10, 0))   # Move X+
-root.bind("<Down>",  lambda e: handle_manual_move(-10, 0))  # Move X-
-root.bind("<Left>",  lambda e: handle_manual_move(0, 10))   # Move Y+
-root.bind("<Right>", lambda e: handle_manual_move(0, -10))  # Move Y-
-root.bind("<w>",     lambda e: handle_manual_z(10))         # Move Z Up
-root.bind("<s>",     lambda e: handle_manual_z(-10))        # Move Z Down
+# --- NEW AREA C: JOGGING BINDINGS ---
 
+# J1 Control (Shoulder)
+root.bind("<KeyPress-Up>",    lambda e: handle_jog_press("J1+"))
+root.bind("<KeyRelease-Up>",  handle_jog_release)
+
+root.bind("<KeyPress-Down>",  lambda e: handle_jog_press("J1-"))
+root.bind("<KeyRelease-Down>", handle_jog_release)
+
+# J2 Control (Elbow)
+root.bind("<KeyPress-Left>",  lambda e: handle_jog_press("J2+"))
+root.bind("<KeyRelease-Left>", handle_jog_release)
+
+root.bind("<KeyPress-Right>", lambda e: handle_jog_press("J2-"))
+root.bind("<KeyRelease-Right>", handle_jog_release)
+
+# J3 Control (Z-Axis Height)
+root.bind("<KeyPress-w>",     lambda e: handle_jog_press("J3+"))
+root.bind("<KeyRelease-w>",   handle_jog_release)
+
+root.bind("<KeyPress-s>",     lambda e: handle_jog_press("J3-"))
+root.bind("<KeyRelease-s>",   handle_jog_release)
+
+
+
+update_gui_from_feedback()
 root.mainloop()
 
 
