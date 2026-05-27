@@ -217,9 +217,18 @@ class Dashboard(DobotSocketConnection):
             return opt_error
 
     def set_digital_output(self, index: int, val: int) -> Optional[DobotError]:
-        index = clamp(index, 1, 16)
+        index = clamp(index, 1, 20)
         val = clamp(val, 0, 1)
-        opt_error, ret_val = self.send_command(f"DO({index}, {val})")
+        print(index)
+        if index >= 17:
+            print("here3")
+            tool_index = index-16
+            opt_error, ret_val = self.send_command(f"ToolDO({tool_index}, {val})")
+            
+            print(opt_error)
+            print(ret_val)
+        else:
+            opt_error, ret_val = self.send_command(f"DO({index}, {val})")
         return opt_error
     
     def robot_mode(self) -> DobotError | RobotMode:
@@ -280,10 +289,7 @@ class Dashboard(DobotSocketConnection):
         opt_error, ret_val = self.send_command(f"PayLoad({weight, inertia})")
         return opt_error
     
-    def set_digital_output(self, index: int, status: int) -> Optional[DobotError]:
-        status = clamp(status, 0, 1)
-        opt_error, ret_val = self.send_command(f"DO({index}, {status})")
-        return opt_error
+
     
     def run_script(self, name: str) -> Optional[DobotError]:
         opt_error, ret_val = self.send_command(f"RunScript({name})")
