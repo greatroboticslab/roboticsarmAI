@@ -139,8 +139,7 @@ def initialize_robot(ip="192.168.1.6"):
         print("Robot connected and enabled successfully!")
         threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
         robot.dashboard.send_command("CoordinateL(0)")
-        robot.dashboard.set_user(0)
-        robot.dashboard.set_tool(0)
+
         return True
 
     except Exception as e:
@@ -900,21 +899,50 @@ live_robot_dot = ax.plot([], [], 'ro', markersize=10, label='Live Robot')[0]
 
 def update_gui_from_feedback():
     """Refreshes the plot and labels with the robot's actual position."""
-    if ROBOT_CONNECTED:
+    if ROBOT_CONNECTED and "cartesian" in robot_data:
         # 1. Get Cartesian X, Y from the real-time data
         curr_x = robot_data["cartesian"][0]
         curr_y = robot_data["cartesian"][1]
         
-        # 2. Update the red dot on the plot
-        live_robot_dot.set_data([curr_x], [curr_y])
+        # --- ROTATION FIX START ---
+        angle_deg = 90  # Change this value to -90, 180, etc. to align correctly
+        theta = np.radians(angle_deg)
+        
+        # Apply rotation matrix
+        rot_x = curr_x * np.cos(theta) - curr_y * np.sin(theta)
+        rot_y = curr_x * np.sin(theta) + curr_y * np.cos(theta)
+        # --- ROTATION FIX END ---
+        
+        # 2. Update the red dot on the plot using rotated coordinates
+        live_robot_dot.set_data([rot_x], [rot_y])
         
         # 3. Redraw only the idle parts of the canvas (prevents lag)
         fig.canvas.draw_idle() 
 
-    # Schedule this function to run again in 100ms (10 times per second)
+    # Schedule this function to run again in 100ms
     root.after(100, update_gui_from_feedback)
 
 
+# Inside main.py - find update_gui_from_feedback()
+def update_gui_from_feedback():
+    global live_dot
+    # Get current feedback coordinates
+    raw_x, raw_y = robot_data["cartesian"][0], robot_data["cartesian"][1]
+
+    # --- APPLY ROTATION TRANSFORMATION ---
+    angle = np.radians(90)  # Change this to -90, 180, etc., based on your setup
+    # Standard 2D rotation formula
+    px = raw_x * np.cos(angle) - raw_y * np.sin(angle)
+    py = raw_x * np.sin(angle) + raw_y * np.cos(angle)
+
+    # Update the live tracking dot on the plot
+    if 'live_dot' in globals():
+        live_dot.set_offsets([px, py])
+    else:
+        live_dot = ax.scatter(px, py, color='red', s=100, label="Live Robot Pos")
+    
+    canvas.draw_idle()
+    root.after(100, update_gui_from_feedback)
 
 # Connect the click event
 fig.canvas.mpl_connect('button_press_event', onclick)
