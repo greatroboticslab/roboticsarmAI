@@ -1,6 +1,6 @@
 import customtkinter # Library for Desktop app
+import main             # Fixes 'main is undefined' warning across the file
 
-from main import initialize_robot
 
 class InfoFrame(customtkinter.CTkFrame):
     def __init__(self, master, point_frame):
@@ -57,19 +57,43 @@ class InfoFrame(customtkinter.CTkFrame):
         self.safety_switch = customtkinter.CTkSwitch(self, text="Enable Keyboard Control", variable=self.manual_enabled)
         self.safety_switch.grid(row=6, column=0, padx=10, pady=10, sticky="ew", columnspan=6)
 
-    def toggle_claw_ui(self):
-        self.claw_active = not self.claw_active
-        self.claw_btn.configure(text="Claw: ON" if self.claw_active else "Claw: OFF", 
-                                 fg_color="green" if self.claw_active else "darkred")
-        self.master.manual_claw(1 if self.claw_active else 0)
+    def toggle_claw_ui(self, *args):
+        # Toggles the claw state and updates button text/color
+        if self.claw_state:
+            self.claw_state = False
+            self.toggle_claw_btn.configure(text="Claw: Open", fg_color="green", hover_color="darkgreen")
+            
+            # Physical Hardware Actuation
+            if main.ROBOT_CONNECTED and main.robot is not None:
+                try:
+                    main.robot.dashboard.set_tool_output(1, 1)
+                    print("Hardware Command Sent: Forearm Tool Output 1 -> ON (Open)")
+                except Exception:
+                    pass
+            else:
+                print("Demo Mode: Claw Open state simulated.")
+        else:
+            self.claw_state = True
+            self.toggle_claw_btn.configure(text="Claw: Closed", fg_color="red", hover_color="darkred")
+            
+            # Physical Hardware Actuation
+            if main.ROBOT_CONNECTED and main.robot is not None:
+                try:
+                    main.robot.dashboard.set_tool_output(1, 0)
+                    print("Hardware Command Sent: Forearm Tool Output 1 -> OFF (Closed)")
+                except Exception:
+                    pass
+            else:
+                print("Demo Mode: Claw Closed state simulated.")
 
+                
     def upload(self):
         target_ip = self.ip_input.get() or "192.168.1.6" 
-        success = initialize_robot(target_ip)
+        success = main.initialize_robot(target_ip)
         if success:
             self.point_frame.add_command(f"System: {target_ip} Connected")
         else:
-            self.point_frame.update_commands("System: Demo Mode")
+            self.point_frame.add_command("System: Demo Mode")
 
 class GraphFrame(customtkinter.CTkFrame):
     def __init__(self, master):
