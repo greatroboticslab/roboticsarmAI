@@ -1,4 +1,5 @@
 
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -6,8 +7,21 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 from time import sleep
 import math
-import threading
+
+import numpy as np
+import math
 from dobot_util import Dobot
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+from time import sleep
+import math
+from dobot_util import Dobot
+
+import threading
 
 # Ported directly from HongboRobot_ActualRobot_AI_Points.m
 DRAWING_POINTS = np.array([
@@ -51,18 +65,17 @@ is_jogging = False
 
 def feedback_loop(robot_inst):
     """Thread function to constantly read Port 30004."""
-    global robot_data
     while True:
         try:
             data = robot_inst.feedback.get_feedback()
             if data is not None:
-                # Store data directly from the flat array structure mapping
-                robot_data["joints"] = list(data['q_actual'][:4])
-                robot_data["cartesian"] = list(data['tool_vector_actual'][:4])
-        except Exception:
-            # Removed 'as e' variable tracking to satisfy the linter warning
+                # Store data in our global dictionary
+                robot_data["joints"] = data[0]['q_actual'][:4].tolist()
+                robot_data["cartesian"] = data[0]['tool_vector_actual'][:4].tolist()
+        except:
             pass
         sleep(0.02) # 50Hz frequency
+
 # Add this line where you initialize your robot connection:
 
 
@@ -139,7 +152,11 @@ def initialize_robot(ip="192.168.1.6"):
 # Call the function immediately to maintain original behavior
 initialize_robot("192.168.1.6")
 
-
+# Calculate inverse kinematics for a 2-link planar arm
+# --- CONFIGURATION TOGGLE ---
+# False = Original Way (Checks X and Y values directly)
+# True  = Newer Way (Checks calculated J1/J2 angles against degree limits)
+STRICT_JOINT_CHECKING = True 
 
 # CONFIGURATION TOGGLE
 # Set to True to allow coordinates like 300 or 400 by checking angles instead of mm
@@ -881,25 +898,50 @@ def manual_joint_move():
 live_robot_dot = ax.plot([], [], 'ro', markersize=10, label='Live Robot')[0]
 
 def update_gui_from_feedback():
-    global live_robot_dot, robot_data, ax, canvas, root
+    """Refreshes the plot and labels with the robot's actual position."""
+    if ROBOT_CONNECTED and "cartesian" in robot_data:
+        # 1. Get Cartesian X, Y from the real-time data
+        curr_x = robot_data["cartesian"][0]
+        curr_y = robot_data["cartesian"][1]
+        
+        # --- ROTATION FIX START ---
+        angle_deg = 90  # Change this value to -90, 180, etc. to align correctly
+        theta = np.radians(angle_deg)
+        
+        # Apply rotation matrix
+        rot_x = curr_x * np.cos(theta) - curr_y * np.sin(theta)
+        rot_y = curr_x * np.sin(theta) + curr_y * np.cos(theta)
+        # --- ROTATION FIX END ---
+        
+        # 2. Update the red dot on the plot using rotated coordinates
+        live_robot_dot.set_data([rot_x], [rot_y])
+        
+        # 3. Redraw only the idle parts of the canvas (prevents lag)
+        fig.canvas.draw_idle() 
+
+    # Schedule this function to run again in 100ms
+    root.after(100, update_gui_from_feedback)
+
+
+# Inside main.py - find update_gui_from_feedback()
+def update_gui_from_feedback():
+    global live_dot
+    # Get current feedback coordinates
+    raw_x, raw_y = robot_data["cartesian"][0], robot_data["cartesian"][1]
+
+    # --- APPLY ROTATION TRANSFORMATION ---
+    angle = np.radians(90)  # Change this to -90, 180, etc., based on your setup
+    # Standard 2D rotation formula
+    px = raw_x * np.cos(angle) - raw_y * np.sin(angle)
+    py = raw_x * np.sin(angle) + raw_y * np.cos(angle)
+
+    # Update the live tracking dot on the plot
+    if 'live_dot' in globals():
+        live_dot.set_offsets([px, py])
+    else:
+        live_dot = ax.scatter(px, py, color='red', s=100, label="Live Robot Pos")
     
-    try:
-        # Extract X and Y tracking positions safely
-        px = robot_data["cartesian"][0]
-        py = robot_data["cartesian"][1]
-        
-        # Guard clause against uninitialized layout coordinates
-        if px != 0.0 or py != 0.0:
-            if live_robot_dot is not None:
-                live_robot_dot.set_offsets([[px, py]])
-            else:
-                live_robot_dot = ax.scatter(px, py, color='red', s=100, label="Live Robot Pos", zorder=5)
-                ax.legend()
-            canvas.draw_idle()
-    except Exception:
-        # Cleaned up exception catch block
-        pass
-        
+    canvas.draw_idle()
     root.after(100, update_gui_from_feedback)
 
 # Connect the click event
