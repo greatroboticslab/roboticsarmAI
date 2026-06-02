@@ -217,18 +217,28 @@ class Dashboard(DobotSocketConnection):
             return opt_error
 
     def set_digital_output(self, index: int, val: int) -> Optional[DobotError]:
+        """
+        Controls the Digital Output channels. 
+        Automatically shifts to ToolDO if the index targets a forearm output (index >= 17).
+        """
         index = clamp(index, 1, 20)
         val = clamp(val, 0, 1)
-        print(index)
+        
         if index >= 17:
-            print("here3")
-            tool_index = index-16
+            tool_index = index - 16
             opt_error, ret_val = self.send_command(f"ToolDO({tool_index}, {val})")
-            
-            print(opt_error)
-            print(ret_val)
         else:
             opt_error, ret_val = self.send_command(f"DO({index}, {val})")
+        return opt_error
+
+    def set_tool_output(self, index: int, val: int) -> Optional[DobotError]:
+        """
+        Directly targets the forearm tool head digital outputs (1-4) 
+        using the specialized 'ToolDO' command.
+        """
+        index = clamp(index, 1, 4)
+        val = clamp(val, 0, 1)
+        opt_error, ret_val = self.send_command(f"ToolDO({index}, {val})")
         return opt_error
     
     def robot_mode(self) -> DobotError | RobotMode:
@@ -312,17 +322,23 @@ class Dashboard(DobotSocketConnection):
 # NOTE: Different for CR version
 
 # Find the Feedback class and replace its get_feedback method:
+# Ensure FeedbackType is imported at the top of api.py along with other types
 class Feedback(DobotSocketConnection):
     def __init__(self, ip: str):
         super().__init__(ip, REALTIME_FEEDBACK_PORT)
         # Port 30004 needs a smaller timeout for high-frequency reads
         self.socket.settimeout(0.1) 
 
-    def get_feedback(self):
+    def get_feedback(self) -> Optional[np.ndarray]:
+        """Reads and parses the 432-byte real-time binary payload."""
         try:
-            # Port 30004 sends exactly 1440 bytes
-            data = self.socket.recv(1440)
-            if len(data) >= 1440:
-                return np.frombuffer(data, dtype=FeedbackType)
+            # Read exactly 432 bytes for the 4-axis M1 Pro controller structure
+            data = self.socket.recv(432)
+            if len(data) == 432:
+                # Interpret raw binary buffer as our structured numpy array
+                parsed_data = np.frombuffer(data, dtype=FeedbackType)
+                return parsed_data[0]
         except Exception:
-            return None
+            # Removed 'as e' so VS Code doesn't flag an unused variable warning
+            pass
+        return None
