@@ -133,10 +133,6 @@ class Movement(DobotSocketConnection):
         opt_error, ret_val = self.send_command(f"Arc({x}, {y}, {z}, {rx}, {ry}, {rz}, {x2}, {y2}, {z2}, {rx2}, {ry2}, {rz2})")
         return opt_error
     
-    # Sync
-    def sync(self) -> Optional[DobotError]:
-        opt_error, ret_val = self.send_command("Sync()")
-        return opt_error
     
     # RelMovJUser
     def relative_move_joint(self, offx: float, offy: float, offz: float, offrx: float, offry: float, offrz: float, user_index: int) -> Optional[DobotError]:
