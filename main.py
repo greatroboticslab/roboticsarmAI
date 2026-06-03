@@ -1,27 +1,17 @@
-
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import tkinter as tk
-from tkinter import messagebox, simpledialog
-from time import sleep
 import math
-
-import numpy as np
-import math
-from dobot_util import Dobot
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import tkinter as tk
-from tkinter import messagebox, simpledialog
-from time import sleep
-import math
-from dobot_util import Dobot
-
 import threading
+from time import sleep
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from dobot_util import Dobot
+
+# Global anchor for the matplotlib live tracking marker
+live_dot = None
+
 
 # Ported directly from HongboRobot_ActualRobot_AI_Points.m
 DRAWING_POINTS = np.array([
@@ -128,17 +118,14 @@ def initialize_robot(ip="192.168.1.6"):
         
         # 2. Bootup Handshake (Critical for Physical Robot)
         # Clear existing alarms and power on the motors
-        print("here2 ")
         robot.dashboard.send_command("ClearError()")
         sleep(0.5)
-        print("Here3")
-        robot.dashboard.enable()
+        robot.dashboard.send_command("EnableRobot()")  # <--- FIXED
         sleep(3)
         
         ROBOT_CONNECTED = True
         print("Robot connected and enabled successfully!")
         threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
-        robot.dashboard.send_command("CoordinateL(0)")
 
         return True
 
@@ -283,20 +270,58 @@ def handle_jog_release(event):
 
 
 def handle_manual_z(dz):
-    if not manual_active.get(): return
-    global m_z
-    m_z = max(5.0, min(245.0, m_z + dz))
+    """Safely increments Z height relative to active hardware telemetry."""
+    if not manual_active.get(): 
+        print("Manual mode disabled.")
+        return
+        
+    global m_x, m_y, m_z
+    
+    # 1. Pull the actual physical coordinates from the feedback stream
+    if ROBOT_CONNECTED and "cartesian" in robot_data and robot_data["cartesian"] is not None:
+        try:
+            live_x = robot_data["cartesian"][0]
+            live_y = robot_data["cartesian"][1]
+            live_z = robot_data["cartesian"][2]
+        except (IndexError, TypeError):
+            print("Telemetry sync lag. Z-axis command ignored.")
+            return
+    else:
+        # Fallback for Demo Mode
+        live_x, live_y, live_z = m_x, m_y, m_z
+
+    # 2. Calculate the new target and enforce software safety limits (5mm to 245mm)
+    target_z = max(5.0, min(245.0, live_z + dz))
+    
+    # 3. Synchronize global variables and move
+    m_x, m_y, m_z = live_x, live_y, target_z
+    print(f"Manual Z Shift: Moving to Z={target_z:.1f}")
     move_to_point(m_x, m_y, m_z)
 
+
+
 def handle_manual_claw():
-    if not manual_active.get(): return
+    """Toggles tool-flange DO1 over the dashboard port connection."""
+    if not manual_active.get(): 
+        print("Manual Mode disabled.")
+        return
     global m_claw
+    
+    # Secure clean binary integer toggle
     m_claw = 1 if m_claw == 0 else 0
+    
     if ROBOT_CONNECTED and robot:
-        robot.dashboard.set_digital_output(17, m_claw)
-        print("Robot told to toggle claw")
-        print(m_claw)
-    claw_overdrive_btn.config(text=f"Claw: {'ON' if m_claw else 'OFF'}", bg="green" if m_claw else "red")
+        try:
+            print(f"Manual Claw Action -> Sending Pin 17 State: {m_claw}")
+            robot.dashboard.set_digital_output(17, m_claw)
+        except Exception as e:
+            print(f"Manual claw call failed: {e}")
+            
+    # Keep UI button configuration synchronized with active state variable
+    claw_overdrive_btn.config(
+        text=f"Claw: {'ON' if m_claw else 'OFF'}", 
+        bg="green" if m_claw else "red"
+    )
 
 limit = 450
 x = np.linspace(-limit, limit, 1000)
@@ -559,26 +584,23 @@ def add_dobot_instructions():
             print(f"Sending point to robot: x={px:.2f}, y={py:.2f}, z={point_z:.2f}, claw={claw_text}")
             
             # Send point to robot with the point's specific z-value
+
             try:
+                # 1. Dispatch trajectory target out to motion queue (Port 30003)
                 move_to_point(x, y, point_z, 0)
                 
-                # Control claw using digital output
                 if ROBOT_CONNECTED and robot:
-                    if(claw_text == "ON"):
-                        robot.dashboard.set_digital_output(17, 1)
-                        sleep(1)  # Ensure claw has time to activate
-                        robot.dashboard.set_digital_output(17, 0)
-                    else:
-                        robot.dashboard.set_digital_output(17, 1)
-                        sleep(1)  # Ensure claw has time to deactivate
-                        robot.dashboard.set_digital_output(17, 0)
-                    print(f"Claw set to {claw_text}")
-                else:
-                    print(f"DEMO MODE: Would set claw to {claw_text}")
+                    # 2. CRITICAL: Pause execution until physical arm arrives and stops moving
+                    robot.movement.sync()
                     
+                    # 3. Alter output toolhead state via Dashboard (Port 29999) using index 17
+                    robot.dashboard.set_digital_output(17, claw_state)
+                    sleep(0.5)  # Physical hardware buffer cushion
+                    
+                print(f"Successfully processed point operations for: {claw_text}")
             except Exception as e:
-                print(f"Robot command failed: {e}")
-                messagebox.showerror("Robot Error", f"Failed to send command to robot: {e}")
+                print(f"Automated execution sequence failed: {e}")
+                messagebox.showerror("Robot Error", f"Failed to complete point sequence operations: {e}")
                 return
             
             # Remove the point from GUI and internal lists
@@ -898,50 +920,38 @@ def manual_joint_move():
 live_robot_dot = ax.plot([], [], 'ro', markersize=10, label='Live Robot')[0]
 
 def update_gui_from_feedback():
-    """Refreshes the plot and labels with the robot's actual position."""
-    if ROBOT_CONNECTED and "cartesian" in robot_data:
-        # 1. Get Cartesian X, Y from the real-time data
-        curr_x = robot_data["cartesian"][0]
-        curr_y = robot_data["cartesian"][1]
-        
-        # --- ROTATION FIX START ---
-        angle_deg = 90  # Change this value to -90, 180, etc. to align correctly
-        theta = np.radians(angle_deg)
-        
-        # Apply rotation matrix
-        rot_x = curr_x * np.cos(theta) - curr_y * np.sin(theta)
-        rot_y = curr_x * np.sin(theta) + curr_y * np.cos(theta)
-        # --- ROTATION FIX END ---
-        
-        # 2. Update the red dot on the plot using rotated coordinates
-        live_robot_dot.set_data([rot_x], [rot_y])
-        
-        # 3. Redraw only the idle parts of the canvas (prevents lag)
-        fig.canvas.draw_idle() 
+    """Refreshes the plot and labels with the robot's actual hardware position."""
+    global live_dot
+    
+    if ROBOT_CONNECTED and "cartesian" in robot_data and robot_data["cartesian"] is not None:
+        try:
+            # 1. Get Cartesian X, Y, Z from the real-time hardware telemetry
+            raw_x = robot_data["cartesian"][0]
+            raw_y = robot_data["cartesian"][1]
+            live_z = robot_data["cartesian"][2]
+            
+            # 2. Apply rotation matrix to align with your physical desk setup
+            angle_deg = 90  # Change to -90, 180, etc. based on your setup
+            theta = np.radians(angle_deg)
+            rot_x = raw_x * np.cos(theta) - raw_y * np.sin(theta)
+            rot_y = raw_x * np.sin(theta) + raw_y * np.cos(theta)
+            
+            # 3. Update the red tracking dot on the Matplotlib plot
+            if live_dot is not None:
+                live_dot.set_offsets(np.c_[rot_x, rot_y])
+            else:
+                live_dot = ax.scatter(rot_x, rot_y, color='red', s=100, zorder=5, label="Live Robot Pos")
+                ax.legend()
+                
+            # 4. Update the text status label with X, Y, and Z
+            if 'status_label' in globals() and status_label.winfo_exists():
+                status_label.config(text=f"Robot Connected | X: {raw_x:.1f} | Y: {raw_y:.1f} | Z: {live_z:.1f}")
+                
+            fig.canvas.draw_idle() 
+        except Exception as e:
+            print(f"GUI telemetry loop warning: {e}")
 
     # Schedule this function to run again in 100ms
-    root.after(100, update_gui_from_feedback)
-
-
-# Inside main.py - find update_gui_from_feedback()
-def update_gui_from_feedback():
-    global live_dot
-    # Get current feedback coordinates
-    raw_x, raw_y = robot_data["cartesian"][0], robot_data["cartesian"][1]
-
-    # --- APPLY ROTATION TRANSFORMATION ---
-    angle = np.radians(90)  # Change this to -90, 180, etc., based on your setup
-    # Standard 2D rotation formula
-    px = raw_x * np.cos(angle) - raw_y * np.sin(angle)
-    py = raw_x * np.sin(angle) + raw_y * np.cos(angle)
-
-    # Update the live tracking dot on the plot
-    if 'live_dot' in globals():
-        live_dot.set_offsets([px, py])
-    else:
-        live_dot = ax.scatter(px, py, color='red', s=100, label="Live Robot Pos")
-    
-    canvas.draw_idle()
     root.after(100, update_gui_from_feedback)
 
 # Connect the click event
