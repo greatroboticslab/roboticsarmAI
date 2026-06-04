@@ -298,29 +298,79 @@ def handle_manual_z(dz):
     print(f"Manual Z Shift: Moving to Z={target_z:.1f}")
     move_to_point(m_x, m_y, m_z)
 
+# =====================================================================
+# CLAW DUAL-OUTPUT CONFIGURATION & HANDLER
+# =====================================================================
+CONSTANT_PRESSURE_MODE = False  # False = Pulse Sequence Mode, True = Continuous Vacuum Pressure
 
+def set_claw_dual_output(state):
+    """
+    Centralized driver interface for Base Digital Outputs DO1 and DO2.
+    state = 1 -> Active State (Trigger Pulse Sequence or Turn Continuous Suction ON)
+    state = 0 -> Inactive State (Default Rest Position or Turn Continuous Release ON)
+    """
+    global robot, ROBOT_CONNECTED
+    
+    # Console logging diagnostics
+    mode_label = "[VACUUM LATCH]" if CONSTANT_PRESSURE_MODE else "[PULSE SEQUENCE]"
+    state_label = "ACTIVE" if state == 1 else "INACTIVE"
+    print(f"{mode_label} Directing base dual-outputs to: {state_label} (state={state})")
+
+    if not ROBOT_CONNECTED or not robot:
+        print(f"DEMO MODE: Simulating dual-output claw behavior for state={state}.")
+        return
+
+    try:
+        if CONSTANT_PRESSURE_MODE:
+            # --- CONTINUOUS VACUUM PRESSURE / SUSTAINED LATCH MODE ---
+            if state == 1:
+                robot.dashboard.set_digital_output(1, 0)  # DO1 (Open) OFF
+                robot.dashboard.set_digital_output(2, 1)  # DO2 (Close) ON -> Constantly latched
+            else:
+                robot.dashboard.set_digital_output(1, 1)  # DO1 (Open) ON -> Constantly latched
+                robot.dashboard.set_digital_output(2, 0)  # DO2 (Close) OFF
+            sleep(0.5)  # Buffer cushion for stable physical transition
+        else:
+            # --- DEFAULT PULSE SEQUENCE MODE (Open -> Wait -> Close again) ---
+            if state == 1:
+                # 1. Fire DO1 to expand/open the mechanism
+                robot.dashboard.set_digital_output(1, 1)
+                robot.dashboard.set_digital_output(2, 0)
+                sleep(0.5)  # Hold open cushion time
+                
+                # 2. Automatically crunch/close it back down using DO2
+                robot.dashboard.set_digital_output(1, 0)
+                robot.dashboard.set_digital_output(2, 1)
+                sleep(0.5)  # Stable complete cushion
+            else:
+                # Rest state: default open position
+                robot.dashboard.set_digital_output(1, 1)
+                robot.dashboard.set_digital_output(2, 0)
+                sleep(0.5)
+    except Exception as e:
+        print(f"Claw dual-output command encountered an error: {e}")
+        
 
 def handle_manual_claw():
-    """Toggles tool-flange DO1 over the dashboard port connection."""
+    """Toggles the unified claw state manually via UI button click."""
     if not manual_active.get(): 
         print("Manual Mode disabled.")
         return
     global m_claw
     
-    # Secure clean binary integer toggle
+    # Toggle state binary tracker cleanly
     m_claw = 1 if m_claw == 0 else 0
     
-    if ROBOT_CONNECTED and robot:
-        try:
-            print(f"Manual Claw Action -> Sending Pin 17 State: {m_claw}")
-            robot.dashboard.set_digital_output(17, m_claw)
-        except Exception as e:
-            print(f"Manual claw call failed: {e}")
+    # Delegate physical/simulated execution completely to the centralized function
+    set_claw_dual_output(m_claw)
             
-    # Keep UI button configuration synchronized with active state variable
+    # Synchronize UI textual feedback and colors with tracking state
+    ui_text = "ACTIVE" if m_claw == 1 else "INACTIVE"
+    ui_color = "green" if m_claw == 1 else "darkorange"
+    
     claw_overdrive_btn.config(
-        text=f"Claw: {'ON' if m_claw else 'OFF'}", 
-        bg="green" if m_claw else "red"
+        text=f"Claw: {ui_text}", 
+        bg=ui_color
     )
 
 limit = 450
@@ -388,7 +438,9 @@ tk.Button(overdrive_frame, text="Z Up (W)", width=10, command=lambda: handle_man
 tk.Button(overdrive_frame, text="Z Down (S)", width=10, command=lambda: handle_manual_z(-10)).grid(row=1, column=1, padx=5)
 
 # Claw Toggle Button
-claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: OFF", width=12, bg="red", fg="white", 
+# Claw Toggle Button
+# Claw Toggle Button
+claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: INACTIVE", width=15, bg="darkorange", fg="white", 
                                command=handle_manual_claw)
 claw_overdrive_btn.grid(row=1, column=2, padx=5)
 
@@ -588,15 +640,12 @@ def add_dobot_instructions():
             try:
                 # 1. Dispatch trajectory target out to motion queue (Port 30003)
                 move_to_point(x, y, point_z, 0)
-                
                 if ROBOT_CONNECTED and robot:
                     # 2. CRITICAL: Pause execution until physical arm arrives and stops moving
                     robot.movement.sync()
                     
-                    # 3. Alter output toolhead state via Dashboard (Port 29999) using index 17
-                    robot.dashboard.set_digital_output(17, claw_state)
-                    sleep(0.5)  # Physical hardware buffer cushion
-                    
+                # 3. Route handling through the new central dual-output function (handles Demo & Live modes)
+                set_claw_dual_output(claw_state)
                 print(f"Successfully processed point operations for: {claw_text}")
             except Exception as e:
                 print(f"Automated execution sequence failed: {e}")
