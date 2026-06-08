@@ -206,6 +206,15 @@ def Ikinematics(x, y, z=200.0, r=0.0):
 # you will need to set STRICT_JOINT_CHECKING = True at the top.
 
 # ---- Robot Control Function ----
+
+
+
+# --- MANUAL CONTROL STATE ---
+m_x, m_y, m_z = 250.0, 0.0, 200.0 
+m_claw = 0
+
+
+
 def move_to_point(x, y, z=200, r=0):
     if is_jogging:
         messagebox.showwarning("Robot Busy", "Cannot send move command while jogging!")
@@ -223,12 +232,17 @@ def move_to_point(x, y, z=200, r=0):
         j1, j2, z_target, r_target = sols[0]
 
         if ROBOT_CONNECTED and robot:
-            robot.dashboard.enable()
+            # FIX: Removed the robot.dashboard.enable() line
             print(f"Moving to ({x},{y}) | Joints: J1={j1:.1f}°, J2={j2:.1f}°")
-            robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
-            # --- ADD THESE TWO LINES TO SYNC ---
-            m_x, m_y, m_z = x, y, z 
-            # -----------------------------------
+            
+            # Capture and print hardware errors
+            move_error = robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
+            if move_error is not None:
+                print(f"[MOVE ERROR]: Cartesian move failed with error: {move_error}")
+            else:
+                print(f"[MOVE SUCCESS]: Reached target location ({x}, {y}, {z})")
+                
+            m_x, m_y, m_z = x, y, z
         else:
             print(f"DEMO MODE: Target ({x}, {y}) -> Joints J1={j1:.1f}°, J2={j2:.1f}°")
             # --- ADD THESE TWO LINES TO SYNC ---
@@ -236,12 +250,6 @@ def move_to_point(x, y, z=200, r=0):
             # -----------------------------------
     except Exception as e:
         print(f"Robot command failed: {e}")
-
-
-# --- MANUAL CONTROL STATE ---
-m_x, m_y, m_z = 250.0, 0.0, 200.0 
-m_claw = 0 
-
 # --- NEW: Jogging Handlers ---
 # --- NEW AREA B: CONTINUOUS JOG HANDLERS ---
 # --- REFINED AREA B ---
@@ -361,8 +369,19 @@ def handle_manual_claw():
     # Toggle state binary tracker cleanly
     m_claw = 1 if m_claw == 0 else 0
     
-    # Delegate physical/simulated execution completely to the centralized function
-    set_claw_dual_output(m_claw)
+    # FIXED: Route directly to the motion queue pipeline if the robot is connected
+    if ROBOT_CONNECTED and robot:
+        try:
+            print(f"Manual Claw Action -> Queueing Pin 17 State: {m_claw}")
+            robot.movement.set_digital_output_queued(17, m_claw)
+        except Exception as e:
+            print(f"Manual hardware claw queueing failed: {e}")
+    else:
+        # Delegate simulated execution completely to the centralized function in Demo Mode
+        try:
+            set_claw_dual_output(m_claw)
+        except NameError:
+            print(f"Demo Mode: Claw tracking updated locally to {m_claw}")
             
     # Synchronize UI textual feedback and colors with tracking state
     ui_text = "ACTIVE" if m_claw == 1 else "INACTIVE"
@@ -636,17 +655,15 @@ def add_dobot_instructions():
             print(f"Sending point to robot: x={px:.2f}, y={py:.2f}, z={point_z:.2f}, claw={claw_text}")
             
             # Send point to robot with the point's specific z-value
-
             try:
-                # 1. Dispatch trajectory target out to motion queue (Port 30003)
+                # 1. Dispatch trajectory target out to motion queue
                 move_to_point(x, y, point_z, 0)
+                
                 if ROBOT_CONNECTED and robot:
-                    # 2. CRITICAL: Pause execution until physical arm arrives and stops moving
-                    robot.movement.sync()
+                    # 2. Add claw state to the SAME motion queue immediately after movement
+                    robot.movement.set_digital_output_queued(17, claw_state)
                     
-                # 3. Route handling through the new central dual-output function (handles Demo & Live modes)
-                set_claw_dual_output(claw_state)
-                print(f"Successfully processed point operations for: {claw_text}")
+                print(f"Successfully queued point operations for: {claw_text}")
             except Exception as e:
                 print(f"Automated execution sequence failed: {e}")
                 messagebox.showerror("Robot Error", f"Failed to complete point sequence operations: {e}")
@@ -958,8 +975,17 @@ def manual_joint_move():
             return
 
         if ROBOT_CONNECTED and robot:
-            robot.movement.joint_to_joint_move([j1, j2, z, J4_FIXED])
+            # FIXED: Added print statement for debugging live moves
+            print(f"Moving to J1: {j1}° | J2: {j2}° | Z: {z}mm")
+            
+            # FIXED: Capture and display error states returned from hardware
+            move_error = robot.movement.joint_to_joint_move([j1, j2, z, J4_FIXED])
+            if move_error is not None:
+                print(f"[JOINT MOVE ERROR]: Joint move failed with error: {move_error}")
+            else:
+                print(f"[JOINT MOVE SUCCESS]: Completed move to J1:{j1} J2:{j2} Z:{z}")
         else:
+            print(f"DEMO MODE: Moving to J1:{j1} J2:{j2} Z:{z}")
             messagebox.showinfo("Demo Mode", f"Moving to J1:{j1} J2:{j2} Z:{z}")
     except ValueError:
         messagebox.showerror("Input Error", "Please enter valid numbers for joints.")
