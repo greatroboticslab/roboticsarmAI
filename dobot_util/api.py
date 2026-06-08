@@ -30,6 +30,25 @@ class Movement(DobotSocketConnection):
         "J3": (7.0, 243.0), # Z-axis (M1 Pro)
         "J4": (-358.0, 358.0)
     }
+    def set_digital_output_queued(self, index: int, val: int) -> Optional[DobotError]:
+        index = clamp(index, 1, 20)
+        val = clamp(val, 0, 1)
+        
+        if index >= 17:
+            tool_index = index - 16
+            # Cleanly queues the ToolDO command to the Motion Port timeline
+            opt_error, ret_val = self.send_command(f"ToolDO({tool_index}, {val})")
+        else:
+            # Cleanly queues the DO command to the Motion Port timeline
+            opt_error, ret_val = self.send_command(f"DO({index}, {val})")
+            
+        if opt_error is not None:
+            print(f"[QUEUED CLAW ERROR]: Failed to queue DO({index}). Error: {opt_error}")
+        else:
+            print(f"[QUEUED CLAW SUCCESS]: DO({index}) set to {val} appended to motion queue.")
+            
+        return opt_error
+
     def __init__(self, ip: str, urdf_file: URDF = None):
         super().__init__(ip, MOVEMENT_PORT)
         self.simulator = Simulator(urdf_file) if urdf_file else None
@@ -55,6 +74,7 @@ class Movement(DobotSocketConnection):
         """
         opt_error, _ = self.send_command("Sync()")
         return opt_error
+    
 
     def safe_move_jog(self, cmd: str, current_joints: list) -> Optional[DobotError]:
         if not cmd or cmd == "stop":
@@ -68,17 +88,23 @@ class Movement(DobotSocketConnection):
 
         # Check against boundaries
         low, high = self.SAFE_LIMITS.get(axis_key, (-999, 999))
-        current_val = current_joints[axis_idx]
+        
+        # FIX: Ensure array has data before reading the index
+        if current_joints and len(current_joints) > axis_idx:
+            current_val = current_joints[axis_idx]
 
-        if (direction == "+" and current_val >= high) or \
-           (direction == "-" and current_val <= low):
-            print(f"Safety Trigger: {axis_key} at {current_val}. Jog blocked.")
-            self.send_command("MoveJog()") # Force stop
+            if (direction == "+" and current_val >= high) or \
+               (direction == "-" and current_val <= low):
+                print(f"Safety Trigger: {axis_key} at {current_val}. Jog blocked.")
+                self.send_command("MoveJog()") # Force stop
+                return None
+        else:
+            print("[JOG WARNING]: Waiting for live telemetry array sync... command skipped.")
             return None
 
         opt_error, _ = self.send_command(f"MoveJog({cmd})")
         return opt_error
-    
+
     # MovJ
     def move_joint(
         self, joints: list[float]) -> Optional[DobotError]:
