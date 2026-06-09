@@ -231,11 +231,12 @@ def move_to_point(x, y, z=200, r=0):
         # Now this unpacking will work because sols is [[...]]
         j1, j2, z_target, r_target = sols[0]
 
+
         if ROBOT_CONNECTED and robot:
-            # FIX: Removed the robot.dashboard.enable() line
+            # VERIFIED: robot.dashboard.enable() is completely removed here to prevent queue wipes
             print(f"Moving to ({x},{y}) | Joints: J1={j1:.1f}°, J2={j2:.1f}°")
             
-            # Capture and print hardware errors
+            # Capture and display error states returned from hardware
             move_error = robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
             if move_error is not None:
                 print(f"[MOVE ERROR]: Cartesian move failed with error: {move_error}")
@@ -243,6 +244,8 @@ def move_to_point(x, y, z=200, r=0):
                 print(f"[MOVE SUCCESS]: Reached target location ({x}, {y}, {z})")
                 
             m_x, m_y, m_z = x, y, z
+
+
         else:
             print(f"DEMO MODE: Target ({x}, {y}) -> Joints J1={j1:.1f}°, J2={j2:.1f}°")
             # --- ADD THESE TWO LINES TO SYNC ---
@@ -311,52 +314,38 @@ def handle_manual_z(dz):
 # =====================================================================
 CONSTANT_PRESSURE_MODE = False  # False = Pulse Sequence Mode, True = Continuous Vacuum Pressure
 
+
 def set_claw_dual_output(state):
     """
-    Centralized driver interface for Base Digital Outputs DO1 and DO2.
-    state = 1 -> Active State (Trigger Pulse Sequence or Turn Continuous Suction ON)
-    state = 0 -> Inactive State (Default Rest Position or Turn Continuous Release ON)
+    Centralized dual-output claw controller.
+    Natively appends DO1 and DO2 changes to the Port 30003 motion queue
+    using the available 'set_digital_output_queued' method.
     """
-    global robot, ROBOT_CONNECTED
+    # Ensure state handles safely as a clean binary flag (1 or 0)
+    state = 1 if int(state) >= 1 else 0
     
-    # Console logging diagnostics
-    mode_label = "[VACUUM LATCH]" if CONSTANT_PRESSURE_MODE else "[PULSE SEQUENCE]"
-    state_label = "ACTIVE" if state == 1 else "INACTIVE"
-    print(f"{mode_label} Directing base dual-outputs to: {state_label} (state={state})")
-
-    if not ROBOT_CONNECTED or not robot:
-        print(f"DEMO MODE: Simulating dual-output claw behavior for state={state}.")
-        return
-
-    try:
-        if CONSTANT_PRESSURE_MODE:
-            # --- CONTINUOUS VACUUM PRESSURE / SUSTAINED LATCH MODE ---
+    if ROBOT_CONNECTED and robot:
+        try:
+            # FIX: Explicitly calling 'set_digital_output_queued' as defined in your api.py
             if state == 1:
-                robot.dashboard.set_digital_output(1, 0)  # DO1 (Open) OFF
-                robot.dashboard.set_digital_output(2, 1)  # DO2 (Close) ON -> Constantly latched
+                # Active State: Drive DO1 HIGH, turn DO2 LOW
+                err1 = robot.movement.set_digital_output_queued(1, 1)
+                err2 = robot.movement.set_digital_output_queued(2, 0)
             else:
-                robot.dashboard.set_digital_output(1, 1)  # DO1 (Open) ON -> Constantly latched
-                robot.dashboard.set_digital_output(2, 0)  # DO2 (Close) OFF
-            sleep(0.5)  # Buffer cushion for stable physical transition
-        else:
-            # --- DEFAULT PULSE SEQUENCE MODE (Open -> Wait -> Close again) ---
-            if state == 1:
-                # 1. Fire DO1 to expand/open the mechanism
-                robot.dashboard.set_digital_output(1, 1)
-                robot.dashboard.set_digital_output(2, 0)
-                sleep(0.5)  # Hold open cushion time
+                # Inactive State: Turn DO1 LOW, drive DO2 HIGH
+                err1 = robot.movement.set_digital_output_queued(1, 0)
+                err2 = robot.movement.set_digital_output_queued(2, 1)
                 
-                # 2. Automatically crunch/close it back down using DO2
-                robot.dashboard.set_digital_output(1, 0)
-                robot.dashboard.set_digital_output(2, 1)
-                sleep(0.5)  # Stable complete cushion
+            if err1 or err2:
+                print(f"[CLAW QUEUE ERROR]: Intercepted queue assignment error. DO1 Err: {err1}, DO2 Err: {err2}")
             else:
-                # Rest state: default open position
-                robot.dashboard.set_digital_output(1, 1)
-                robot.dashboard.set_digital_output(2, 0)
-                sleep(0.5)
-    except Exception as e:
-        print(f"Claw dual-output command encountered an error: {e}")
+                print(f"[CLAW QUEUED]: State {state} successfully appended to motion queue (DO1={1 if state==1 else 0}, DO2={0 if state==1 else 1}).")
+        except Exception as e:
+            print(f"Hardware claw communication failed: {e}")
+    else:
+        # Fallback for offline simulation / Demo Mode
+        print(f"DEMO MODE: Dual Claw simulated to state {state}")
+
         
 
 def handle_manual_claw():
@@ -369,19 +358,8 @@ def handle_manual_claw():
     # Toggle state binary tracker cleanly
     m_claw = 1 if m_claw == 0 else 0
     
-    # FIXED: Route directly to the motion queue pipeline if the robot is connected
-    if ROBOT_CONNECTED and robot:
-        try:
-            print(f"Manual Claw Action -> Queueing Pin 17 State: {m_claw}")
-            robot.movement.set_digital_output_queued(17, m_claw)
-        except Exception as e:
-            print(f"Manual hardware claw queueing failed: {e}")
-    else:
-        # Delegate simulated execution completely to the centralized function in Demo Mode
-        try:
-            set_claw_dual_output(m_claw)
-        except NameError:
-            print(f"Demo Mode: Claw tracking updated locally to {m_claw}")
+    # Delegate physical/simulated execution completely to the centralized function
+    set_claw_dual_output(m_claw)
             
     # Synchronize UI textual feedback and colors with tracking state
     ui_text = "ACTIVE" if m_claw == 1 else "INACTIVE"
@@ -656,12 +634,12 @@ def add_dobot_instructions():
             
             # Send point to robot with the point's specific z-value
             try:
-                # 1. Dispatch trajectory target out to motion queue
+                # 1. Dispatch trajectory target out to motion queue (Port 30003)
                 move_to_point(x, y, point_z, 0)
                 
-                if ROBOT_CONNECTED and robot:
-                    # 2. Add claw state to the SAME motion queue immediately after movement
-                    robot.movement.set_digital_output_queued(17, claw_state)
+                # 2. FIXED: Replaced old digital output logic with our unified, queued handler
+                # This passes the correct tracking state (1 or 0) down the pipeline natively
+                set_claw_dual_output(claw_state)
                     
                 print(f"Successfully queued point operations for: {claw_text}")
             except Exception as e:
