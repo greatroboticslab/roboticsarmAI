@@ -89,7 +89,7 @@ class Movement(DobotSocketConnection):
         # Check against boundaries
         low, high = self.SAFE_LIMITS.get(axis_key, (-999, 999))
         
-        # FIX: Ensure array has data before reading the index
+        # FIX: Protect against empty telemetry arrays to preserve background Tkinter threads
         if current_joints and len(current_joints) > axis_idx:
             current_val = current_joints[axis_idx]
 
