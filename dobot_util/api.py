@@ -27,31 +27,25 @@ class Movement(DobotSocketConnection):
     SAFE_LIMITS = {
         "J1": (-83.0, 83.0),
         "J2": (-128.0, 128.0),
-        "J3": (7.0, 243.0), # Z-axis (M1 Pro)
+        "J3": (7.0, 243.0),   # Z-axis (M1 Pro)
         "J4": (-358.0, 358.0)
     }
-    def set_digital_output_queued(self, index: int, val: int) -> Optional[DobotError]:
-        index = clamp(index, 1, 20)
-        val = clamp(val, 0, 1)
-        
-        if index >= 17:
-            tool_index = index - 16
-            # Cleanly queues the ToolDO command to the Motion Port timeline
-            opt_error, ret_val = self.send_command(f"ToolDO({tool_index}, {val})")
-        else:
-            # Cleanly queues the DO command to the Motion Port timeline
-            opt_error, ret_val = self.send_command(f"DO({index}, {val})")
-            
-        if opt_error is not None:
-            print(f"[QUEUED CLAW ERROR]: Failed to queue DO({index}). Error: {opt_error}")
-        else:
-            print(f"[QUEUED CLAW SUCCESS]: DO({index}) set to {val} appended to motion queue.")
-            
-        return opt_error
 
     def __init__(self, ip: str, urdf_file: URDF = None):
         super().__init__(ip, MOVEMENT_PORT)
         self.simulator = Simulator(urdf_file) if urdf_file else None
+
+    def set_digital_output_queued(self, index: int, val: int) -> Optional[DobotError]:
+        index = clamp(index, 1, 20)
+        val = clamp(val, 0, 1)
+        if index >= 17:
+            tool_index = index - 16
+            opt_error, ret_val = self.send_command(f"ToolDO({tool_index}, {val})")
+        else:
+            opt_error, ret_val = self.send_command(f"DO({index}, {val})")
+        if opt_error is not None:
+            print(f"[QUEUED DO ERROR]: DO({index})={val} failed: {opt_error}")
+        return opt_error
 
     def joint_mov_j(self, joints: list[float]) -> Optional[DobotError]:
             """
@@ -179,7 +173,7 @@ class Movement(DobotSocketConnection):
 
     # MoveJog
     def move_jog(self, joint: JointSelection) -> Optional[DobotError]:
-        opt_error, ret_val = self.send_command(f"MovJog({joint})")
+        opt_error, ret_val = self.send_command(f"MoveJog({joint})")
         return opt_error
 
 
@@ -196,11 +190,8 @@ class Dashboard(DobotSocketConnection):
         return opt_error
     
     def clear_error(self) -> Optional[DobotError]:
-        """
-        Clears the alarms of the robot. 
-        After clearing, you may need to call 'continue_script' or 'continue' 
-        to restart the motion queue. [cite: 456, 459]
-        """
+        """Clears robot alarms. After clearing, call continue_script() to
+        restart the motion queue if it was paused by the alarm."""
         opt_error, ret_val = self.send_command("ClearError()")
         return opt_error
 
@@ -210,14 +201,6 @@ class Dashboard(DobotSocketConnection):
 
     def reset(self) -> Optional[DobotError]:
         opt_error, ret_val = self.send_command("ResetRobot()")
-        return opt_error
-
-    def clear_errors(self) -> Optional[DobotError]:
-        opt_error, ret_val = self.send_command("ClearError()")
-        return opt_error
-    
-    def clear_alarms(self) -> Optional[DobotError]:
-        opt_error, ret_val = self.send_command("ClearAlarm()")
         return opt_error
 
     def emergency_stop(self) -> Optional[DobotError]:
@@ -235,20 +218,15 @@ class Dashboard(DobotSocketConnection):
         opt_error, ret_val = self.send_command(f"DI({index})")
         try:
             return int(ret_val)
-        except:
+        except (ValueError, TypeError):
             return opt_error
 
     def set_digital_output(self, index: int, val: int) -> Optional[DobotError]:
         index = clamp(index, 1, 20)
         val = clamp(val, 0, 1)
-        print(index)
         if index >= 17:
-            print("here3")
-            tool_index = index-16
+            tool_index = index - 16
             opt_error, ret_val = self.send_command(f"ToolDO({tool_index}, {val})")
-            
-            print(opt_error)
-            print(ret_val)
         else:
             opt_error, ret_val = self.send_command(f"DO({index}, {val})")
         return opt_error
@@ -307,8 +285,10 @@ class Dashboard(DobotSocketConnection):
         return opt_error
     
     def set_payload(self, weight: float, inertia: float) -> Optional[DobotError]:
-        # TODO: Figure out acceptable ranges of weights and inertias for each model.
-        opt_error, ret_val = self.send_command(f"PayLoad({weight, inertia})")
+        # Correct command is SetPayLoad, not PayLoad.
+        # Using f"PayLoad({weight, inertia})" would create a Python set which
+        # formats as an unordered "{a, b}" string — wrong for a TCP command.
+        opt_error, ret_val = self.send_command(f"SetPayLoad({weight}, {inertia})")
         return opt_error
     
 
@@ -336,13 +316,14 @@ class Dashboard(DobotSocketConnection):
 # Find the Feedback class and replace its get_feedback method:
 class Feedback(DobotSocketConnection):
     def __init__(self, ip: str):
-        super().__init__(ip, REALTIME_FEEDBACK_PORT)
-        # Port 30004 needs a smaller timeout for high-frequency reads
-        self.socket.settimeout(0.1) 
+        # consume_greeting=False: port 30004 streams 1440-byte packets
+        # continuously from the moment of connection. Reading 1024 bytes would
+        # orphan 416 bytes in the buffer and misalign every subsequent packet read.
+        super().__init__(ip, REALTIME_FEEDBACK_PORT, consume_greeting=False)
+        self.socket.settimeout(0.1)
 
     def get_feedback(self):
         try:
-            # Port 30004 sends exactly 1440 bytes
             data = self.socket.recv(1440)
             if len(data) >= 1440:
                 return np.frombuffer(data, dtype=FeedbackType)

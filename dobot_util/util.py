@@ -6,10 +6,23 @@ from typing import Optional, Tuple
 from .types import DobotError, URDF
 
 class DobotSocketConnection:
-    def __init__(self, ip: str, port: int):
+    def __init__(self, ip: str, port: int, consume_greeting: bool = True):
         self.socket = socket.socket()
         self.socket.settimeout(10.0)
         self.socket.connect((ip, port))
+        # The Dobot controller sends an initial greeting on connect. Without
+        # consuming it here, the first recv() after a command reads the greeting
+        # instead of the response, causing every startup command to appear to
+        # return -1. consume_greeting=False is used for streaming ports (30004)
+        # where reading partial data would misalign the 1440-byte packet boundary.
+        if consume_greeting:
+            try:
+                self.socket.settimeout(1.0)
+                self.socket.recv(1024)
+            except socket.timeout:
+                pass  # No greeting on this port, that is fine
+            finally:
+                self.socket.settimeout(10.0)
         log.debug("Connection established")
 
     " Sends a desired command over the socket connection and returns the potential error and return value in the form of a string "
