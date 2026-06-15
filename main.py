@@ -59,12 +59,12 @@ def feedback_loop(robot_inst):
         try:
             data = robot_inst.feedback.get_feedback()
             if data is not None:
-                # Store data in our global dictionary
-                robot_data["joints"] = data[0]['q_actual'][:4].tolist()
+                robot_data["joints"]    = data[0]['q_actual'][:4].tolist()
                 robot_data["cartesian"] = data[0]['tool_vector_actual'][:4].tolist()
-        except:
-            pass
-        sleep(0.02) # 50Hz frequency
+        except Exception as e:
+            # Log but don't crash — transient packet errors are expected
+            print(f"[FEEDBACK WARNING]: {e}")
+        sleep(0.02)  # 50Hz
 
 # Add this line where you initialize your robot connection:
 
@@ -75,32 +75,24 @@ class RobotManager:
         self.robot = Dobot(self.ip, urdf_file=urdf_path) #
 
     def boot_robot(self):
-        """Dashboard handshake for physical robot initialization"""
-        print("here")
-        self.robot.dashboard.ClearError()
-        self.robot.dashboard.EnableRobot()
+        """Dashboard handshake for physical robot initialization."""
+        print("Booting robot...")
+        self.robot.dashboard.clear_error()
+        sleep(0.5)
+        self.robot.dashboard.enable()
         print("Robot motors enabled.")
 
     def run_drawing(self):
         self.boot_robot()
         for i, pt in enumerate(DRAWING_POINTS):
-            # Penal height management: lift pen for move to start, lower for drawing
             z_height = 245.0 if i == 0 or i == (len(DRAWING_POINTS) - 1) else 220.0
-            
-            # Use original Ikinematics function
-            joints = Ikinematics(pt[0], pt[1], z=z_height) 
-            
-            # Send movement command to robot
+            # Ikinematics returns [[j1,j2,z,r]] — unpack with [0]
+            joints = Ikinematics(pt[0], pt[1], z=z_height)[0]
             self.robot.movement.joint_mov_j(joints)
             print(f"Drawing point {i+1}/{len(DRAWING_POINTS)}: {pt}")
-            
         self.robot.movement.sync()
         print("Drawing complete.")
 
-
-import numpy as np
-import math
-from time import sleep
 
 # Global variables for state tracking
 robot = None
@@ -112,42 +104,80 @@ def initialize_robot(ip="192.168.1.6"):
     try:
         from dobot_util import Dobot
         print(f"Attempting to connect to robot at {ip}...")
-        
-        # 1. Establish Network Connection
-        robot = Dobot(ip, logging=True)
-        
-        # 2. Bootup Handshake (Critical for Physical Robot)
-        # Clear existing alarms and power on the motors
-        robot.dashboard.send_command("ClearError()")
-        sleep(0.5)
-        robot.dashboard.send_command("EnableRobot()")  # <--- FIXED
-        sleep(3)
-        
-        ROBOT_CONNECTED = True
-        print("Robot connected and enabled successfully!")
-        threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
 
+        robot = Dobot(ip, logging=True)
+
+        # Clear any existing alarms then enable.
+        # The greeting fix in util.py means these now read their own responses
+        # cleanly instead of the connection greeting.
+        err = robot.dashboard.clear_error()
+        print(f"  ClearError: {err if err else 'OK'}")
+        sleep(0.5)
+
+        err = robot.dashboard.enable()
+        print(f"  EnableRobot: {err if err else 'OK'}")
+
+        # Poll RobotMode until the robot reaches ENABLE (mode 5).
+        # This replaces the blind sleep(3) and means the rest of the program
+        # only continues once the robot is genuinely ready to accept motion.
+        print("  Waiting for robot to reach ENABLE state...")
+        for attempt in range(30):            # 30 x 0.5s = 15 second timeout
+            sleep(0.5)
+            try:
+                mode = robot.dashboard.robot_mode()
+                print(f"  Mode check {attempt + 1}: {mode}")
+                if mode == 5:                # 5 = RobotMode.ENABLE
+                    break
+            except Exception as e:
+                print(f"  Mode check error: {e}")
+        else:
+            raise RuntimeError("Robot did not reach ENABLE state within 15 seconds. "
+                               "Check for alarms or press the E-stop release.")
+
+        ROBOT_CONNECTED = True
+        print("Robot enabled and ready — jogging and moves available immediately.")
+        threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
         return True
 
     except Exception as e:
         print(f"Robot connection failed: {e}")
-        print("Running in demo mode - robot commands will be simulated")
+        print("Running in demo mode.")
         robot = None
         ROBOT_CONNECTED = False
         return False
 
-# Call the function immediately to maintain original behavior
-initialize_robot("192.168.1.6")
+def ensure_robot_enabled():
+    """
+    Checks the robot is in ENABLE state and re-enables if it has fallen out
+    (e.g. after an E-stop is cleared). Returns True if ready, False if not.
+    This replaces the old pattern of blindly calling enable() before every move.
+    """
+    if not ROBOT_CONNECTED or not robot:
+        return False
+    try:
+        mode = robot.dashboard.robot_mode()
+        if mode == 5:           # Already in ENABLE — nothing to do
+            return True
+        print(f"[ROBOT] Not in ENABLE state (mode={mode}), re-enabling...")
+        robot.dashboard.clear_error()
+        sleep(0.3)
+        robot.dashboard.enable()
+        for _ in range(10):     # Wait up to 5 seconds
+            sleep(0.5)
+            if robot.dashboard.robot_mode() == 5:
+                print("[ROBOT] Re-enabled successfully.")
+                return True
+        print("[ROBOT] Failed to re-enable.")
+        return False
+    except Exception as e:
+        print(f"[ROBOT] ensure_robot_enabled error: {e}")
+        return False
 
 # Calculate inverse kinematics for a 2-link planar arm
 # --- CONFIGURATION TOGGLE ---
 # False = Original Way (Checks X and Y values directly)
 # True  = Newer Way (Checks calculated J1/J2 angles against degree limits)
-STRICT_JOINT_CHECKING = True 
-
-# CONFIGURATION TOGGLE
-# Set to True to allow coordinates like 300 or 400 by checking angles instead of mm
-STRICT_JOINT_CHECKING = True 
+STRICT_JOINT_CHECKING = True
 
 def Ikinematics(x, y, z=200.0, r=0.0):
     L1 = 200.0  # Length of first arm segment
@@ -215,42 +245,48 @@ m_claw = 0
 
 
 
+def safe_move_to_point(x, y, z=200, r=0):
+    """Non-blocking wrapper around move_to_point.
+    Runs the move in a background thread so ensure_robot_enabled()'s
+    re-enable polling loop never freezes the Tkinter main thread."""
+    threading.Thread(target=move_to_point, args=(x, y, z, r), daemon=True).start()
+
 def move_to_point(x, y, z=200, r=0):
+    global m_x, m_y, m_z          # declare global so the assignment below persists
     if is_jogging:
-        messagebox.showwarning("Robot Busy", "Cannot send move command while jogging!")
+        # messagebox must run on the main thread — schedule it there safely
+        root.after(0, lambda: messagebox.showwarning(
+            "Robot Busy", "Cannot send move command while jogging!"))
         return
-    
-    
+
     try:
         sols = Ikinematics(x, y, z, r)
-        
         if not sols:
             print(f"Target ({x}, {y}) is unreachable.")
             return
 
-        # Now this unpacking will work because sols is [[...]]
         j1, j2, z_target, r_target = sols[0]
 
-
         if ROBOT_CONNECTED and robot:
-            # VERIFIED: robot.dashboard.enable() is completely removed here to prevent queue wipes
-            print(f"Moving to ({x},{y}) | Joints: J1={j1:.1f}°, J2={j2:.1f}°")
-            
-            # Capture and display error states returned from hardware
+            # Re-enable only if the robot has fallen out of ENABLE state.
+            # On normal operation this is a fast no-op (mode is already 5).
+            if not ensure_robot_enabled():
+                print("[MOVE BLOCKED] Robot not in ENABLE state.")
+                return
+
+            print(f"Moving to ({x},{y}) | J1={j1:.1f}° J2={j2:.1f}° Z={z_target:.1f}")
             move_error = robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
             if move_error is not None:
-                print(f"[MOVE ERROR]: Cartesian move failed with error: {move_error}")
-            else:
-                print(f"[MOVE SUCCESS]: Reached target location ({x}, {y}, {z})")
-                
-            m_x, m_y, m_z = x, y, z
-
+                print(f"[MOVE ERROR]: {move_error}")
+                return   # do not sync position — robot did not move
+            print(f"[MOVE SUCCESS]: ({x}, {y}, {z})")
 
         else:
-            print(f"DEMO MODE: Target ({x}, {y}) -> Joints J1={j1:.1f}°, J2={j2:.1f}°")
-            # --- ADD THESE TWO LINES TO SYNC ---
-            m_x, m_y, m_z = x, y, z 
-            # -----------------------------------
+            print(f"DEMO MODE: J1={j1:.1f}° J2={j2:.1f}° Z={z_target:.1f}")
+
+        # Only reached if the move succeeded (or demo mode) — safe to sync
+        m_x, m_y, m_z = x, y, z
+
     except Exception as e:
         print(f"Robot command failed: {e}")
 # --- NEW: Jogging Handlers ---
@@ -281,33 +317,13 @@ def handle_jog_release(event):
 
 
 def handle_manual_z(dz):
-    """Safely increments Z height relative to active hardware telemetry."""
-    if not manual_active.get(): 
-        print("Manual mode disabled.")
+    """Increments Z using the last known tracked position. Simple and safe."""
+    if not manual_active.get():
         return
-        
     global m_x, m_y, m_z
-    
-    # 1. Pull the actual physical coordinates from the feedback stream
-    if ROBOT_CONNECTED and "cartesian" in robot_data and robot_data["cartesian"] is not None:
-        try:
-            live_x = robot_data["cartesian"][0]
-            live_y = robot_data["cartesian"][1]
-            live_z = robot_data["cartesian"][2]
-        except (IndexError, TypeError):
-            print("Telemetry sync lag. Z-axis command ignored.")
-            return
-    else:
-        # Fallback for Demo Mode
-        live_x, live_y, live_z = m_x, m_y, m_z
-
-    # 2. Calculate the new target and enforce software safety limits (5mm to 245mm)
-    target_z = max(5.0, min(245.0, live_z + dz))
-    
-    # 3. Synchronize global variables and move
-    m_x, m_y, m_z = live_x, live_y, target_z
-    print(f"Manual Z Shift: Moving to Z={target_z:.1f}")
-    move_to_point(m_x, m_y, m_z)
+    m_z = max(5.0, min(245.0, m_z + dz))
+    print(f"Manual Z: moving to Z={m_z:.1f}")
+    safe_move_to_point(m_x, m_y, m_z)
 
 # =====================================================================
 # CLAW DUAL-OUTPUT CONFIGURATION & HANDLER
@@ -317,58 +333,66 @@ CONSTANT_PRESSURE_MODE = False  # False = Pulse Sequence Mode, True = Continuous
 
 def set_claw_dual_output(state):
     """
-    Centralized dual-output claw controller.
-    Natively appends DO1 and DO2 changes to the Port 30003 motion queue
-    using the available 'set_digital_output_queued' method.
+    Controls the claw via DO1 and DO2 on the dashboard queue (port 29999).
+    Using DO (queue command) means the outputs are ordered and won't fire
+    simultaneously. DO1 and DO2 tested as the working claw ports.
+    state=1 → Active (grip), state=0 → Inactive (release).
     """
-    # Ensure state handles safely as a clean binary flag (1 or 0)
     state = 1 if int(state) >= 1 else 0
-    
-    if ROBOT_CONNECTED and robot:
-        try:
-            # FIX: Explicitly calling 'set_digital_output_queued' as defined in your api.py
+    mode_label = "[VACUUM LATCH]" if CONSTANT_PRESSURE_MODE else "[PULSE SEQUENCE]"
+    state_label = "ACTIVE" if state == 1 else "INACTIVE"
+    print(f"{mode_label} Claw → {state_label}")
+
+    if not ROBOT_CONNECTED or not robot:
+        print(f"DEMO MODE: Claw → {state_label}")
+        return
+
+    try:
+        if CONSTANT_PRESSURE_MODE:
+            # Sustained latch: hold DO1 or DO2 continuously
             if state == 1:
-                # Active State: Drive DO1 HIGH, turn DO2 LOW
-                err1 = robot.movement.set_digital_output_queued(1, 1)
-                err2 = robot.movement.set_digital_output_queued(2, 0)
+                robot.dashboard.set_digital_output(1, 0)  # Open OFF
+                robot.dashboard.set_digital_output(2, 1)  # Close ON (latched)
             else:
-                # Inactive State: Turn DO1 LOW, drive DO2 HIGH
-                err1 = robot.movement.set_digital_output_queued(1, 0)
-                err2 = robot.movement.set_digital_output_queued(2, 1)
-                
-            if err1 or err2:
-                print(f"[CLAW QUEUE ERROR]: Intercepted queue assignment error. DO1 Err: {err1}, DO2 Err: {err2}")
+                robot.dashboard.set_digital_output(1, 1)  # Open ON (latched)
+                robot.dashboard.set_digital_output(2, 0)  # Close OFF
+            sleep(0.5)
+        else:
+            # Pulse sequence: fire one direction then return to neutral
+            if state == 1:
+                robot.dashboard.set_digital_output(1, 1)  # Fire open
+                robot.dashboard.set_digital_output(2, 0)
+                sleep(0.5)
+                robot.dashboard.set_digital_output(1, 0)  # Return to neutral
+                robot.dashboard.set_digital_output(2, 1)
+                sleep(0.5)
             else:
-                print(f"[CLAW QUEUED]: State {state} successfully appended to motion queue (DO1={1 if state==1 else 0}, DO2={0 if state==1 else 1}).")
-        except Exception as e:
-            print(f"Hardware claw communication failed: {e}")
-    else:
-        # Fallback for offline simulation / Demo Mode
-        print(f"DEMO MODE: Dual Claw simulated to state {state}")
+                robot.dashboard.set_digital_output(1, 1)  # Rest/open position
+                robot.dashboard.set_digital_output(2, 0)
+                sleep(0.5)
+        print(f"[CLAW OK]: {state_label}")
+    except Exception as e:
+        print(f"[CLAW ERROR]: {e}")
 
         
 
 def handle_manual_claw():
     """Toggles the unified claw state manually via UI button click."""
-    if not manual_active.get(): 
+    if not manual_active.get():
         print("Manual Mode disabled.")
         return
     global m_claw
-    
-    # Toggle state binary tracker cleanly
+
     m_claw = 1 if m_claw == 0 else 0
-    
-    # Delegate physical/simulated execution completely to the centralized function
-    set_claw_dual_output(m_claw)
-            
-    # Synchronize UI textual feedback and colors with tracking state
-    ui_text = "ACTIVE" if m_claw == 1 else "INACTIVE"
-    ui_color = "green" if m_claw == 1 else "darkorange"
-    
-    claw_overdrive_btn.config(
-        text=f"Claw: {ui_text}", 
-        bg=ui_color
-    )
+
+    # Update the button immediately so the UI feels responsive
+    ui_text  = "ACTIVE"    if m_claw == 1 else "INACTIVE"
+    ui_color = "green"     if m_claw == 1 else "darkorange"
+    claw_overdrive_btn.config(text=f"Claw: {ui_text}", bg=ui_color)
+
+    # Run the hardware command in a background thread so the sleep() calls
+    # inside set_claw_dual_output do not freeze the Tkinter main thread
+    threading.Thread(target=set_claw_dual_output, args=(m_claw,), daemon=True).start()
 
 limit = 450
 x = np.linspace(-limit, limit, 1000)
@@ -405,6 +429,10 @@ zj_entry = None
 root = tk.Tk()
 root.title("Robotic Arm Control")
 
+# Initialize robot here — after root exists so any error dialogs can render,
+# and before status_label so ROBOT_CONNECTED is set when the label is created.
+initialize_robot("192.168.1.6")
+
 # INITIALIZE HERE - This prevents the "Too early" error
 global manual_active
 manual_active = tk.BooleanVar(value=False)
@@ -435,9 +463,7 @@ tk.Button(overdrive_frame, text="Z Up (W)", width=10, command=lambda: handle_man
 tk.Button(overdrive_frame, text="Z Down (S)", width=10, command=lambda: handle_manual_z(-10)).grid(row=1, column=1, padx=5)
 
 # Claw Toggle Button
-# Claw Toggle Button
-# Claw Toggle Button
-claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: INACTIVE", width=15, bg="darkorange", fg="white", 
+claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: INACTIVE", width=15, bg="darkorange", fg="white",
                                command=handle_manual_claw)
 claw_overdrive_btn.grid(row=1, column=2, padx=5)
 
@@ -619,45 +645,55 @@ def add_dobot_instructions():
     if not valid_points:
         messagebox.showwarning("No Points", "No valid points to send to robot!")
         return
-    
+
     def process_next_point():
-        if valid_points:
-            # Get the first point with its individual z-value and claw state
-            px, py, point_z, claw_state = valid_points[0]
-            x = round(py, 2)
-            y = -1 * round(px, 2)
-            if(claw_state == 1):
-                claw_text = "ON"
-            else:
-                claw_text = "OFF"
-            print(f"Sending point to robot: x={px:.2f}, y={py:.2f}, z={point_z:.2f}, claw={claw_text}")
-            
-            # Send point to robot with the point's specific z-value
+        if not valid_points:
+            print("All points complete.")
+            return
+
+        px, py, point_z, claw_state = valid_points[0]
+        # Coordinate frame rotation to match physical desk orientation
+        x = round(py, 2)
+        y = -1 * round(px, 2)
+        claw_text = "ON" if claw_state == 1 else "OFF"
+        print(f"Sending point: x={px:.2f}, y={py:.2f}, z={point_z:.2f}, claw={claw_text}")
+
+        def execute_point():
+            """Runs in background thread — move, sync, claw, then schedule next."""
             try:
-                # 1. Dispatch trajectory target out to motion queue (Port 30003)
+                # 1. Move to target
                 move_to_point(x, y, point_z, 0)
-                
-                # 2. FIXED: Replaced old digital output logic with our unified, queued handler
-                # This passes the correct tracking state (1 or 0) down the pipeline natively
+
+                # 2. Block until the physical robot actually stops moving.
+                #    This replaces the fixed 3-second delay and handles both
+                #    short moves (no wasted wait) and long moves (no early fire).
+                if ROBOT_CONNECTED and robot:
+                    err = robot.movement.sync()
+                    if err:
+                        print(f"[SYNC WARNING]: {err}")
+
+                # 3. Fire claw after confirmed arrival
                 set_claw_dual_output(claw_state)
-                    
-                print(f"Successfully queued point operations for: {claw_text}")
+                print(f"Point complete: claw={claw_text}")
+
             except Exception as e:
-                print(f"Automated execution sequence failed: {e}")
-                messagebox.showerror("Robot Error", f"Failed to complete point sequence operations: {e}")
+                print(f"Sequence failed: {e}")
+                root.after(0, lambda: messagebox.showerror(
+                    "Robot Error", f"Point sequence failed: {e}"))
                 return
-            
-            # Remove the point from GUI and internal lists
-            remove_first_point()
-            # Schedule the next point after 3 seconds
-            root.after(3000, process_next_point)
+
+            # 4. Remove point from GUI on the main thread, then trigger next
+            root.after(0, lambda: (remove_first_point(),
+                                   root.after(100, process_next_point)))
+
+        threading.Thread(target=execute_point, daemon=True).start()
 
     process_next_point()
 
 def dobot_error_reset():
     if ROBOT_CONNECTED and robot:
         try:
-            robot.dashboard.clear_errors()
+            robot.dashboard.clear_error()
             print("Robot errors cleared")
         except Exception as e:
             print(f"Failed to clear robot errors: {e}")
@@ -918,7 +954,7 @@ def onclick(event):
             valid_points.append((px, py, settings['z'], settings['claw']))
             scatter = ax.scatter(px, py, color='green', s=50)
             valid_scatters.append(scatter)
-            
+
             claw_text = "ON" if settings['claw'] == 1 else "OFF"
             points_listbox.insert(tk.END, f"{len(valid_points)}: ({px:.2f}, {py:.2f}, z={settings['z']:.1f}, claw={claw_text})")
         # If user cancelled, don't add the point
@@ -936,41 +972,47 @@ def remove_invalid_point(scatter):
 
 def manual_joint_move():
     global robot, ROBOT_CONNECTED
-    
-    # physical limits for M1 Pro
+
     J1_MIN, J1_MAX = -85.0, 85.0
     J2_MIN, J2_MAX = -135.0, 135.0
     Z_MIN, Z_MAX = 5.0, 245.0
-    J4_FIXED = -35.0 
+    J4_FIXED = -35.0
 
     try:
         j1 = float(j1_entry.get())
         j2 = float(j2_entry.get())
-        z = float(zj_entry.get())
+        z  = float(zj_entry.get())
+        claw_state = claw_var_j.get()   # read the joint-row claw radio button
 
         if not (J1_MIN <= j1 <= J1_MAX and J2_MIN <= j2 <= J2_MAX and Z_MIN <= z <= Z_MAX):
             messagebox.showerror("Out of Range", "Joint values outside limits!")
             return
 
-        if ROBOT_CONNECTED and robot:
-            # FIXED: Added print statement for debugging live moves
-            print(f"Moving to J1: {j1}° | J2: {j2}° | Z: {z}mm")
-            
-            # FIXED: Capture and display error states returned from hardware
-            move_error = robot.movement.joint_to_joint_move([j1, j2, z, J4_FIXED])
-            if move_error is not None:
-                print(f"[JOINT MOVE ERROR]: Joint move failed with error: {move_error}")
+        def execute():
+            if ROBOT_CONNECTED and robot:
+                if not ensure_robot_enabled():
+                    root.after(0, lambda: messagebox.showerror(
+                        "Robot Not Ready", "Robot is not in ENABLE state."))
+                    return
+                print(f"Moving to J1:{j1}° J2:{j2}° Z:{z}mm")
+                move_error = robot.movement.joint_to_joint_move([j1, j2, z, J4_FIXED])
+                if move_error is not None:
+                    print(f"[JOINT MOVE ERROR]: {move_error}")
+                    return
+                print(f"[JOINT MOVE SUCCESS]: J1:{j1} J2:{j2} Z:{z}")
+                # Apply claw state after move completes
+                robot.movement.sync()
+                set_claw_dual_output(claw_state)
             else:
-                print(f"[JOINT MOVE SUCCESS]: Completed move to J1:{j1} J2:{j2} Z:{z}")
-        else:
-            print(f"DEMO MODE: Moving to J1:{j1} J2:{j2} Z:{z}")
-            messagebox.showinfo("Demo Mode", f"Moving to J1:{j1} J2:{j2} Z:{z}")
+                print(f"DEMO MODE: J1:{j1} J2:{j2} Z:{z} Claw:{'ON' if claw_state else 'OFF'}")
+
+        # Run in background thread so ensure_robot_enabled and sync
+        # don't block the Tkinter main thread
+        threading.Thread(target=execute, daemon=True).start()
+
     except ValueError:
         messagebox.showerror("Input Error", "Please enter valid numbers for joints.")
 
-
-# Create a global variable for the 'live' marker so we can move it
-live_robot_dot = ax.plot([], [], 'ro', markersize=10, label='Live Robot')[0]
 
 def update_gui_from_feedback():
     """Refreshes the plot and labels with the robot's actual hardware position."""
