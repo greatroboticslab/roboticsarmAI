@@ -102,7 +102,6 @@ def initialize_robot(ip="192.168.1.6"):
     global robot, ROBOT_CONNECTED
 
     try:
-        from dobot_util import Dobot
         print(f"Attempting to connect to robot at {ip}...")
 
         robot = Dobot(ip, logging=True)
