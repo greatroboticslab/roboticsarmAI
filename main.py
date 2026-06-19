@@ -1,27 +1,17 @@
-
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import tkinter as tk
-from tkinter import messagebox, simpledialog
-from time import sleep
 import math
-
-import numpy as np
-import math
-from dobot_util import Dobot
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import tkinter as tk
-from tkinter import messagebox, simpledialog
-from time import sleep
-import math
-from dobot_util import Dobot
-
 import threading
+from time import sleep
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from dobot_util import Dobot
+
+# Global anchor for the matplotlib live tracking marker
+live_dot = None
+
 
 # Ported directly from HongboRobot_ActualRobot_AI_Points.m
 DRAWING_POINTS = np.array([
@@ -69,12 +59,12 @@ def feedback_loop(robot_inst):
         try:
             data = robot_inst.feedback.get_feedback()
             if data is not None:
-                # Store data in our global dictionary
-                robot_data["joints"] = data[0]['q_actual'][:4].tolist()
+                robot_data["joints"]    = data[0]['q_actual'][:4].tolist()
                 robot_data["cartesian"] = data[0]['tool_vector_actual'][:4].tolist()
-        except:
-            pass
-        sleep(0.02) # 50Hz frequency
+        except Exception as e:
+            # Log but don't crash — transient packet errors are expected
+            print(f"[FEEDBACK WARNING]: {e}")
+        sleep(0.02)  # 50Hz
 
 # Add this line where you initialize your robot connection:
 
@@ -85,36 +75,30 @@ class RobotManager:
         self.robot = Dobot(self.ip, urdf_file=urdf_path) #
 
     def boot_robot(self):
-        """Dashboard handshake for physical robot initialization"""
-        print("here")
-        self.robot.dashboard.ClearError()
-        self.robot.dashboard.EnableRobot()
+        """Dashboard handshake for physical robot initialization."""
+        print("Booting robot...")
+        self.robot.dashboard.clear_error()
+        sleep(0.5)
+        self.robot.dashboard.enable()
         print("Robot motors enabled.")
 
     def run_drawing(self):
         self.boot_robot()
         for i, pt in enumerate(DRAWING_POINTS):
-            # Penal height management: lift pen for move to start, lower for drawing
             z_height = 245.0 if i == 0 or i == (len(DRAWING_POINTS) - 1) else 220.0
-            
-            # Use original Ikinematics function
-            joints = Ikinematics(pt[0], pt[1], z=z_height) 
-            
-            # Send movement command to robot
+            # Ikinematics returns [[j1,j2,z,r]] — unpack with [0]
+            joints = Ikinematics(pt[0], pt[1], z=z_height)[0]
             self.robot.movement.joint_mov_j(joints)
             print(f"Drawing point {i+1}/{len(DRAWING_POINTS)}: {pt}")
-            
         self.robot.movement.sync()
         print("Drawing complete.")
 
 
-import numpy as np
-import math
-from time import sleep
-
 # Global variables for state tracking
 robot = None
 ROBOT_CONNECTED = False
+
+
 
 def initialize_robot(ip="192.168.1.6"):
     global robot, ROBOT_CONNECTED
@@ -127,18 +111,25 @@ def initialize_robot(ip="192.168.1.6"):
         robot = Dobot(ip, logging=True)
         
         # 2. Bootup Handshake (Critical for Physical Robot)
-        # Clear existing alarms and power on the motors
-        print("here2 ")
-        robot.dashboard.send_command("ClearError()")
-        sleep(0.5)
+        print("here2")
+        robot.dashboard.clear_error()       # Clear existing alarms/faults
+        sleep(0.3)
+        
+        robot.dashboard.continue_motion()   # Clear any active pause states
+        sleep(0.3)
+        
         print("Here3")
-        robot.dashboard.enable()
-        sleep(3)
+        robot.dashboard.enable()            # Power on the joints/motors
+        sleep(3.0)                          # Give the motors time to fully engage
         
         ROBOT_CONNECTED = True
         print("Robot connected and enabled successfully!")
+        
+        # Start the background telemetry data-stream thread
         threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
-        robot.dashboard.send_command("CoordinateL(0)")
+        
+        # Set to Cartesian/User coordinate system mode
+        # robot.dashboard.send_command("CoordinateL(0)")
 
         return True
 
@@ -150,17 +141,13 @@ def initialize_robot(ip="192.168.1.6"):
         return False
 
 # Call the function immediately to maintain original behavior
-initialize_robot("192.168.1.6")
+
 
 # Calculate inverse kinematics for a 2-link planar arm
 # --- CONFIGURATION TOGGLE ---
 # False = Original Way (Checks X and Y values directly)
 # True  = Newer Way (Checks calculated J1/J2 angles against degree limits)
-STRICT_JOINT_CHECKING = True 
-
-# CONFIGURATION TOGGLE
-# Set to True to allow coordinates like 300 or 400 by checking angles instead of mm
-STRICT_JOINT_CHECKING = True 
+STRICT_JOINT_CHECKING = True
 
 def Ikinematics(x, y, z=200.0, r=0.0):
     L1 = 200.0  # Length of first arm segment
@@ -219,42 +206,56 @@ def Ikinematics(x, y, z=200.0, r=0.0):
 # you will need to set STRICT_JOINT_CHECKING = True at the top.
 
 # ---- Robot Control Function ----
-def move_to_point(x, y, z=200, r=0):
-    if is_jogging:
-        messagebox.showwarning("Robot Busy", "Cannot send move command while jogging!")
-        return
-    
-    
-    try:
-        sols = Ikinematics(x, y, z, r)
-        
-        if not sols:
-            print(f"Target ({x}, {y}) is unreachable.")
-            return
 
-        # Now this unpacking will work because sols is [[...]]
-        j1, j2, z_target, r_target = sols[0]
-
-        if ROBOT_CONNECTED and robot:
-            robot.dashboard.enable()
-            print(f"Moving to ({x},{y}) | Joints: J1={j1:.1f}°, J2={j2:.1f}°")
-            robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
-            # --- ADD THESE TWO LINES TO SYNC ---
-            m_x, m_y, m_z = x, y, z 
-            # -----------------------------------
-        else:
-            print(f"DEMO MODE: Target ({x}, {y}) -> Joints J1={j1:.1f}°, J2={j2:.1f}°")
-            # --- ADD THESE TWO LINES TO SYNC ---
-            m_x, m_y, m_z = x, y, z 
-            # -----------------------------------
-    except Exception as e:
-        print(f"Robot command failed: {e}")
 
 
 # --- MANUAL CONTROL STATE ---
 m_x, m_y, m_z = 250.0, 0.0, 200.0 
-m_claw = 0 
+m_claw = 0
 
+
+
+def safe_move_to_point(x, y, z=200, r=0):
+    """Non-blocking wrapper around move_to_point.
+    Runs the move in a background thread so ensure_robot_enabled()'s
+    re-enable polling loop never freezes the Tkinter main thread."""
+    threading.Thread(target=move_to_point, args=(x, y, z, r), daemon=True).start()
+
+def move_to_point(x, y, z=200, r=0):
+    global m_x, m_y, m_z          # declare global so the assignment below persists
+    if is_jogging:
+        # messagebox must run on the main thread — schedule it there safely
+        root.after(0, lambda: messagebox.showwarning(
+            "Robot Busy", "Cannot send move command while jogging!"))
+        return
+
+    try:
+        sols = Ikinematics(x, y, z, r)
+        if not sols:
+            print(f"Target ({x}, {y}) is unreachable.")
+            return
+
+        j1, j2, z_target, r_target = sols[0]
+
+        if ROBOT_CONNECTED and robot:
+            # Re-enable only if the robot has fallen out of ENABLE state.
+            # On normal operation this is a fast no-op (mode is already 5).
+
+            print(f"Moving to ({x},{y}) | J1={j1:.1f}° J2={j2:.1f}° Z={z_target:.1f}")
+            move_error = robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
+            if move_error is not None:
+                print(f"[MOVE ERROR]: {move_error}")
+                return   # do not sync position — robot did not move
+            print(f"[MOVE SUCCESS]: ({x}, {y}, {z})")
+
+        else:
+            print(f"DEMO MODE: J1={j1:.1f}° J2={j2:.1f}° Z={z_target:.1f}")
+
+        # Only reached if the move succeeded (or demo mode) — safe to sync
+        m_x, m_y, m_z = x, y, z
+
+    except Exception as e:
+        print(f"Robot command failed: {e}")
 # --- NEW: Jogging Handlers ---
 # --- NEW AREA B: CONTINUOUS JOG HANDLERS ---
 # --- REFINED AREA B ---
@@ -283,20 +284,82 @@ def handle_jog_release(event):
 
 
 def handle_manual_z(dz):
-    if not manual_active.get(): return
-    global m_z
+    """Increments Z using the last known tracked position. Simple and safe."""
+    if not manual_active.get():
+        return
+    global m_x, m_y, m_z
     m_z = max(5.0, min(245.0, m_z + dz))
-    move_to_point(m_x, m_y, m_z)
+    print(f"Manual Z: moving to Z={m_z:.1f}")
+    safe_move_to_point(m_x, m_y, m_z)
+
+# =====================================================================
+# CLAW DUAL-OUTPUT CONFIGURATION & HANDLER
+# =====================================================================
+CONSTANT_PRESSURE_MODE = True  # False = Pulse Sequence Mode, True = Continuous Vacuum Pressure
+
+
+def set_claw_dual_output(state):
+    """
+    Controls the claw via DO1 and DO2 on the dashboard queue (port 29999).
+    Using DO (queue command) means the outputs are ordered and won't fire
+    simultaneously. DO1 and DO2 tested as the working claw ports.
+    state=1 → Active (grip), state=0 → Inactive (release).
+    """
+    state = 1 if int(state) >= 1 else 0
+    mode_label = "[VACUUM LATCH]" if CONSTANT_PRESSURE_MODE else "[PULSE SEQUENCE]"
+    state_label = "ACTIVE" if state == 1 else "INACTIVE"
+    print(f"{mode_label} Claw → {state_label}")
+
+    if not ROBOT_CONNECTED or not robot:
+        print(f"DEMO MODE: Claw → {state_label}")
+        return
+
+    try:
+        if CONSTANT_PRESSURE_MODE:
+            # Sustained latch: hold DO1 or DO2 continuously
+            if state == 1:
+                robot.dashboard.set_digital_output(1, 0)  # Open OFF
+                robot.dashboard.set_digital_output(2, 1)  # Close ON (latched)
+            else:
+                robot.dashboard.set_digital_output(1, 1)  # Open ON (latched)
+                robot.dashboard.set_digital_output(2, 0)  # Close OFF
+            sleep(0.5)
+        else:
+            # Pulse sequence: fire one direction then return to neutral
+            if state == 1:
+                robot.dashboard.set_digital_output(1, 1)  # Fire open
+                robot.dashboard.set_digital_output(2, 0)
+                sleep(0.5)
+                robot.dashboard.set_digital_output(1, 0)  # Return to neutral
+                robot.dashboard.set_digital_output(2, 1)
+                sleep(0.5)
+            else:
+                robot.dashboard.set_digital_output(1, 1)  # Rest/open position
+                robot.dashboard.set_digital_output(2, 0)
+                sleep(0.5)
+        print(f"[CLAW OK]: {state_label}")
+    except Exception as e:
+        print(f"[CLAW ERROR]: {e}")
+
+        
 
 def handle_manual_claw():
-    if not manual_active.get(): return
+    """Toggles the unified claw state manually via UI button click."""
+    if not manual_active.get():
+        print("Manual Mode disabled.")
+        return
     global m_claw
+
     m_claw = 1 if m_claw == 0 else 0
-    if ROBOT_CONNECTED and robot:
-        robot.dashboard.set_digital_output(17, m_claw)
-        print("Robot told to toggle claw")
-        print(m_claw)
-    claw_overdrive_btn.config(text=f"Claw: {'ON' if m_claw else 'OFF'}", bg="green" if m_claw else "red")
+
+    # Update the button immediately so the UI feels responsive
+    ui_text  = "ACTIVE"    if m_claw == 1 else "INACTIVE"
+    ui_color = "green"     if m_claw == 1 else "darkorange"
+    claw_overdrive_btn.config(text=f"Claw: {ui_text}", bg=ui_color)
+
+    # Run the hardware command in a background thread so the sleep() calls
+    # inside set_claw_dual_output do not freeze the Tkinter main thread
+    threading.Thread(target=set_claw_dual_output, args=(m_claw,), daemon=True).start()
 
 limit = 450
 x = np.linspace(-limit, limit, 1000)
@@ -333,6 +396,10 @@ zj_entry = None
 root = tk.Tk()
 root.title("Robotic Arm Control")
 
+# Initialize robot here — after root exists so any error dialogs can render,
+# and before status_label so ROBOT_CONNECTED is set when the label is created.
+initialize_robot("192.168.1.6")
+
 # INITIALIZE HERE - This prevents the "Too early" error
 global manual_active
 manual_active = tk.BooleanVar(value=False)
@@ -363,7 +430,7 @@ tk.Button(overdrive_frame, text="Z Up (W)", width=10, command=lambda: handle_man
 tk.Button(overdrive_frame, text="Z Down (S)", width=10, command=lambda: handle_manual_z(-10)).grid(row=1, column=1, padx=5)
 
 # Claw Toggle Button
-claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: OFF", width=12, bg="red", fg="white", 
+claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: INACTIVE", width=15, bg="darkorange", fg="white",
                                command=handle_manual_claw)
 claw_overdrive_btn.grid(row=1, column=2, padx=5)
 
@@ -545,53 +612,55 @@ def add_dobot_instructions():
     if not valid_points:
         messagebox.showwarning("No Points", "No valid points to send to robot!")
         return
-    
+
     def process_next_point():
-        if valid_points:
-            # Get the first point with its individual z-value and claw state
-            px, py, point_z, claw_state = valid_points[0]
-            x = round(py, 2)
-            y = -1 * round(px, 2)
-            if(claw_state == 1):
-                claw_text = "ON"
-            else:
-                claw_text = "OFF"
-            print(f"Sending point to robot: x={px:.2f}, y={py:.2f}, z={point_z:.2f}, claw={claw_text}")
-            
-            # Send point to robot with the point's specific z-value
+        if not valid_points:
+            print("All points complete.")
+            return
+
+        px, py, point_z, claw_state = valid_points[0]
+        # Coordinate frame rotation to match physical desk orientation
+        x = round(py, 2)
+        y = -1 * round(px, 2)
+        claw_text = "ON" if claw_state == 1 else "OFF"
+        print(f"Sending point: x={px:.2f}, y={py:.2f}, z={point_z:.2f}, claw={claw_text}")
+
+        def execute_point():
+            """Runs in background thread — move, sync, claw, then schedule next."""
             try:
+                # 1. Move to target
                 move_to_point(x, y, point_z, 0)
-                
-                # Control claw using digital output
+
+                # 2. Block until the physical robot actually stops moving.
+                #    This replaces the fixed 3-second delay and handles both
+                #    short moves (no wasted wait) and long moves (no early fire).
                 if ROBOT_CONNECTED and robot:
-                    if(claw_text == "ON"):
-                        robot.dashboard.set_digital_output(17, 1)
-                        sleep(1)  # Ensure claw has time to activate
-                        robot.dashboard.set_digital_output(17, 0)
-                    else:
-                        robot.dashboard.set_digital_output(17, 1)
-                        sleep(1)  # Ensure claw has time to deactivate
-                        robot.dashboard.set_digital_output(17, 0)
-                    print(f"Claw set to {claw_text}")
-                else:
-                    print(f"DEMO MODE: Would set claw to {claw_text}")
-                    
+                    err = robot.movement.sync()
+                    if err:
+                        print(f"[SYNC WARNING]: {err}")
+
+                # 3. Fire claw after confirmed arrival
+                set_claw_dual_output(claw_state)
+                print(f"Point complete: claw={claw_text}")
+
             except Exception as e:
-                print(f"Robot command failed: {e}")
-                messagebox.showerror("Robot Error", f"Failed to send command to robot: {e}")
+                print(f"Sequence failed: {e}")
+                root.after(0, lambda: messagebox.showerror(
+                    "Robot Error", f"Point sequence failed: {e}"))
                 return
-            
-            # Remove the point from GUI and internal lists
-            remove_first_point()
-            # Schedule the next point after 3 seconds
-            root.after(3000, process_next_point)
+
+            # 4. Remove point from GUI on the main thread, then trigger next
+            root.after(0, lambda: (remove_first_point(),
+                                   root.after(100, process_next_point)))
+
+        threading.Thread(target=execute_point, daemon=True).start()
 
     process_next_point()
 
 def dobot_error_reset():
     if ROBOT_CONNECTED and robot:
         try:
-            robot.dashboard.clear_errors()
+            robot.dashboard.clear_error()
             print("Robot errors cleared")
         except Exception as e:
             print(f"Failed to clear robot errors: {e}")
@@ -852,7 +921,7 @@ def onclick(event):
             valid_points.append((px, py, settings['z'], settings['claw']))
             scatter = ax.scatter(px, py, color='green', s=50)
             valid_scatters.append(scatter)
-            
+
             claw_text = "ON" if settings['claw'] == 1 else "OFF"
             points_listbox.insert(tk.END, f"{len(valid_points)}: ({px:.2f}, {py:.2f}, z={settings['z']:.1f}, claw={claw_text})")
         # If user cancelled, don't add the point
@@ -870,78 +939,77 @@ def remove_invalid_point(scatter):
 
 def manual_joint_move():
     global robot, ROBOT_CONNECTED
-    
-    # physical limits for M1 Pro
+
     J1_MIN, J1_MAX = -85.0, 85.0
     J2_MIN, J2_MAX = -135.0, 135.0
     Z_MIN, Z_MAX = 5.0, 245.0
-    J4_FIXED = -35.0 
+    J4_FIXED = -35.0
 
     try:
         j1 = float(j1_entry.get())
         j2 = float(j2_entry.get())
-        z = float(zj_entry.get())
+        z  = float(zj_entry.get())
+        claw_state = claw_var_j.get()   # read the joint-row claw radio button
 
         if not (J1_MIN <= j1 <= J1_MAX and J2_MIN <= j2 <= J2_MAX and Z_MIN <= z <= Z_MAX):
             messagebox.showerror("Out of Range", "Joint values outside limits!")
             return
 
-        if ROBOT_CONNECTED and robot:
-            robot.movement.joint_to_joint_move([j1, j2, z, J4_FIXED])
-        else:
-            messagebox.showinfo("Demo Mode", f"Moving to J1:{j1} J2:{j2} Z:{z}")
+        def execute():
+            if ROBOT_CONNECTED and robot:
+                print(f"Moving to J1:{j1}° J2:{j2}° Z:{z}mm")
+                move_error = robot.movement.joint_to_joint_move([j1, j2, z, J4_FIXED])
+                if move_error is not None:
+                    print(f"[JOINT MOVE ERROR]: {move_error}")
+                    return
+                print(f"[JOINT MOVE SUCCESS]: J1:{j1} J2:{j2} Z:{z}")
+                # Apply claw state after move completes
+                robot.movement.sync()
+                set_claw_dual_output(claw_state)
+            else:
+                print(f"DEMO MODE: J1:{j1} J2:{j2} Z:{z} Claw:{'ON' if claw_state else 'OFF'}")
+
+        # Run in background thread so ensure_robot_enabled and sync
+        # don't block the Tkinter main thread
+        threading.Thread(target=execute, daemon=True).start()
+
     except ValueError:
         messagebox.showerror("Input Error", "Please enter valid numbers for joints.")
 
 
-# Create a global variable for the 'live' marker so we can move it
-live_robot_dot = ax.plot([], [], 'ro', markersize=10, label='Live Robot')[0]
-
 def update_gui_from_feedback():
-    """Refreshes the plot and labels with the robot's actual position."""
-    if ROBOT_CONNECTED and "cartesian" in robot_data:
-        # 1. Get Cartesian X, Y from the real-time data
-        curr_x = robot_data["cartesian"][0]
-        curr_y = robot_data["cartesian"][1]
-        
-        # --- ROTATION FIX START ---
-        angle_deg = 90  # Change this value to -90, 180, etc. to align correctly
-        theta = np.radians(angle_deg)
-        
-        # Apply rotation matrix
-        rot_x = curr_x * np.cos(theta) - curr_y * np.sin(theta)
-        rot_y = curr_x * np.sin(theta) + curr_y * np.cos(theta)
-        # --- ROTATION FIX END ---
-        
-        # 2. Update the red dot on the plot using rotated coordinates
-        live_robot_dot.set_data([rot_x], [rot_y])
-        
-        # 3. Redraw only the idle parts of the canvas (prevents lag)
-        fig.canvas.draw_idle() 
+    """Refreshes the plot and labels with the robot's actual hardware position."""
+    global live_dot
+    
+    if ROBOT_CONNECTED and "cartesian" in robot_data and robot_data["cartesian"] is not None:
+        try:
+            # 1. Get Cartesian X, Y, Z from the real-time hardware telemetry
+            raw_x = robot_data["cartesian"][0]
+            raw_y = robot_data["cartesian"][1]
+            live_z = robot_data["cartesian"][2]
+            
+            # 2. Apply rotation matrix to align with your physical desk setup
+            angle_deg = 90  # Change to -90, 180, etc. based on your setup
+            theta = np.radians(angle_deg)
+            rot_x = raw_x * np.cos(theta) - raw_y * np.sin(theta)
+            rot_y = raw_x * np.sin(theta) + raw_y * np.cos(theta)
+            
+            # 3. Update the red tracking dot on the Matplotlib plot
+            if live_dot is not None:
+                live_dot.set_offsets(np.c_[rot_x, rot_y])
+            else:
+                live_dot = ax.scatter(rot_x, rot_y, color='red', s=100, zorder=5, label="Live Robot Pos")
+                ax.legend()
+                
+            # 4. Update the text status label with X, Y, and Z
+            if 'status_label' in globals() and status_label.winfo_exists():
+                status_label.config(text=f"Robot Connected | X: {raw_x:.1f} | Y: {raw_y:.1f} | Z: {live_z:.1f}")
+                
+            fig.canvas.draw_idle() 
+        except Exception as e:
+            print(f"GUI telemetry loop warning: {e}")
 
     # Schedule this function to run again in 100ms
-    root.after(100, update_gui_from_feedback)
-
-
-# Inside main.py - find update_gui_from_feedback()
-def update_gui_from_feedback():
-    global live_dot
-    # Get current feedback coordinates
-    raw_x, raw_y = robot_data["cartesian"][0], robot_data["cartesian"][1]
-
-    # --- APPLY ROTATION TRANSFORMATION ---
-    angle = np.radians(90)  # Change this to -90, 180, etc., based on your setup
-    # Standard 2D rotation formula
-    px = raw_x * np.cos(angle) - raw_y * np.sin(angle)
-    py = raw_x * np.sin(angle) + raw_y * np.cos(angle)
-
-    # Update the live tracking dot on the plot
-    if 'live_dot' in globals():
-        live_dot.set_offsets([px, py])
-    else:
-        live_dot = ax.scatter(px, py, color='red', s=100, label="Live Robot Pos")
-    
-    canvas.draw_idle()
     root.after(100, update_gui_from_feedback)
 
 # Connect the click event
