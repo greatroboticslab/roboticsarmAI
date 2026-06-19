@@ -98,50 +98,127 @@ class RobotManager:
 robot = None
 ROBOT_CONNECTED = False
 
+def _wait_for_dashboard(robot_obj, max_wait: float = 20.0):
+    """
+    Poll RobotMode() until the dashboard returns a valid RobotMode value.
+
+    Returns the RobotMode on success, or None if all attempts return -1.
+
+    The dashboard returns -1 for every command when:
+      (a) DobotStudio Pro is already connected and holding port 29999 —
+          the controller only allows one TCP client per port. Close it first.
+      (b) TCP/IP Remote Control mode is not enabled in DobotStudio Pro.
+          Open DobotStudio Pro → Settings → enable TCP/IP Remote Control,
+          then CLOSE DobotStudio Pro before running this script.
+      (c) The controller firmware is still booting — wait ~30 s and retry.
+    """
+    from time import time as _time
+    deadline = _time() + max_wait
+    attempt  = 0
+    while _time() < deadline:
+        attempt += 1
+        try:
+            mode = robot_obj.dashboard.robot_mode()
+            if isinstance(mode, RobotMode):
+                print(f"  Dashboard ready on attempt {attempt} — mode: {mode.name}")
+                return mode
+            print(f"  Attempt {attempt:02d}: dashboard returned {mode}, retrying…")
+        except Exception as exc:
+            print(f"  Attempt {attempt:02d}: probe error — {exc}")
+        sleep(0.5)
+    return None
+
+
 def initialize_robot(ip="192.168.1.6"):
     global robot, ROBOT_CONNECTED
 
     try:
-        print(f"Attempting to connect to robot at {ip}...")
-
+        print(f"\nConnecting to {ip}…")
         robot = Dobot(ip, logging=True)
 
-        # Clear any existing alarms then enable.
-        # The greeting fix in util.py means these now read their own responses
-        # cleanly instead of the connection greeting.
-        err = robot.dashboard.clear_error()
-        print(f"  ClearError: {err if err else 'OK'}")
-        sleep(0.5)
+        # ── 1. Confirm the dashboard is actually accepting commands ────────
+        # If RobotMode() keeps returning -1 the dashboard port is blocked.
+        # This must be resolved externally before the script can proceed.
+        print("  Probing dashboard (up to 20 s)…")
+        mode = _wait_for_dashboard(robot, max_wait=20.0)
 
-        err = robot.dashboard.enable()
-        print(f"  EnableRobot: {err if err else 'OK'}")
+        if mode is None:
+            raise RuntimeError(
+                "Dashboard returned -1 for every RobotMode() query over 20 s.\n"
+                "Most likely causes:\n"
+                "  1. DobotStudio Pro is open and connected — close it, then retry.\n"
+                "  2. TCP/IP Remote Control is not enabled:\n"
+                "       Open DobotStudio Pro → Settings → enable TCP/IP Remote Control\n"
+                "       then CLOSE DobotStudio Pro before running this script.\n"
+                "  3. Controller still booting — wait 30 s and try again."
+            )
 
-        # Poll RobotMode until the robot reaches ENABLE (mode 5).
-        # This replaces the blind sleep(3) and means the rest of the program
-        # only continues once the robot is genuinely ready to accept motion.
-        print("  Waiting for robot to reach ENABLE state...")
-        for attempt in range(30):            # 30 x 0.5s = 15 second timeout
+        # ── 2. Clear alarms only when the robot IS in ERROR state ─────────
+        # Calling ClearError() when there are no alarms returns -1 on many
+        # firmware versions.  Only call it when mode tells us there is an error.
+        if mode == RobotMode.ERROR:
+            print("  Robot in ERROR state — clearing alarms…")
+            err = robot.dashboard.clear_error()
+            print(f"  ClearError : {err if err else 'OK'}")
+            sleep(0.3)
+
+            # Required by the protocol guide: restart the motion queue after
+            # clearing errors.  Without this every queued motion/IO command
+            # returns -1 because the queue stays paused.
+            err = robot.dashboard.continue_motion()
+            print(f"  Continue   : {err if err else 'OK'}")
+            sleep(0.3)
+
+            # Verify the error actually cleared — some hardware faults need a
+            # controller restart and cannot be cleared via software alone.
+            mode = robot.dashboard.robot_mode()
+            if mode == RobotMode.ERROR:
+                raise RuntimeError(
+                    "ClearError() ran but robot is still in ERROR state.\n"
+                    "The alarm cannot be cleared via software.\n"
+                    "Check the indicator light and DobotStudio Pro alarm log,\n"
+                    "then resolve the fault manually before retrying."
+                )
+
+        # ── 3. Enable ─────────────────────────────────────────────────────
+        if mode != RobotMode.ENABLE:
+            print(f"  Enabling from {mode.name}…")
+            err = robot.dashboard.enable()
+            print(f"  EnableRobot: {err if err else 'OK'}")
+        else:
+            print("  Already ENABLED — skipping EnableRobot().")
+
+        # ── 4. Wait for mode 5 ────────────────────────────────────────────
+        print("  Waiting for ENABLE state…")
+        for attempt in range(30):
             sleep(0.5)
             try:
                 mode = robot.dashboard.robot_mode()
-                print(f"  Mode check {attempt + 1}: {mode}")
-                if mode == 5:                # 5 = RobotMode.ENABLE
+                name = mode.name if isinstance(mode, RobotMode) else str(mode)
+                print(f"  Mode check {attempt + 1:02d}: {name}")
+                if mode == RobotMode.ENABLE:
                     break
-            except Exception as e:
-                print(f"  Mode check error: {e}")
+            except Exception as exc:
+                print(f"  Mode check error: {exc}")
         else:
-            raise RuntimeError("Robot did not reach ENABLE state within 15 seconds. "
-                               "Check for alarms or press the E-stop release.")
+            raise RuntimeError(
+                "Robot did not reach ENABLE state within 15 s.\n"
+                "Check the physical E-stop and indicator light."
+            )
+
+        # ── 5. Settle ─────────────────────────────────────────────────────
+        # Some firmware versions need ~500 ms after reporting mode 5 before
+        # they accept the first motion command without returning -1.
+        sleep(0.5)
 
         ROBOT_CONNECTED = True
-        print("Robot enabled and ready — jogging and moves available immediately.")
+        print("Robot ready.\n")
         threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
         return True
 
-    except Exception as e:
-        print(f"Robot connection failed: {e}")
-        print("Running in demo mode.")
-        robot = None
+    except Exception as exc:
+        print(f"\nConnection failed:\n  {exc}\nFalling back to demo mode.\n")
+        robot           = None
         ROBOT_CONNECTED = False
         return False
 
@@ -160,10 +237,13 @@ def ensure_robot_enabled():
         print(f"[ROBOT] Not in ENABLE state (mode={mode}), re-enabling...")
         robot.dashboard.clear_error()
         sleep(0.3)
+        robot.dashboard.continue_motion()   # restart paused motion queue
+        sleep(0.3)
         robot.dashboard.enable()
         for _ in range(10):     # Wait up to 5 seconds
             sleep(0.5)
             if robot.dashboard.robot_mode() == 5:
+                sleep(0.3)      # brief settle before accepting motion
                 print("[ROBOT] Re-enabled successfully.")
                 return True
         print("[ROBOT] Failed to re-enable.")

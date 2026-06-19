@@ -30,7 +30,11 @@ def initialize_robot(ip: str = "192.168.1.6") -> bool:
 
         err = _robot.dashboard.clear_error()
         print(f"  ClearError  : {err if err else 'OK'}")
-        sleep(0.5)
+        sleep(0.3)
+
+        err = _robot.dashboard.continue_motion()
+        print(f"  Continue    : {err if err else 'OK'}")
+        sleep(0.3)
 
         err = _robot.dashboard.enable()
         print(f"  EnableRobot : {err if err else 'OK'}")
@@ -51,6 +55,7 @@ def initialize_robot(ip: str = "192.168.1.6") -> bool:
                 "Check for alarms or press the E-stop release."
             )
 
+        sleep(0.5)   # settle before first motion command
         _robot_connected = True
         print("Robot ready.")
         return True
