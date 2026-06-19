@@ -67,11 +67,11 @@ class DobotSocketConnection:
         """
         Send *cmd* over the socket and return (error, return_value).
 
-        The newline terminator ('\\n') is appended automatically because newer
-        DobotStudio Pro firmware versions require it.  The controller ignores
-        it on older versions, so it is always safe to include.
+        No newline is appended — the Dobot TCP/IP protocol specification does
+        not define a command terminator, and adding one causes some firmware
+        versions to return -1 for every command.
         """
-        raw_cmd = (cmd + '\n').encode("utf-8")
+        raw_cmd = cmd.encode("utf-8")
         self.socket.sendall(raw_cmd)
         log.debug('Sent command: "%s"', cmd)
         return self._await_reply()
@@ -102,7 +102,8 @@ class DobotSocketConnection:
             log.warning("Timed out waiting for response terminator; parsing what we have")
 
         response = raw.decode("utf-8", errors="replace").strip()
-        log.debug('Received response: "%s"', response)
+        log.debug('Raw bytes received: %s', raw)
+        log.debug('Decoded response:   "%s"', response)
 
         return self._parse_response(response)
 

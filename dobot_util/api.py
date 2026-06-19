@@ -386,14 +386,25 @@ class Dashboard(DobotSocketConnection):
             return opt_error
 
     def set_digital_output(self, index: int, val: int) -> Optional[DobotError]:
-        """Immediate DO command (sent directly, not via motion queue)."""
+        """
+        Queued DO command via the dashboard port (29999).
+
+        DO() / ToolDO() are queue commands — they enter the dashboard command
+        queue and fire in the order they were sent.  This is intentional: the
+        claw pulse sequence in set_claw_dual_output relies on this ordering
+        together with sleep() calls to produce a clean two-step signal.
+
+        DOExecute() / ToolDOExecute() are the immediate variants but can
+        return -1 in states where the robot isn't fully accepting instant IO.
+        Keeping DO() here matches the original tested behaviour.
+        """
         index = clamp(index, 1, 20)
         val   = clamp(val,   0,  1)
         if index >= 17:
             tool_index = index - 16
-            opt_error, _ = self.send_command(f"ToolDOExecute({tool_index}, {val})")
+            opt_error, _ = self.send_command(f"ToolDO({tool_index}, {val})")
         else:
-            opt_error, _ = self.send_command(f"DOExecute({index}, {val})")
+            opt_error, _ = self.send_command(f"DO({index}, {val})")
         return opt_error
 
     # ------------------------------------------------------------------
