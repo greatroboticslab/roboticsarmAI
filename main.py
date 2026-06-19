@@ -129,7 +129,7 @@ def initialize_robot(ip="192.168.1.6"):
         threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
         
         # Set to Cartesian/User coordinate system mode
-        robot.dashboard.send_command("CoordinateL(0)")
+        # robot.dashboard.send_command("CoordinateL(0)")
 
         return True
 
@@ -141,7 +141,7 @@ def initialize_robot(ip="192.168.1.6"):
         return False
 
 # Call the function immediately to maintain original behavior
-initialize_robot("192.168.1.6")
+
 
 # Calculate inverse kinematics for a 2-link planar arm
 # --- CONFIGURATION TOGGLE ---
@@ -240,9 +240,6 @@ def move_to_point(x, y, z=200, r=0):
         if ROBOT_CONNECTED and robot:
             # Re-enable only if the robot has fallen out of ENABLE state.
             # On normal operation this is a fast no-op (mode is already 5).
-            if not ensure_robot_enabled():
-                print("[MOVE BLOCKED] Robot not in ENABLE state.")
-                return
 
             print(f"Moving to ({x},{y}) | J1={j1:.1f}° J2={j2:.1f}° Z={z_target:.1f}")
             move_error = robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
@@ -298,7 +295,7 @@ def handle_manual_z(dz):
 # =====================================================================
 # CLAW DUAL-OUTPUT CONFIGURATION & HANDLER
 # =====================================================================
-CONSTANT_PRESSURE_MODE = False  # False = Pulse Sequence Mode, True = Continuous Vacuum Pressure
+CONSTANT_PRESSURE_MODE = True  # False = Pulse Sequence Mode, True = Continuous Vacuum Pressure
 
 
 def set_claw_dual_output(state):
@@ -960,10 +957,6 @@ def manual_joint_move():
 
         def execute():
             if ROBOT_CONNECTED and robot:
-                if not ensure_robot_enabled():
-                    root.after(0, lambda: messagebox.showerror(
-                        "Robot Not Ready", "Robot is not in ENABLE state."))
-                    return
                 print(f"Moving to J1:{j1}° J2:{j2}° Z:{z}mm")
                 move_error = robot.movement.joint_to_joint_move([j1, j2, z, J4_FIXED])
                 if move_error is not None:
