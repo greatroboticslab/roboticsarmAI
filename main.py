@@ -53,6 +53,12 @@ robot_data = {
 }
 is_jogging = False
 
+# --- Drawing Mode State ---
+drawing_active          = False  # True while the drawing sequence is running
+drawing_stop_flag       = False  # Set to True to request an early stop
+drawing_preview_artist  = None   # Matplotlib Line2D for the preview path
+_drawing_preview_extras = []     # Scatter markers added alongside the preview line
+
 def feedback_loop(robot_inst):
     """Thread function to constantly read Port 30004."""
     while True:
@@ -282,6 +288,162 @@ def handle_jog_release(event):
         is_jogging = False
 
 
+# =====================================================================
+# DRAWING MODE
+# =====================================================================
+
+# Coordinate transform helpers
+# DRAWING_POINTS are stored in robot-frame (X_robot, Y_robot).
+# The GUI plot uses a 90° rotated frame:  gui_x = -Y_robot, gui_y = X_robot
+# (inverse of add_dobot_instructions' rotation  x_robot=py_gui, y_robot=-px_gui)
+
+def _drawing_pts_to_gui():
+    """Convert DRAWING_POINTS (robot frame) to GUI plot coordinates for preview."""
+    gui_xs = [-pt[1] for pt in DRAWING_POINTS]
+    gui_ys = [ pt[0] for pt in DRAWING_POINTS]
+    return gui_xs, gui_ys
+
+
+def toggle_drawing_preview():
+    """Toggle the drawing path preview overlay on the workspace plot."""
+    global drawing_preview_artist, _drawing_preview_extras
+    if drawing_preview_artist is not None:
+        # Remove the path line and the start/end markers
+        drawing_preview_artist.remove()
+        drawing_preview_artist = None
+        for artist in _drawing_preview_extras:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        _drawing_preview_extras = []
+        draw_preview_btn.config(text="Preview Preset Path", bg="SystemButtonFace")
+    else:
+        # Draw the path line + start/end markers
+        gui_xs, gui_ys = _drawing_pts_to_gui()
+        (line,) = ax.plot(gui_xs, gui_ys, 'b--', linewidth=1, alpha=0.6,
+                          label="Drawing Path")
+        sc_start = ax.scatter(gui_xs[0],  gui_ys[0],  color='lime',   s=80,
+                              zorder=6, label="Draw Start")
+        sc_end   = ax.scatter(gui_xs[-1], gui_ys[-1], color='magenta', s=80,
+                              zorder=6, label="Draw End")
+        ax.legend(loc='lower right', fontsize=7)
+        drawing_preview_artist  = line
+        _drawing_preview_extras = [sc_start, sc_end]
+        draw_preview_btn.config(text="Hide Preset Path", bg="lightblue")
+    canvas.draw()
+
+
+def _drawing_thread():
+    """
+    Background thread that executes the DRAWING_POINTS sequence.
+
+    Z logic (matches the original RobotManager.run_drawing):
+      • First point  → z=245 (travel height, approach from above)
+      • All other pts → z=220 (pen-down drawing height)
+      • Last point   → z=245 (lift off after drawing)
+    """
+    global drawing_active, drawing_stop_flag
+
+    total = len(DRAWING_POINTS)
+
+    def _update_ui(text, color="black"):
+        root.after(0, lambda: draw_progress_label.config(text=text, fg=color))
+
+    def _set_btn_state(drawing):
+        """Switch the button between Run and Stop on the main thread."""
+        if drawing:
+            root.after(0, lambda: draw_start_btn.config(
+                text="■ Stop Preset Drawing", bg="tomato", command=stop_drawing))
+        else:
+            root.after(0, lambda: draw_start_btn.config(
+                text="▶ Run Preset Drawing", bg="lightgreen", command=start_drawing))
+
+    try:
+        _set_btn_state(True)
+        _update_ui("Preset: Starting…", "blue")
+
+        for i, pt in enumerate(DRAWING_POINTS):
+            if drawing_stop_flag:
+                _update_ui("Preset: Stopped by user", "orange")
+                break
+
+            # Z height: lift on first and last point only
+            if i == 0 or i == total - 1:
+                z_height = 245.0
+            else:
+                z_height = 220.0
+
+            try:
+                sols = Ikinematics(pt[0], pt[1], z=z_height)
+                if not sols:
+                    print(f"[PRESET SKIP] Point {i+1} unreachable: {pt}")
+                    continue
+                joints = sols[0]  # [j1, j2, z, r]
+            except ValueError as e:
+                print(f"[PRESET SKIP] IK failed for point {i+1} {pt}: {e}")
+                continue
+
+            if ROBOT_CONNECTED and robot:
+                err = robot.movement.joint_mov_j(joints)
+                if err is not None:
+                    print(f"[PRESET ERROR] Move failed at point {i+1}: {err}")
+                    _update_ui(f"Preset: Error at pt {i+1}", "red")
+                    break
+            else:
+                print(f"DEMO MODE: Preset pt {i+1}/{total}  "
+                      f"J1={joints[0]:.1f}° J2={joints[1]:.1f}° Z={joints[2]:.1f}")
+
+            pct = int((i + 1) / total * 100)
+            _update_ui(f"Preset: {i+1}/{total}  ({pct}%)", "blue")
+
+        else:
+            # Loop completed without a break → finished normally
+            if ROBOT_CONNECTED and robot:
+                robot.movement.sync()
+            _update_ui("Preset: Complete ✓", "green")
+
+    except Exception as exc:
+        print(f"[PRESET EXCEPTION]: {exc}")
+        _update_ui(f"Preset: Error – {exc}", "red")
+
+    finally:
+        drawing_active    = False
+        drawing_stop_flag = False
+        _set_btn_state(False)
+
+
+def start_drawing():
+    """Called by the 'Start Drawing' button."""
+    global drawing_active, drawing_stop_flag
+
+    if is_jogging:
+        messagebox.showwarning("Robot Busy", "Stop jogging before starting drawing mode.")
+        return
+
+    if drawing_active:
+        messagebox.showinfo("Already Running", "Drawing sequence is already in progress.")
+        return
+
+    if not ROBOT_CONNECTED:
+        ans = messagebox.askyesno(
+            "Demo Mode",
+            "Robot not connected — run drawing in DEMO MODE?\n"
+            "(Joint targets will be printed to console only.)")
+        if not ans:
+            return
+
+    drawing_active    = True
+    drawing_stop_flag = False
+    threading.Thread(target=_drawing_thread, daemon=True).start()
+
+
+def stop_drawing():
+    """Called by the 'Stop Drawing' button."""
+    global drawing_stop_flag
+    drawing_stop_flag = True
+    draw_progress_label.config(text="Preset: Stopping…", fg="orange")
+
 
 def handle_manual_z(dz):
     """Increments Z using the last known tracked position. Simple and safe."""
@@ -433,6 +595,32 @@ tk.Button(overdrive_frame, text="Z Down (S)", width=10, command=lambda: handle_m
 claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: INACTIVE", width=15, bg="darkorange", fg="white",
                                command=handle_manual_claw)
 claw_overdrive_btn.grid(row=1, column=2, padx=5)
+
+# --- ROW 2: PRESET DRAWING SECTION HEADER ---
+tk.Frame(overdrive_frame, height=1, bg="gray").grid(
+    row=2, column=0, columnspan=3, sticky="ew", pady=(6, 2))
+
+tk.Label(
+    overdrive_frame,
+    text="Preset Drawing  —  traces a fixed built-in image path",
+    font=("Arial", 8, "italic"), fg="gray"
+).grid(row=3, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
+
+# --- ROW 3: PRESET DRAWING CONTROLS ---
+draw_preview_btn = tk.Button(
+    overdrive_frame, text="Preview Preset Path", width=16,
+    command=toggle_drawing_preview)
+draw_preview_btn.grid(row=4, column=0, padx=5, pady=2)
+
+draw_start_btn = tk.Button(
+    overdrive_frame, text="▶ Run Preset Drawing", width=18,
+    bg="lightgreen", command=start_drawing)
+draw_start_btn.grid(row=4, column=1, padx=5, pady=2)
+
+draw_progress_label = tk.Label(
+    overdrive_frame, text="Preset: Ready",
+    font=("Arial", 9), fg="gray", width=22, anchor="w")
+draw_progress_label.grid(row=4, column=2, padx=5, pady=2)
 
 # Main Title
 tk.Label(manual_frame, text="Manual Control Interface", font=("Arial", 12, "bold")).pack(pady=5)
@@ -902,12 +1090,15 @@ def get_point_settings(px, py):
 # Event handler for clicking on the plot
 def onclick(event):
 
-    # --- ADD THIS CHECK AT THE VERY TOP ---
+    # --- GUARD: ignore clicks while jogging or drawing ---
     global is_jogging
     if is_jogging:
         print("Click ignored: Robot is currently jogging.")
-        return 
-    # --------------------------------------
+        return
+    if drawing_active:
+        print("Click ignored: Drawing mode is active.")
+        return
+    # -----------------------------------------------------
 
     if event.xdata is None or event.ydata is None:
         return
