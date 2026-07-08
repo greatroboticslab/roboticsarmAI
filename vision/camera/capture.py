@@ -24,6 +24,7 @@ vision/config.py before relying on them in the real pipeline.
 from __future__ import annotations
 import os
 import uuid
+import threading
 
 try:
     import cv2
@@ -44,6 +45,24 @@ IMAGES_ROOT = "images/objects"
 # calls rather than reopening the device every capture (slow + some UVC
 # cameras don't like being reopened rapidly).
 _capture_handles = {}
+
+# CONCURRENCY NOTE: main.py has two independent triggers that both call
+# into this module from their own background thread - the full
+# pickup-and-photograph pipeline, and the standalone "Capture Photo"
+# button. cv2.VideoCapture is not safe to .read() from two threads at
+# once on the same handle (can corrupt frames or crash the backend). A
+# per-camera-index lock below serializes access to a given camera while
+# still letting station and wrist cameras (different indices) be used
+# independently.
+_capture_locks = {}
+_locks_guard = threading.Lock()
+
+
+def _get_lock(index: int) -> threading.Lock:
+    with _locks_guard:
+        if index not in _capture_locks:
+            _capture_locks[index] = threading.Lock()
+        return _capture_locks[index]
 
 
 def _require_cv2():
@@ -70,8 +89,10 @@ def _get_handle(index: int):
 
 
 def _capture_from_index(index: int):
-    cap = _get_handle(index)
-    ok, frame = cap.read()
+    lock = _get_lock(index)
+    with lock:
+        cap = _get_handle(index)
+        ok, frame = cap.read()
     if not ok or frame is None:
         raise RuntimeError(
             f"Camera at index {index} did not return a frame. Check the "
