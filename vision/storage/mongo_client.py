@@ -88,6 +88,32 @@ def save_image_record(image_id: str, sample_id: str, image_path: str,
     })
 
 
+def list_recent_samples(limit: int = 30) -> list:
+    """
+    Read-side query for the GUI gallery panel: most recent "objects"
+    samples, newest first. Returns 4DAI's standard sample document shape
+    ({_id, date, data}).
+    """
+    db = _get_db()
+    cursor = (
+        db[MONGO_OBJECTS_COLLECTION]
+        .find({})
+        .sort("date", -1)
+        .limit(limit)
+    )
+    return list(cursor)
+
+
+def get_images_for_sample(sample_id: str) -> list:
+    """
+    Read-side query: all image documents linked to one sample_id, for
+    displaying thumbnails in the GUI gallery panel.
+    """
+    db = _get_db()
+    cursor = db[MONGO_IMAGES_COLLECTION].find({"sample_id": sample_id})
+    return list(cursor)
+
+
 if __name__ == "__main__":
     print(f"Testing connection to MongoDB at {MONGO_URI} ...")
     db = _get_db()
