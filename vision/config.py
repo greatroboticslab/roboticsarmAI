@@ -1,0 +1,80 @@
+"""
+[WIRED] Central configuration for the vision/identification pipeline.
+
+Everything here is a plain constant so it can be imported anywhere
+(main.py, services/*, camera/*) without circular-import issues.
+"""
+
+# ---------------------------------------------------------------------------
+# Photo station — fixed pose the arm returns to before photographing.
+#
+# TEMPORARY: currently near full extension (close to the IK singularity
+# boundary discussed earlier). Fine for early wiring/testing, but should be
+# moved to a corner position (lower radius, off-axis) before relying on it
+# for repeated/production capture. Swap the values below when ready — every
+# consumer of PHOTO_STATION (main.py's yellow dot, the capture pipeline)
+# will pick up the change automatically.
+# ---------------------------------------------------------------------------
+PHOTO_STATION = {
+    "x": 0.0,
+    "y": 390.0,
+    "z": 150.0,
+    "r": 0.0,
+}
+
+# Corner candidate to switch to later (kept here for convenience):
+# PHOTO_STATION = {"x": 150.0, "y": 200.0, "z": 150.0, "r": 0.0}
+
+# Number of J4 rotation steps for a full 360 degree view during capture.
+NUM_VIEWS = 6
+
+# Small settle delay (seconds) after each J4 step before capturing a frame,
+# to avoid motion blur from residual swing of the held object.
+VIEW_SETTLE_SECONDS = 0.2
+
+# ---------------------------------------------------------------------------
+# Camera — USB (OpenCV / UVC). Device indices are OS-assigned by plug order;
+# confirm with the helper script mentioned in vision/camera/capture.py
+# (list_camera_indices()) once both cameras are plugged in.
+# ---------------------------------------------------------------------------
+STATION_CAMERA_INDEX = 0
+WRIST_CAMERA_INDEX = 1
+CAMERA_FRAME_WIDTH = 1280
+CAMERA_FRAME_HEIGHT = 720
+
+# ---------------------------------------------------------------------------
+# Laser — USB serial (pyserial, already in requirements.txt). Most USB
+# laser modules/relay boards enumerate as a plain serial port and accept a
+# short text or byte command to switch on/off.
+#
+# CONFIRM BEFORE USE:
+#   1. Plug in the laser, check Device Manager (Windows) for its COM port,
+#      or `ls /dev/tty*` (Linux/Mac) before/after plugging it in.
+#   2. Check any datasheet/manual for the exact ON/OFF command + baud rate.
+#      b"1"/b"0" and b"ON\n"/b"OFF\n" are both common defaults for cheap
+#      relay-style modules - try the simplest first.
+# ---------------------------------------------------------------------------
+LASER_SERIAL_PORT = "COM3"        # Windows placeholder; e.g. "/dev/ttyUSB0" on Linux/Mac
+LASER_BAUD_RATE = 9600
+LASER_ON_COMMAND = b"1"
+LASER_OFF_COMMAND = b"0"
+
+# ---------------------------------------------------------------------------
+# MQTT broker placeholders.
+# ---------------------------------------------------------------------------
+MQTT_BROKER_HOST = "localhost"
+MQTT_BROKER_PORT = 1883
+
+TOPIC_ARM_OBJECT_CAPTURED = "arm/object/captured"
+TOPIC_VISION_RESULT = "vision/result"
+TOPIC_ARM_COMMAND = "arm/command"
+
+# ---------------------------------------------------------------------------
+# MongoDB placeholders — same database 4DAI's server uses, so 4DAI's
+# view_data.py can browse the "objects" category with zero changes on
+# its side.
+# ---------------------------------------------------------------------------
+MONGO_URI = "mongodb://localhost:27017"
+MONGO_DB_NAME = "Collections"
+MONGO_OBJECTS_COLLECTION = "objects"
+MONGO_IMAGES_COLLECTION = "images"
