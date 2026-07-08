@@ -9,8 +9,19 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from dobot_util import Dobot
 
+from vision.config import PHOTO_STATION, NUM_VIEWS, VIEW_SETTLE_SECONDS
+from vision.camera.capture import (
+    capture_station_frame,
+    capture_wrist_frame,
+    save_image,
+    new_sample_id,
+)
+from vision.messaging.publisher import publish_captured
+
 # Global anchor for the matplotlib live tracking marker
 live_dot = None
+# Global anchor for the fixed photo-station marker (yellow dot)
+photo_station_dot = None
 
 
 # Ported directly from HongboRobot_ActualRobot_AI_Points.m
@@ -52,12 +63,6 @@ robot_data = {
     
 }
 is_jogging = False
-
-# --- Drawing Mode State ---
-drawing_active          = False  # True while the drawing sequence is running
-drawing_stop_flag       = False  # Set to True to request an early stop
-drawing_preview_artist  = None   # Matplotlib Line2D for the preview path
-_drawing_preview_extras = []     # Scatter markers added alongside the preview line
 
 def feedback_loop(robot_inst):
     """Thread function to constantly read Port 30004."""
@@ -282,167 +287,31 @@ def handle_jog_press(axis_cmd):
         is_jogging = True
 
 def handle_jog_release(event):
-    global is_jogging
+    global is_jogging, m_x, m_y, m_z
     if ROBOT_CONNECTED:
         robot.movement.safe_move_jog("stop", [])
         is_jogging = False
 
+        # --- SYNC FIX ---
+        # m_x/m_y/m_z ("manual control state") previously only got updated
+        # inside move_to_point(). Jogging bypasses move_to_point entirely
+        # (it calls safe_move_jog directly), so after a keyboard jog these
+        # stayed pointing at wherever the arm was *before* jogging. The next
+        # button that reused them — e.g. "Manual Z" (handle_manual_z) or
+        # any future move computed from m_x/m_y — would then jump the arm
+        # back toward that stale pre-jog position instead of continuing
+        # from where the jog actually left it.
+        #
+        # Fix: pull the robot's real, live telemetry (already tracked at
+        # 50Hz by feedback_loop() into robot_data["cartesian"], the same
+        # source the red tracking dot uses) and use it to resync m_x/m_y/m_z
+        # the moment jogging stops.
+        cart = robot_data.get("cartesian")
+        if cart and len(cart) >= 3:
+            m_x, m_y, m_z = cart[0], cart[1], cart[2]
+            print(f"[JOG SYNC] Manual position resynced to actual pose: "
+                  f"X={m_x:.1f} Y={m_y:.1f} Z={m_z:.1f}")
 
-# =====================================================================
-# DRAWING MODE
-# =====================================================================
-
-# Coordinate transform helpers
-# DRAWING_POINTS are stored in robot-frame (X_robot, Y_robot).
-# The GUI plot uses a 90° rotated frame:  gui_x = -Y_robot, gui_y = X_robot
-# (inverse of add_dobot_instructions' rotation  x_robot=py_gui, y_robot=-px_gui)
-
-def _drawing_pts_to_gui():
-    """Convert DRAWING_POINTS (robot frame) to GUI plot coordinates for preview."""
-    gui_xs = [-pt[1] for pt in DRAWING_POINTS]
-    gui_ys = [ pt[0] for pt in DRAWING_POINTS]
-    return gui_xs, gui_ys
-
-
-def toggle_drawing_preview():
-    """Toggle the drawing path preview overlay on the workspace plot."""
-    global drawing_preview_artist, _drawing_preview_extras
-    if drawing_preview_artist is not None:
-        # Remove the path line and the start/end markers
-        drawing_preview_artist.remove()
-        drawing_preview_artist = None
-        for artist in _drawing_preview_extras:
-            try:
-                artist.remove()
-            except Exception:
-                pass
-        _drawing_preview_extras = []
-        draw_preview_btn.config(text="Preview Preset Path", bg="SystemButtonFace")
-    else:
-        # Draw the path line + start/end markers
-        gui_xs, gui_ys = _drawing_pts_to_gui()
-        (line,) = ax.plot(gui_xs, gui_ys, 'b--', linewidth=1, alpha=0.6,
-                          label="Drawing Path")
-        sc_start = ax.scatter(gui_xs[0],  gui_ys[0],  color='lime',   s=80,
-                              zorder=6, label="Draw Start")
-        sc_end   = ax.scatter(gui_xs[-1], gui_ys[-1], color='magenta', s=80,
-                              zorder=6, label="Draw End")
-        ax.legend(loc='lower right', fontsize=7)
-        drawing_preview_artist  = line
-        _drawing_preview_extras = [sc_start, sc_end]
-        draw_preview_btn.config(text="Hide Preset Path", bg="lightblue")
-    canvas.draw()
-
-
-def _drawing_thread():
-    """
-    Background thread that executes the DRAWING_POINTS sequence.
-
-    Z logic (matches the original RobotManager.run_drawing):
-      • First point  → z=245 (travel height, approach from above)
-      • All other pts → z=220 (pen-down drawing height)
-      • Last point   → z=245 (lift off after drawing)
-    """
-    global drawing_active, drawing_stop_flag
-
-    total = len(DRAWING_POINTS)
-
-    def _update_ui(text, color="black"):
-        root.after(0, lambda: draw_progress_label.config(text=text, fg=color))
-
-    def _set_btn_state(drawing):
-        """Switch the button between Run and Stop on the main thread."""
-        if drawing:
-            root.after(0, lambda: draw_start_btn.config(
-                text="■ Stop Preset Drawing", bg="tomato", command=stop_drawing))
-        else:
-            root.after(0, lambda: draw_start_btn.config(
-                text="▶ Run Preset Drawing", bg="lightgreen", command=start_drawing))
-
-    try:
-        _set_btn_state(True)
-        _update_ui("Preset: Starting…", "blue")
-
-        for i, pt in enumerate(DRAWING_POINTS):
-            if drawing_stop_flag:
-                _update_ui("Preset: Stopped by user", "orange")
-                break
-
-            # Z height: lift on first and last point only
-            if i == 0 or i == total - 1:
-                z_height = 245.0
-            else:
-                z_height = 220.0
-
-            try:
-                sols = Ikinematics(pt[0], pt[1], z=z_height)
-                if not sols:
-                    print(f"[PRESET SKIP] Point {i+1} unreachable: {pt}")
-                    continue
-                joints = sols[0]  # [j1, j2, z, r]
-            except ValueError as e:
-                print(f"[PRESET SKIP] IK failed for point {i+1} {pt}: {e}")
-                continue
-
-            if ROBOT_CONNECTED and robot:
-                err = robot.movement.joint_mov_j(joints)
-                if err is not None:
-                    print(f"[PRESET ERROR] Move failed at point {i+1}: {err}")
-                    _update_ui(f"Preset: Error at pt {i+1}", "red")
-                    break
-            else:
-                print(f"DEMO MODE: Preset pt {i+1}/{total}  "
-                      f"J1={joints[0]:.1f}° J2={joints[1]:.1f}° Z={joints[2]:.1f}")
-
-            pct = int((i + 1) / total * 100)
-            _update_ui(f"Preset: {i+1}/{total}  ({pct}%)", "blue")
-
-        else:
-            # Loop completed without a break → finished normally
-            if ROBOT_CONNECTED and robot:
-                robot.movement.sync()
-            _update_ui("Preset: Complete ✓", "green")
-
-    except Exception as exc:
-        print(f"[PRESET EXCEPTION]: {exc}")
-        _update_ui(f"Preset: Error – {exc}", "red")
-
-    finally:
-        drawing_active    = False
-        drawing_stop_flag = False
-        _set_btn_state(False)
-
-
-def start_drawing():
-    """Called by the 'Start Drawing' button."""
-    global drawing_active, drawing_stop_flag
-
-    if is_jogging:
-        messagebox.showwarning("Robot Busy", "Stop jogging before starting drawing mode.")
-        return
-
-    if drawing_active:
-        messagebox.showinfo("Already Running", "Drawing sequence is already in progress.")
-        return
-
-    if not ROBOT_CONNECTED:
-        ans = messagebox.askyesno(
-            "Demo Mode",
-            "Robot not connected — run drawing in DEMO MODE?\n"
-            "(Joint targets will be printed to console only.)")
-        if not ans:
-            return
-
-    drawing_active    = True
-    drawing_stop_flag = False
-    threading.Thread(target=_drawing_thread, daemon=True).start()
-
-
-def stop_drawing():
-    """Called by the 'Stop Drawing' button."""
-    global drawing_stop_flag
-    drawing_stop_flag = True
-    draw_progress_label.config(text="Preset: Stopping…", fg="orange")
 
 
 def handle_manual_z(dz):
@@ -596,32 +465,6 @@ claw_overdrive_btn = tk.Button(overdrive_frame, text="Claw: INACTIVE", width=15,
                                command=handle_manual_claw)
 claw_overdrive_btn.grid(row=1, column=2, padx=5)
 
-# --- ROW 2: PRESET DRAWING SECTION HEADER ---
-tk.Frame(overdrive_frame, height=1, bg="gray").grid(
-    row=2, column=0, columnspan=3, sticky="ew", pady=(6, 2))
-
-tk.Label(
-    overdrive_frame,
-    text="Preset Drawing  —  traces a fixed built-in image path",
-    font=("Arial", 8, "italic"), fg="gray"
-).grid(row=3, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 2))
-
-# --- ROW 3: PRESET DRAWING CONTROLS ---
-draw_preview_btn = tk.Button(
-    overdrive_frame, text="Preview Preset Path", width=16,
-    command=toggle_drawing_preview)
-draw_preview_btn.grid(row=4, column=0, padx=5, pady=2)
-
-draw_start_btn = tk.Button(
-    overdrive_frame, text="▶ Run Preset Drawing", width=18,
-    bg="lightgreen", command=start_drawing)
-draw_start_btn.grid(row=4, column=1, padx=5, pady=2)
-
-draw_progress_label = tk.Label(
-    overdrive_frame, text="Preset: Ready",
-    font=("Arial", 9), fg="gray", width=22, anchor="w")
-draw_progress_label.grid(row=4, column=2, padx=5, pady=2)
-
 # Main Title
 tk.Label(manual_frame, text="Manual Control Interface", font=("Arial", 12, "bold")).pack(pady=5)
 
@@ -723,6 +566,20 @@ ax.set_aspect('equal', 'box')
 
 # Setup the valid region plot in light grey
 ax.contourf(X, Y, final_region, levels=[0.5, 1], colors=['lightgrey'], alpha=0.5)
+
+# --- Photo station marker (yellow dot) ---
+# Plot coordinates (px, py) and robot coordinates (x, y) are rotated
+# relative to each other elsewhere in this file (see add_dobot_instructions:
+# x = py, y = -px). Invert that here so the marker lands in the same spot
+# on the plot that the arm will actually visit: px = -robot_y, py = robot_x.
+_station_px = -PHOTO_STATION["y"]
+_station_py = PHOTO_STATION["x"]
+photo_station_dot = ax.scatter(
+    _station_px, _station_py,
+    color='yellow', edgecolors='black', s=140, marker='*',
+    zorder=6, label="Photo Station"
+)
+ax.legend()
 
 # Embed matplotlib figure into Tkinter
 canvas = FigureCanvasTkAgg(fig, master=left_container)
@@ -844,6 +701,110 @@ def add_dobot_instructions():
         threading.Thread(target=execute_point, daemon=True).start()
 
     process_next_point()
+
+def pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z):
+    """
+    [WIRED merge / STUB hardware] Full capture pipeline:
+    pick up object -> move to fixed photo station -> rotate J4 through
+    NUM_VIEWS steps capturing station+wrist frames at each step ->
+    hand the set off to the vision pipeline via MQTT.
+
+    This function itself is fully wired into the arm's motion/claw
+    control (real, tested code paths - move_to_point/Ikinematics/
+    set_claw_dual_output). It calls into vision.camera.capture and
+    vision.messaging.publisher, which are currently stubs that raise
+    NotImplementedError - that's expected until cameras/broker are set
+    up. The error is caught and reported through the GUI rather than
+    crashing the app.
+    """
+    global robot
+
+    # 1. Move to the object and grip it (reuses existing, tested logic)
+    sols = Ikinematics(pickup_x, pickup_y, z=pickup_z)
+    j1, j2, z_target, r_target = sols[0]
+    if ROBOT_CONNECTED and robot:
+        move_error = robot.movement.joint_to_joint_move([j1, j2, z_target, r_target])
+        if move_error is not None:
+            print(f"[PICKUP ERROR]: {move_error}")
+            return
+        robot.movement.sync()
+    else:
+        print(f"DEMO MODE: pickup at ({pickup_x}, {pickup_y}, {pickup_z})")
+    set_claw_dual_output(1)  # grip
+
+    # 2. Move to the fixed photo station (same marker shown as the yellow dot)
+    station_sols = Ikinematics(PHOTO_STATION["x"], PHOTO_STATION["y"], z=PHOTO_STATION["z"])
+    base_j1, base_j2, base_z, base_j4 = station_sols[0]
+    if ROBOT_CONNECTED and robot:
+        move_error = robot.movement.joint_to_joint_move([base_j1, base_j2, base_z, base_j4])
+        if move_error is not None:
+            print(f"[STATION MOVE ERROR]: {move_error}")
+            return
+        robot.movement.sync()
+    else:
+        print(f"DEMO MODE: moving to photo station {PHOTO_STATION}")
+
+    # 3. Rotate J4 through NUM_VIEWS steps, capturing station + wrist frames
+    sample_id = new_sample_id()
+    step_deg = 360.0 / NUM_VIEWS
+    views = []
+
+    for i in range(NUM_VIEWS):
+        j4_target = base_j4 + (i * step_deg)
+        if ROBOT_CONNECTED and robot:
+            robot.movement.joint_to_joint_move([base_j1, base_j2, base_z, j4_target])
+            robot.movement.sync()
+        else:
+            print(f"DEMO MODE: rotating to J4={j4_target:.1f} deg (view {i+1}/{NUM_VIEWS})")
+        sleep(VIEW_SETTLE_SECONDS)
+
+        pose_snapshot = {"j1": base_j1, "j2": base_j2, "z": base_z, "j4": j4_target}
+
+        # These raise NotImplementedError until real cameras are wired in —
+        # that's expected at this stage of the build.
+        station_frame = capture_station_frame()
+        station_path = save_image(station_frame, sample_id, "station", i)
+        views.append({"source": "station", "view_index": i,
+                      "image_path": station_path, "pose": pose_snapshot})
+
+        wrist_frame = capture_wrist_frame()
+        wrist_path = save_image(wrist_frame, sample_id, "wrist", i)
+        views.append({"source": "wrist", "view_index": i,
+                      "image_path": wrist_path, "pose": pose_snapshot})
+
+    # 4. Hand off to the vision pipeline (raises NotImplementedError until
+    #    an MQTT broker is configured)
+    publish_captured(sample_id, views, PHOTO_STATION)
+    print(f"[CAPTURE COMPLETE] sample_id={sample_id}, {len(views)} views published")
+    return sample_id
+
+
+def run_pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z):
+    """Background-thread wrapper so hardware/broker errors (missing
+    camera, unplugged laser, no MQTT broker running, etc.) show a clean
+    dialog instead of freezing or crashing the Tkinter main loop."""
+    def execute():
+        try:
+            pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z)
+        except NotImplementedError as e:
+            root.after(0, lambda: messagebox.showinfo(
+                "Not Implemented Yet",
+                f"Pipeline reached an unfinished piece:\n\n{e}"))
+        except (ImportError, RuntimeError, IOError, ConnectionError) as e:
+            # These are now the expected real-world failure modes now that
+            # camera/laser/MQTT are wired to real hardware/services rather
+            # than stubs: missing dependency, camera not found, broker not
+            # running, etc. Reported the same clean way rather than a raw
+            # traceback dialog.
+            root.after(0, lambda: messagebox.showwarning(
+                "Pipeline Could Not Complete",
+                f"{e}"))
+        except Exception as e:
+            root.after(0, lambda: messagebox.showerror(
+                "Pipeline Error", f"Pickup/photograph sequence failed: {e}"))
+
+    threading.Thread(target=execute, daemon=True).start()
+
 
 def dobot_error_reset():
     if ROBOT_CONNECTED and robot:
@@ -1013,6 +974,32 @@ error_button.pack(pady=5)
 test_points_button = tk.Button(frame, text="Add Test Points", command=add_test_points_from_list, )
 test_points_button.pack(pady=5)
 
+# --- Vision pipeline entry point (yellow star = photo station on the plot) ---
+def prompt_pickup_and_photograph():
+    """Reuses the same X/Y/Z manual-entry fields as 'Add Point', but routes
+    into the full pickup -> photo-station -> multi-view capture pipeline
+    instead of just queueing a FIFO point."""
+    try:
+        x_val = float(x_manual_entry.get())
+        y_val = float(y_manual_entry.get())
+        z_val = float(z_manual_entry.get())
+    except ValueError:
+        messagebox.showerror("Invalid Input", "Enter numeric X, Y, Z in the manual fields above first.")
+        return
+
+    if not (5.0 <= z_val <= 245.0):
+        messagebox.showerror("Invalid Z-Value", "Z-value must be between 5 and 245 mm")
+        return
+    if not is_inside(x_val, y_val):
+        messagebox.showerror("Invalid Point", f"Point ({x_val:.2f}, {y_val:.2f}) is outside the valid region")
+        return
+
+    run_pickup_photograph_and_identify(x_val, y_val, z_val)
+
+vision_button = tk.Button(frame, text="Pickup & Photograph (uses X/Y/Z above)",
+                           command=prompt_pickup_and_photograph, bg="khaki")
+vision_button.pack(pady=5)
+
 # Custom dialog for Z-value and claw state
 
 def get_point_settings(px, py):
@@ -1090,15 +1077,12 @@ def get_point_settings(px, py):
 # Event handler for clicking on the plot
 def onclick(event):
 
-    # --- GUARD: ignore clicks while jogging or drawing ---
+    # --- ADD THIS CHECK AT THE VERY TOP ---
     global is_jogging
     if is_jogging:
         print("Click ignored: Robot is currently jogging.")
-        return
-    if drawing_active:
-        print("Click ignored: Drawing mode is active.")
-        return
-    # -----------------------------------------------------
+        return 
+    # --------------------------------------
 
     if event.xdata is None or event.ydata is None:
         return
@@ -1238,6 +1222,31 @@ root.bind("<KeyRelease-s>",   handle_jog_release)
 
 
 update_gui_from_feedback()
+def on_app_close():
+    """Release camera handles, the laser's serial connection, and the
+    MQTT client cleanly on exit rather than leaving them open/locked."""
+    try:
+        from vision.camera.capture import release_all
+        release_all()
+    except Exception as e:
+        print(f"[CLEANUP] Camera release skipped: {e}")
+
+    try:
+        from vision.camera.laser import close as close_laser
+        close_laser()
+    except Exception as e:
+        print(f"[CLEANUP] Laser close skipped: {e}")
+
+    try:
+        from vision.messaging.publisher import disconnect as disconnect_mqtt
+        disconnect_mqtt()
+    except Exception as e:
+        print(f"[CLEANUP] MQTT disconnect skipped: {e}")
+
+    root.destroy()
+
+
+root.protocol("WM_DELETE_WINDOW", on_app_close)
 root.mainloop()
 
 
