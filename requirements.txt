@@ -7,3 +7,4 @@ ikpy
 opencv-python
 paho-mqtt
 pymongo
+Pillow

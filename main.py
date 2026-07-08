@@ -1,6 +1,7 @@
 import math
 import threading
 from time import sleep
+from datetime import date
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
@@ -17,11 +18,56 @@ from vision.camera.capture import (
     new_sample_id,
 )
 from vision.messaging.publisher import publish_captured
+from vision.storage.mongo_client import (
+    list_recent_samples,
+    get_images_for_sample,
+    save_sample,
+    save_image_record,
+)
+
+try:
+    from PIL import Image, ImageTk
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
 
 # Global anchor for the matplotlib live tracking marker
 live_dot = None
 # Global anchor for the fixed photo-station marker (yellow dot)
 photo_station_dot = None
+
+# ---------------------------------------------------------------------------
+# Arm operation lock — prevents two robot-motion sequences from running at
+# once (e.g. clicking "Pickup & Photograph" while "Send to Robot" is still
+# working through its queue). Both paths send commands over the same
+# DobotSocketConnection, which is not designed for concurrent callers -
+# interleaved sends/reads from two threads can corrupt command/response
+# parsing. Scoped to the two sequence-level entry points (the pipeline and
+# the queued point sender) rather than every single manual move, since
+# those are the two places multi-step command sequences run unattended in
+# a background thread.
+# ---------------------------------------------------------------------------
+arm_operation_lock = threading.Lock()
+
+
+def try_start_arm_operation(op_name: str = "this operation") -> bool:
+    """Attempt to claim exclusive arm access. Returns True if claimed;
+    shows a warning and returns False if the arm is already busy."""
+    if not arm_operation_lock.acquire(blocking=False):
+        messagebox.showwarning(
+            "Arm Busy",
+            f"The arm is currently busy with another sequence.\n"
+            f"Please wait for it to finish before starting {op_name}.")
+        return False
+    return True
+
+
+def finish_arm_operation() -> None:
+    """Release the arm operation lock. Safe to call even if not held."""
+    try:
+        arm_operation_lock.release()
+    except RuntimeError:
+        pass  # already released — avoid crashing cleanup paths on a double-release
 
 
 # Ported directly from HongboRobot_ActualRobot_AI_Points.m
@@ -658,9 +704,13 @@ def add_dobot_instructions():
         messagebox.showwarning("No Points", "No valid points to send to robot!")
         return
 
+    if not try_start_arm_operation("sending the queued points"):
+        return
+
     def process_next_point():
         if not valid_points:
             print("All points complete.")
+            finish_arm_operation()
             return
 
         px, py, point_z, claw_state = valid_points[0]
@@ -689,9 +739,11 @@ def add_dobot_instructions():
                 print(f"Point complete: claw={claw_text}")
 
             except Exception as e:
-                print(f"Sequence failed: {e}")
-                root.after(0, lambda: messagebox.showerror(
-                    "Robot Error", f"Point sequence failed: {e}"))
+                msg = str(e)
+                print(f"Sequence failed: {msg}")
+                finish_arm_operation()
+                root.after(0, lambda msg=msg: messagebox.showerror(
+                    "Robot Error", f"Point sequence failed: {msg}"))
                 return
 
             # 4. Remove point from GUI on the main thread, then trigger next
@@ -782,26 +834,42 @@ def pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z):
 def run_pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z):
     """Background-thread wrapper so hardware/broker errors (missing
     camera, unplugged laser, no MQTT broker running, etc.) show a clean
-    dialog instead of freezing or crashing the Tkinter main loop."""
+    dialog instead of freezing or crashing the Tkinter main loop.
+
+    BUGFIX: `except X as e:` bindings are deleted by Python the moment the
+    except block ends (this is standard Python behavior, not a mistake in
+    the original try/except). root.after(0, lambda: ...) schedules the
+    lambda to run *later*, on a future pass through the Tkinter event
+    loop - by which point `e` has already been deleted, causing
+    `NameError: cannot access free variable 'e'`. Fix: read str(e) into a
+    plain local variable *inside* the except block (before it's deleted),
+    and have the lambda close over that string instead of over `e`.
+    """
     def execute():
+        if not try_start_arm_operation("the pickup & photograph pipeline"):
+            return
         try:
             pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z)
         except NotImplementedError as e:
-            root.after(0, lambda: messagebox.showinfo(
+            msg = str(e)
+            root.after(0, lambda msg=msg: messagebox.showinfo(
                 "Not Implemented Yet",
-                f"Pipeline reached an unfinished piece:\n\n{e}"))
+                f"Pipeline reached an unfinished piece:\n\n{msg}"))
         except (ImportError, RuntimeError, IOError, ConnectionError) as e:
             # These are now the expected real-world failure modes now that
             # camera/laser/MQTT are wired to real hardware/services rather
             # than stubs: missing dependency, camera not found, broker not
             # running, etc. Reported the same clean way rather than a raw
             # traceback dialog.
-            root.after(0, lambda: messagebox.showwarning(
-                "Pipeline Could Not Complete",
-                f"{e}"))
+            msg = str(e)
+            root.after(0, lambda msg=msg: messagebox.showwarning(
+                "Pipeline Could Not Complete", msg))
         except Exception as e:
-            root.after(0, lambda: messagebox.showerror(
-                "Pipeline Error", f"Pickup/photograph sequence failed: {e}"))
+            msg = str(e)
+            root.after(0, lambda msg=msg: messagebox.showerror(
+                "Pipeline Error", f"Pickup/photograph sequence failed: {msg}"))
+        finally:
+            finish_arm_operation()
 
     threading.Thread(target=execute, daemon=True).start()
 
@@ -1194,6 +1262,171 @@ fig.canvas.mpl_connect('button_press_event', onclick)
 instructions = tk.Label(frame, text="Instructions:\n1. Click points on plot OR\n2. Use manual input (X,Y,Z) OR\n3. Use 'Add Test Points' for batch testing\n4. Send to robot",
                        justify=tk.LEFT, font=("Arial", 9), bg="lightyellow")
 instructions.pack(pady=10)
+
+# =============================================================================
+# MongoDB gallery panel — browse captured samples/images stored in Mongo,
+# plus a standalone "Capture Photo" button for a single quick snapshot
+# (no arm movement, no multi-view rotation, no identification — just grab
+# one frame from the station camera and log it).
+# =============================================================================
+gallery_frame = tk.Frame(main_container, width=280, bg="#f0f0f0", bd=1, relief=tk.SUNKEN)
+# NOTE: Tkinter's side=RIGHT packing stacks outward in the order widgets
+# are packed — whichever is packed FIRST ends up visually rightmost/
+# outermost. `frame` (the control panel) was already packed earlier in
+# this file, so without `before=frame` here, this new gallery panel would
+# land sandwiched between the plot and the control buttons instead of
+# sitting past them on the far right. `before=frame` forces the intended
+# left-to-right reading order: plot | controls | gallery.
+gallery_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5, before=frame)
+gallery_frame.pack_propagate(False)
+
+tk.Label(gallery_frame, text="Captured Objects (MongoDB)",
+         font=("Arial", 11, "bold"), bg="#f0f0f0").pack(pady=(10, 5))
+
+gallery_status_label = tk.Label(gallery_frame, text="Not loaded yet",
+                                 font=("Arial", 8), bg="#f0f0f0", fg="gray")
+gallery_status_label.pack(pady=(0, 5))
+
+gallery_button_row = tk.Frame(gallery_frame, bg="#f0f0f0")
+gallery_button_row.pack(pady=5)
+
+gallery_listbox = tk.Listbox(gallery_frame, width=34, height=14)
+gallery_listbox.pack(padx=8, pady=5, fill=tk.X)
+
+gallery_image_label = tk.Label(gallery_frame, bg="#dddddd", width=32, height=12,
+                                text="Select a sample\nto preview its image",
+                                justify=tk.CENTER)
+gallery_image_label.pack(padx=8, pady=8)
+
+# Keeps sample_id list in the same order as the listbox rows, since
+# Listbox only stores display strings, not arbitrary data per row.
+gallery_sample_ids = []
+
+
+def refresh_gallery():
+    """Query MongoDB for recent samples and repopulate the listbox.
+
+    Runs the actual query in a background thread — _get_db() has a
+    3-second connection timeout, and this used to run directly on the
+    main Tkinter thread (including once at startup), which meant the
+    whole GUI window would hang for up to 3 seconds any time MongoDB
+    wasn't reachable. Now the query happens off-thread and only the
+    final UI update is marshalled back via root.after.
+    """
+    gallery_status_label.config(text="Loading...", fg="gray")
+
+    def query():
+        try:
+            samples = list_recent_samples(limit=30)
+        except (ImportError, RuntimeError) as e:
+            msg = str(e)
+            root.after(0, lambda msg=msg: gallery_status_label.config(
+                text=f"Mongo unavailable: {msg}", fg="red"))
+            return
+        except Exception as e:
+            msg = str(e)
+            root.after(0, lambda msg=msg: gallery_status_label.config(
+                text=f"Error: {msg}", fg="red"))
+            return
+
+        def apply():
+            gallery_listbox.delete(0, tk.END)
+            gallery_sample_ids.clear()
+            gallery_status_label.config(text=f"{len(samples)} sample(s)", fg="black")
+            for s in samples:
+                data = s.get("data", {}) or {}
+                label_text = data.get("predicted_label", "(unclassified)")
+                row_text = f'{s.get("date", "?")}  —  {label_text}'
+                gallery_listbox.insert(tk.END, row_text)
+                gallery_sample_ids.append(s["_id"])
+
+        root.after(0, apply)
+
+    threading.Thread(target=query, daemon=True).start()
+
+
+def on_gallery_select(event):
+    """Load and display the first image for the selected sample.
+    Also threaded — see refresh_gallery() for why."""
+    selection = gallery_listbox.curselection()
+    if not selection:
+        return
+    sample_id = gallery_sample_ids[selection[0]]
+
+    def query():
+        try:
+            images = get_images_for_sample(sample_id)
+        except Exception as e:
+            msg = str(e)
+            root.after(0, lambda msg=msg: gallery_image_label.config(
+                image="", text=f"Mongo error:\n{msg}"))
+            return
+
+        if not images:
+            root.after(0, lambda: gallery_image_label.config(
+                image="", text="No images for this sample"))
+            return
+
+        if not _PIL_AVAILABLE:
+            root.after(0, lambda: gallery_image_label.config(
+                image="", text="Pillow not installed.\nRun: pip install Pillow"))
+            return
+
+        image_path = images[0]["image_path"]
+        try:
+            img = Image.open(image_path)
+            img.thumbnail((240, 240))
+            photo = ImageTk.PhotoImage(img)
+        except (FileNotFoundError, OSError) as e:
+            msg = str(e)
+            root.after(0, lambda msg=msg: gallery_image_label.config(
+                image="", text=f"Could not load image:\n{image_path}\n{msg}"))
+            return
+
+        def apply():
+            gallery_image_label.image = photo  # keep a reference - Tkinter drops it otherwise
+            gallery_image_label.config(image=photo, text="")
+
+        root.after(0, apply)
+
+    threading.Thread(target=query, daemon=True).start()
+
+
+gallery_listbox.bind("<<ListboxSelect>>", on_gallery_select)
+
+
+def quick_capture_photo():
+    """Standalone single-shot capture, independent of the full
+    pickup-and-identify pipeline: no arm movement, no J4 rotation sweep,
+    no classification - just grab one frame from the station camera,
+    save it, log it to Mongo, and refresh the gallery."""
+    def execute():
+        try:
+            sample_id = new_sample_id()
+            frame_img = capture_station_frame()
+            image_path = save_image(frame_img, sample_id, "station", 0)
+            save_image_record(f"{sample_id}_station_0", sample_id, image_path, "station", 0)
+            save_sample(sample_id, str(date.today()),
+                        {"predicted_label": "(unclassified — manual capture)"})
+            root.after(0, refresh_gallery)
+        except (ImportError, RuntimeError, IOError, ConnectionError) as e:
+            msg = str(e)
+            root.after(0, lambda msg=msg: messagebox.showwarning(
+                "Capture Could Not Complete", msg))
+        except Exception as e:
+            msg = str(e)
+            root.after(0, lambda msg=msg: messagebox.showerror(
+                "Capture Error", f"Quick capture failed: {msg}"))
+
+    threading.Thread(target=execute, daemon=True).start()
+
+
+tk.Button(gallery_button_row, text="Capture Photo", bg="lightgreen",
+          command=quick_capture_photo).pack(side=tk.LEFT, padx=4)
+tk.Button(gallery_button_row, text="Refresh", command=refresh_gallery).pack(side=tk.LEFT, padx=4)
+
+# Initial load, so the panel isn't empty on startup if Mongo is already reachable
+refresh_gallery()
 
 # --- KEYBOARD BINDINGS ---
 # --- NEW AREA C: JOGGING BINDINGS ---
