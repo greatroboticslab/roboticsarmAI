@@ -33,8 +33,7 @@ except ImportError:
     _CV2_AVAILABLE = False
 
 from vision.config import (
-    STATION_CAMERA_INDEX,
-    WRIST_CAMERA_INDEX,
+    CAMERAS,
     CAMERA_FRAME_WIDTH,
     CAMERA_FRAME_HEIGHT,
 )
@@ -72,15 +71,50 @@ def _require_cv2():
         )
 
 
+def _candidate_backends():
+    """
+    Backends to try, in order, when opening a camera. Windows' default
+    backend (MSMF) frequently fails to open a webcam that works fine
+    under DSHOW on the exact same hardware - this isn't a code bug, it's
+    a long-standing OpenCV/Windows quirk. cv2.CAP_ANY (0) lets OpenCV
+    pick automatically as a last resort. Harmless "obsensor" warnings
+    that sometimes print during this process (from OpenCV probing for
+    an unrelated Orbbec/RealSense-style backend) are cosmetic noise, not
+    the actual failure - ignore them.
+    """
+    _require_cv2()
+    if os.name == "nt":
+        return [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+    return [cv2.CAP_ANY]
+
+
+def _open_camera(index: int):
+    """Try each candidate backend in turn; return the first one that
+    actually opens AND returns a real frame (isOpened() alone can lie)."""
+    for backend in _candidate_backends():
+        cap = cv2.VideoCapture(index, backend)
+        if cap.isOpened():
+            ok, _ = cap.read()
+            if ok:
+                return cap
+        cap.release()
+    return None
+
+
 def _get_handle(index: int):
     _require_cv2()
     if index not in _capture_handles:
-        cap = cv2.VideoCapture(index)
-        if not cap.isOpened():
+        cap = _open_camera(index)
+        if cap is None:
             raise RuntimeError(
-                f"Could not open camera at index {index}. Run "
-                f"`python -m vision.camera.capture` to list working indices, "
-                f"and confirm it isn't already in use by another program."
+                f"Could not open camera at index {index} on any backend "
+                f"(tried DSHOW/MSMF on Windows, or the default backend "
+                f"elsewhere). Run `python -m vision.camera.capture` "
+                f"(no .py) to list working indices. If nothing is found, "
+                f"confirm the camera is actually plugged in and shows up "
+                f"under Device Manager -> Cameras/Imaging devices, and "
+                f"that no other program (Zoom, Teams, another Python "
+                f"process, etc.) already has it open."
             )
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
@@ -88,27 +122,84 @@ def _get_handle(index: int):
     return _capture_handles[index]
 
 
-def _capture_from_index(index: int):
+def _capture_from_index(index: int, _retry: bool = True):
+    """
+    BUGFIX: previously, once a camera's handle was cached in
+    _capture_handles, it was never re-validated - if the camera got
+    unplugged/replugged, hit a brief USB hiccup, or was grabbed and
+    released by another program mid-session, the stale handle would keep
+    returning ok=False forever, and every future capture would fail with
+    "did not return a frame" until the whole app was restarted. Now, a
+    failed read releases the stale handle and retries once with a fresh
+    _open_camera() call before actually giving up.
+    """
     lock = _get_lock(index)
     with lock:
         cap = _get_handle(index)
         ok, frame = cap.read()
+
+        if not (ok and frame is not None) and _retry:
+            cap.release()
+            _capture_handles.pop(index, None)
+            fresh_cap = _open_camera(index)
+            if fresh_cap is not None:
+                fresh_cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
+                fresh_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
+                _capture_handles[index] = fresh_cap
+                ok, frame = fresh_cap.read()
+
     if not ok or frame is None:
         raise RuntimeError(
-            f"Camera at index {index} did not return a frame. Check the "
-            f"USB connection and that no other program has it open."
+            f"Camera at index {index} did not return a frame, even after "
+            f"reconnecting. Check the USB connection and that no other "
+            f"program has it open."
         )
     return frame
 
 
+def capture_frame(camera_name: str):
+    """
+    [WIRED] Grab a single frame from any camera configured in
+    vision.config.CAMERAS by name. This is the general entry point -
+    works for any number of cameras, not just station/wrist.
+    """
+    if camera_name not in CAMERAS:
+        raise ValueError(
+            f"Unknown camera '{camera_name}'. Configured cameras: "
+            f"{list(CAMERAS.keys())}. Add it to CAMERAS in vision/config.py."
+        )
+    return _capture_from_index(CAMERAS[camera_name])
+
+
 def capture_station_frame():
-    """[WIRED] Grab a single frame from the fixed station camera."""
-    return _capture_from_index(STATION_CAMERA_INDEX)
+    """[WIRED] Grab a single frame from the fixed station camera.
+    Thin wrapper over capture_frame('station') for backward compatibility
+    with existing pipeline code."""
+    return capture_frame("station")
 
 
 def capture_wrist_frame():
-    """[WIRED] Grab a single frame from the wrist-mounted camera."""
-    return _capture_from_index(WRIST_CAMERA_INDEX)
+    """[WIRED] Grab a single frame from the wrist-mounted camera.
+    Thin wrapper over capture_frame('wrist') for backward compatibility
+    with existing pipeline code."""
+    return capture_frame("wrist")
+
+
+def list_configured_cameras() -> dict:
+    """Returns the name -> index mapping from vision.config.CAMERAS, for
+    populating UI camera-selector dropdowns etc."""
+    return dict(CAMERAS)
+
+
+def frame_to_rgb(frame):
+    """
+    Convert an OpenCV BGR frame to RGB, the format PIL/Tkinter expect for
+    display. Kept as a pure-OpenCV helper (no PIL/Tkinter import here) so
+    this module has no GUI dependency - main.py's live feed panel does
+    the actual PIL.Image.fromarray()/ImageTk.PhotoImage() conversion.
+    """
+    _require_cv2()
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
 def save_image(frame, sample_id: str, source: str, view_index: int = 0) -> str:
@@ -149,17 +240,18 @@ def ensure_sample_dir(sample_id: str) -> str:
 def list_camera_indices(max_index: int = 5):
     """
     Utility: probe indices 0..max_index-1 and report which ones produce a
-    frame. Run directly: `python -m vision.camera.capture`
+    frame, trying the same backend fallback _get_handle() uses. Run
+    directly with:  python -m vision.camera.capture   (no .py — "-m"
+    takes a module path, not a filename; including .py causes
+    "Error while finding module specification").
     """
     _require_cv2()
     working = []
     for i in range(max_index):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            ok, _ = cap.read()
-            if ok:
-                working.append(i)
-        cap.release()
+        cap = _open_camera(i)
+        if cap is not None:
+            working.append(i)
+            cap.release()
     return working
 
 
@@ -168,6 +260,15 @@ if __name__ == "__main__":
     found = list_camera_indices()
     if found:
         print(f"Working camera indices: {found}")
-        print("Set STATION_CAMERA_INDEX / WRIST_CAMERA_INDEX in vision/config.py accordingly.")
+        print(f"Currently configured cameras (vision/config.py CAMERAS): {CAMERAS}")
+        for name, idx in CAMERAS.items():
+            status = "OK" if idx in found else "NOT FOUND at that index"
+            print(f"  '{name}' -> index {idx}: {status}")
+        print("Update CAMERAS in vision/config.py if any indices don't match, "
+              "or add more named entries for additional cameras.")
     else:
-        print("No working cameras found. Check USB connections and try again.")
+        print("No working cameras found on any backend. Checklist:")
+        print("  1. Is the camera actually plugged in?")
+        print("  2. Does it show up in Device Manager -> Cameras/Imaging devices (Windows)?")
+        print("  3. Is it already open in another program (Zoom, Teams, OBS, etc.)?")
+        print("  4. Try unplugging/replugging it, then re-run this command.")
