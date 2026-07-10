@@ -10,10 +10,13 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from dobot_util import Dobot
 
-from vision.config import PHOTO_STATION, NUM_VIEWS, VIEW_SETTLE_SECONDS
+from vision.config import PHOTO_STATION, NUM_VIEWS, VIEW_SETTLE_SECONDS, LIVE_FEED_FPS
 from vision.camera.capture import (
     capture_station_frame,
     capture_wrist_frame,
+    capture_frame,
+    list_configured_cameras,
+    frame_to_rgb,
     save_image,
     new_sample_id,
 )
@@ -801,6 +804,15 @@ def pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z):
     step_deg = 360.0 / NUM_VIEWS
     views = []
 
+    # Work over however many cameras are actually configured in
+    # vision/config.py's CAMERAS dict, not just a hardcoded station+wrist
+    # pair. If a camera is missing/unplugged, it's skipped rather than
+    # aborting the whole sequence - once a camera fails, it's remembered
+    # for the rest of THIS capture run so we don't waste time retrying a
+    # known-dead camera on every single rotation step.
+    cameras_to_use = list_configured_cameras()
+    failed_cameras = set()
+
     for i in range(NUM_VIEWS):
         j4_target = base_j4 + (i * step_deg)
         if ROBOT_CONNECTED and robot:
@@ -812,17 +824,31 @@ def pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z):
 
         pose_snapshot = {"j1": base_j1, "j2": base_j2, "z": base_z, "j4": j4_target}
 
-        # These raise NotImplementedError until real cameras are wired in —
-        # that's expected at this stage of the build.
-        station_frame = capture_station_frame()
-        station_path = save_image(station_frame, sample_id, "station", i)
-        views.append({"source": "station", "view_index": i,
-                      "image_path": station_path, "pose": pose_snapshot})
+        for camera_name in cameras_to_use:
+            if camera_name in failed_cameras:
+                continue
+            try:
+                frame = capture_frame(camera_name)
+            except (RuntimeError, ImportError) as e:
+                print(f"[CAPTURE SKIPPED] Camera '{camera_name}' unavailable — "
+                      f"skipping it for the rest of this capture: {e}")
+                failed_cameras.add(camera_name)
+                continue
+            image_path = save_image(frame, sample_id, camera_name, i)
+            views.append({"source": camera_name, "view_index": i,
+                          "image_path": image_path, "pose": pose_snapshot})
 
-        wrist_frame = capture_wrist_frame()
-        wrist_path = save_image(wrist_frame, sample_id, "wrist", i)
-        views.append({"source": "wrist", "view_index": i,
-                      "image_path": wrist_path, "pose": pose_snapshot})
+    if not views:
+        raise RuntimeError(
+            f"No cameras were available — capture produced zero images. "
+            f"Configured cameras: {list(cameras_to_use.keys())}. Check "
+            f"connections and run `python -m vision.camera.capture` (no .py)."
+        )
+
+    if failed_cameras:
+        print(f"[CAPTURE COMPLETE WITH GAPS] Sample {sample_id}: "
+              f"{len(views)} image(s) captured; cameras unavailable this "
+              f"run: {sorted(failed_cameras)}")
 
     # 4. Hand off to the vision pipeline (raises NotImplementedError until
     #    an MQTT broker is configured)
@@ -1280,6 +1306,120 @@ gallery_frame = tk.Frame(main_container, width=280, bg="#f0f0f0", bd=1, relief=t
 gallery_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5, before=frame)
 gallery_frame.pack_propagate(False)
 
+# =============================================================================
+# Live camera feed — continuous preview from any configured camera
+# (vision.config.CAMERAS), not just a single snapshot. Runs as a
+# self-rescheduling root.after() loop: each tick grabs one frame in a
+# background thread (camera reads shouldn't block the GUI thread), then
+# marshals the resulting PhotoImage back via root.after(0, ...) before
+# scheduling the next tick. A busy-flag prevents ticks piling up if a
+# camera read is slow. Works for however many cameras are configured -
+# the dropdown is populated straight from CAMERAS, so adding a third/
+# fourth camera in vision/config.py makes it selectable here with no
+# other code changes.
+# =============================================================================
+tk.Label(gallery_frame, text="Live Camera Feed",
+         font=("Arial", 11, "bold"), bg="#f0f0f0").pack(pady=(10, 5))
+
+_camera_names = list(list_configured_cameras().keys()) or ["station"]
+live_feed_camera_var = tk.StringVar(value=_camera_names[0])
+tk.OptionMenu(gallery_frame, live_feed_camera_var, *_camera_names).pack(pady=2)
+
+live_feed_button_row = tk.Frame(gallery_frame, bg="#f0f0f0")
+live_feed_button_row.pack(pady=4)
+
+live_feed_status_label = tk.Label(gallery_frame, text="Stopped",
+                                   font=("Arial", 8), bg="#f0f0f0", fg="gray")
+live_feed_status_label.pack()
+
+live_feed_label = tk.Label(gallery_frame, bg="#222222", width=32, height=10,
+                            text="Live feed will appear here", fg="white",
+                            justify=tk.CENTER)
+live_feed_label.pack(padx=8, pady=8)
+
+live_feed_active = False
+live_feed_busy = False
+
+
+def _schedule_next_live_feed_tick():
+    if live_feed_active:
+        root.after(int(1000 / LIVE_FEED_FPS), _live_feed_tick)
+
+
+def _live_feed_tick():
+    global live_feed_busy
+    if not live_feed_active:
+        return
+    if live_feed_busy:
+        # Previous tick's camera read hasn't finished yet — skip this
+        # tick rather than piling up threads.
+        _schedule_next_live_feed_tick()
+        return
+
+    live_feed_busy = True
+    camera_name = live_feed_camera_var.get()
+
+    def grab():
+        global live_feed_busy
+        try:
+            frame = capture_frame(camera_name)
+            rgb = frame_to_rgb(frame)
+        except Exception as e:
+            msg = str(e)
+
+            def on_error():
+                global live_feed_busy
+                live_feed_busy = False
+                live_feed_status_label.config(text=f"Error: {msg}", fg="red")
+                stop_live_feed()
+
+            root.after(0, on_error)
+            return
+
+        def apply():
+            global live_feed_busy
+            try:
+                if _PIL_AVAILABLE:
+                    img = Image.fromarray(rgb)
+                    img.thumbnail((260, 200))
+                    photo = ImageTk.PhotoImage(img)
+                    live_feed_label.image = photo  # keep a reference
+                    live_feed_label.config(image=photo, text="")
+                else:
+                    live_feed_label.config(
+                        text="Pillow not installed.\nRun: pip install Pillow")
+            finally:
+                live_feed_busy = False
+                _schedule_next_live_feed_tick()
+
+        root.after(0, apply)
+
+    threading.Thread(target=grab, daemon=True).start()
+
+
+def start_live_feed():
+    global live_feed_active
+    if live_feed_active:
+        return
+    if not _PIL_AVAILABLE:
+        messagebox.showwarning("Pillow Required", "Run: pip install Pillow")
+        return
+    live_feed_active = True
+    live_feed_status_label.config(text=f"Live — {live_feed_camera_var.get()}", fg="green")
+    _schedule_next_live_feed_tick()
+
+
+def stop_live_feed():
+    global live_feed_active
+    live_feed_active = False
+    live_feed_status_label.config(text="Stopped", fg="gray")
+
+
+tk.Button(live_feed_button_row, text="Start Feed", bg="lightgreen",
+          command=start_live_feed).pack(side=tk.LEFT, padx=4)
+tk.Button(live_feed_button_row, text="Stop Feed",
+          command=stop_live_feed).pack(side=tk.LEFT, padx=4)
+
 tk.Label(gallery_frame, text="Captured Objects (MongoDB)",
          font=("Arial", 11, "bold"), bg="#f0f0f0").pack(pady=(10, 5))
 
@@ -1458,6 +1598,9 @@ update_gui_from_feedback()
 def on_app_close():
     """Release camera handles, the laser's serial connection, and the
     MQTT client cleanly on exit rather than leaving them open/locked."""
+    global live_feed_active
+    live_feed_active = False  # stop the self-rescheduling live feed loop
+
     try:
         from vision.camera.capture import release_all
         release_all()
