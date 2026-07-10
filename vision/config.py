@@ -33,14 +33,27 @@ NUM_VIEWS = 6
 VIEW_SETTLE_SECONDS = 0.2
 
 # ---------------------------------------------------------------------------
-# Camera — USB (OpenCV / UVC). Device indices are OS-assigned by plug order;
-# confirm with the helper script mentioned in vision/camera/capture.py
-# (list_camera_indices()) once both cameras are plugged in.
+# Camera — USB (OpenCV / UVC). Supports any number of cameras, each given
+# a name. Device indices are OS-assigned by plug order; confirm with
+# `python -m vision.camera.capture` (no .py) once cameras are plugged in.
+#
+# Add/remove entries here for however many cameras you actually have -
+# nothing else in the code needs to change. "station" and "wrist" are
+# just the two names the existing pipeline already uses; add more (e.g.
+# "overhead", "side") and they immediately become selectable in the live
+# feed panel and available to capture_frame().
 # ---------------------------------------------------------------------------
-STATION_CAMERA_INDEX = 0
-WRIST_CAMERA_INDEX = 1
+CAMERAS = {
+    "station": 0,
+    "wrist": 1,
+}
 CAMERA_FRAME_WIDTH = 1280
 CAMERA_FRAME_HEIGHT = 720
+
+# How often the live preview panel grabs a new frame. Lower = smoother
+# but more CPU/USB bandwidth; 10 fps is a reasonable default for a
+# Tkinter preview (not meant to be broadcast-quality video).
+LIVE_FEED_FPS = 10
 
 # ---------------------------------------------------------------------------
 # Laser — USB serial (pyserial, already in requirements.txt). Most USB
