@@ -20,13 +20,10 @@ from vision.camera.capture import (
     save_image,
     new_sample_id,
 )
-from vision.messaging.publisher import publish_captured
-from vision.storage.mongo_client import (
-    list_recent_samples,
-    get_images_for_sample,
-    save_sample,
-    save_image_record,
-)
+import requests
+from vision.config import TOPIC_CAPTURE_COMMAND, TOPIC_ARM_MOVE_COMMAND, FOURDAI_API_URL
+from vision.messaging.publisher import publish_captured, publish_capture_status
+from vision.messaging.subscriber import subscribe
 
 try:
     from PIL import Image, ImageTk
@@ -900,6 +897,213 @@ def run_pickup_photograph_and_identify(pickup_x, pickup_y, pickup_z):
     threading.Thread(target=execute, daemon=True).start()
 
 
+def run_automatic_capture_sequence(category: str, num_images: int,
+                                    degrees_per_step: float,
+                                    interval_seconds: float) -> None:
+    """
+    [WIRED] The full "no manual clicking" capture loop: from wherever the
+    arm currently is, rotate J4 by `degrees_per_step` degrees, wait
+    `interval_seconds` to settle, take a photo with a local camera, and
+    repeat `num_images` times. Once done, registers the result through
+    4DAI's own existing REST API (/collection/submission,
+    /collection/images/upload) - the exact endpoints its manual "Submit"
+    flow already used - so 4DAI needs zero code changes for this to work.
+
+    Runs inline on whatever thread calls it - callers (the MQTT command
+    handler below) are responsible for running it off the Tkinter main
+    thread and holding arm_operation_lock, same convention as
+    run_pickup_photograph_and_identify.
+    """
+    sample_id = new_sample_id()
+    image_paths = []
+
+    try:
+        publish_capture_status("started", category=category,
+                                sample_id=sample_id,
+                                num_images=num_images,
+                                degrees_per_step=degrees_per_step)
+
+        base_joints = list(robot_data["joints"]) if robot_data["joints"] else [0.0, 0.0, 200.0, 0.0]
+        base_j1, base_j2, base_z, base_j4 = (base_joints + [0.0, 0.0, 200.0, 0.0])[:4]
+
+        cameras_to_use = list_configured_cameras()
+        failed_cameras = set()
+
+        for i in range(num_images):
+            j4_target = base_j4 + (i * degrees_per_step)
+
+            if ROBOT_CONNECTED and robot:
+                move_error = robot.movement.joint_to_joint_move(
+                    [base_j1, base_j2, base_z, j4_target])
+                if move_error is not None:
+                    raise RuntimeError(f"Move failed at image {i + 1}: {move_error}")
+                robot.movement.sync()
+            else:
+                print(f"DEMO MODE: rotating to J4={j4_target:.1f} deg "
+                      f"(image {i + 1}/{num_images})")
+
+            sleep(interval_seconds)
+
+            captured_this_step = False
+            for camera_name in cameras_to_use:
+                if camera_name in failed_cameras:
+                    continue
+                try:
+                    frame = capture_frame(camera_name)
+                except (RuntimeError, ImportError) as e:
+                    print(f"[CAPTURE SKIPPED] '{camera_name}' unavailable: {e}")
+                    failed_cameras.add(camera_name)
+                    continue
+                image_path = save_image(frame, sample_id, camera_name, i)
+                image_paths.append(image_path)
+                captured_this_step = True
+                publish_capture_status("image", category=category,
+                                        sample_id=sample_id, image_index=i,
+                                        camera=camera_name)
+
+            if not captured_this_step:
+                print(f"[WARNING] No camera produced a frame for image {i + 1}")
+
+        if not image_paths:
+            raise RuntimeError("Automatic capture produced zero images - "
+                                "check camera connections.")
+
+        # Register through 4DAI's own REST API - same endpoints its
+        # "Submit" button uses - so this sample lands in the correct
+        # per-category collection and shows up in 4DAI's "View
+        # Collections" page identically to a manual submission. 4DAI's
+        # code is completely unmodified for this to work.
+        values = {"predicted_label": category, "num_images": len(image_paths)}
+        submit_response = requests.post(
+            f"{FOURDAI_API_URL}/collection/submission",
+            json={"category": category, "date": str(date.today()), "data": values},
+            timeout=10,
+        )
+        submit_response.raise_for_status()
+        fourdai_sample_id = submit_response.json()["sample_id"]
+
+        for image_path in image_paths:
+            with open(image_path, "rb") as image_file:
+                upload_response = requests.post(
+                    f"{FOURDAI_API_URL}/collection/images/upload",
+                    files={"file": image_file},
+                    data={"sample_id": fourdai_sample_id, "category": category},
+                    timeout=10,
+                )
+            upload_response.raise_for_status()
+
+        publish_capture_status("completed", category=category,
+                                sample_id=fourdai_sample_id,
+                                image_paths=image_paths, values=values)
+        print(f"[AUTO CAPTURE COMPLETE] sample_id={fourdai_sample_id}, "
+              f"{len(image_paths)} image(s) uploaded to 4DAI")
+
+    except Exception as e:
+        msg = str(e)
+        print(f"[AUTO CAPTURE ERROR] {msg}")
+        try:
+            publish_capture_status("error", category=category, message=msg)
+        except Exception as publish_err:
+            print(f"[AUTO CAPTURE] Could not report error over MQTT: {publish_err}")
+
+
+def _handle_capture_command(payload: dict) -> None:
+    """MQTT handler for TOPIC_CAPTURE_COMMAND messages from 4DAI.
+    Expected payload: {"category": str, "num_images": int,
+    "degrees_per_step": float, "interval_seconds": float}."""
+    category = payload.get("category", "uncategorized")
+    num_images = int(payload.get("num_images", 5))
+    degrees_per_step = float(payload.get("degrees_per_step", 5.0))
+    interval_seconds = float(payload.get("interval_seconds", 5.0))
+
+    if not try_start_arm_operation("an automatic capture sequence"):
+        return
+    try:
+        run_automatic_capture_sequence(category, num_images,
+                                        degrees_per_step, interval_seconds)
+    finally:
+        finish_arm_operation()
+
+
+def start_capture_command_listener() -> None:
+    """Background thread: subscribes to TOPIC_CAPTURE_COMMAND and runs
+    each command as it arrives. Safe to call even if no MQTT broker is
+    reachable yet - retries quietly rather than crashing the GUI, since
+    this thread is not required for local/manual GUI operation."""
+    def _run():
+        while True:
+            try:
+                subscribe(TOPIC_CAPTURE_COMMAND, _handle_capture_command)
+            except Exception as e:
+                print(f"[MQTT] Capture command listener error, retrying in 5s: {e}")
+                sleep(5)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# =============================================================================
+# GENERIC REMOTE CONTROL — lets anything (4DAI's own "Arm Control" page,
+# an external AI/automation script, a notebook, etc.) drive the arm over
+# MQTT without needing direct access to this machine. Two message
+# shapes, both published to TOPIC_ARM_MOVE_COMMAND:
+#
+#   {"jog": "J4+"}            - start jogging that axis (same as holding
+#                                the arrow/W/S keys in the GUI)
+#   {"jog": "stop"}           - stop jogging
+#   {"j1": .., "j2": .., "j3": .., "j4": ..}
+#                             - absolute joint move (any subset; missing
+#                               joints hold their current position)
+# =============================================================================
+
+def _handle_move_command(payload: dict) -> None:
+    if "jog" in payload:
+        axis_cmd = payload["jog"]
+        if not ROBOT_CONNECTED or not manual_active.get():
+            print(f"[REMOTE JOG IGNORED] robot not connected or manual mode off: {axis_cmd}")
+            return
+        if axis_cmd == "stop":
+            handle_jog_release(None)
+        else:
+            handle_jog_press(axis_cmd)
+        return
+
+    current = robot_data["joints"] if robot_data["joints"] else [0.0, 0.0, 200.0, 0.0]
+    current = (list(current) + [0.0, 0.0, 200.0, 0.0])[:4]
+    j1 = float(payload.get("j1", current[0]))
+    j2 = float(payload.get("j2", current[1]))
+    j3 = float(payload.get("j3", current[2]))
+    j4 = float(payload.get("j4", current[3]))
+
+    if not try_start_arm_operation("a remote move command"):
+        return
+    try:
+        if ROBOT_CONNECTED and robot:
+            move_error = robot.movement.joint_to_joint_move([j1, j2, j3, j4])
+            if move_error is not None:
+                print(f"[REMOTE MOVE ERROR]: {move_error}")
+            else:
+                robot.movement.sync()
+        else:
+            print(f"DEMO MODE: remote move to J1={j1:.1f} J2={j2:.1f} "
+                  f"J3={j3:.1f} J4={j4:.1f}")
+    finally:
+        finish_arm_operation()
+
+
+def start_move_command_listener() -> None:
+    """Background thread: subscribes to TOPIC_ARM_MOVE_COMMAND for
+    generic remote control (an AI model, external script, etc.)."""
+    def _run():
+        while True:
+            try:
+                subscribe(TOPIC_ARM_MOVE_COMMAND, _handle_move_command)
+            except Exception as e:
+                print(f"[MQTT] Move command listener error, retrying in 5s: {e}")
+                sleep(5)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def dobot_error_reset():
     if ROBOT_CONNECTED and robot:
         try:
@@ -1420,153 +1624,14 @@ tk.Button(live_feed_button_row, text="Start Feed", bg="lightgreen",
 tk.Button(live_feed_button_row, text="Stop Feed",
           command=stop_live_feed).pack(side=tk.LEFT, padx=4)
 
-tk.Label(gallery_frame, text="Captured Objects (MongoDB)",
+tk.Label(gallery_frame, text="Captured Objects",
          font=("Arial", 11, "bold"), bg="#f0f0f0").pack(pady=(10, 5))
+tk.Label(gallery_frame, text="Browse captured samples in 4DAI's\n"
+         "'View Collections' page — this app no\n"
+         "longer keeps its own local copy.",
+         font=("Arial", 8), bg="#f0f0f0", fg="gray",
+         justify=tk.CENTER).pack(pady=(0, 10))
 
-gallery_status_label = tk.Label(gallery_frame, text="Not loaded yet",
-                                 font=("Arial", 8), bg="#f0f0f0", fg="gray")
-gallery_status_label.pack(pady=(0, 5))
-
-gallery_button_row = tk.Frame(gallery_frame, bg="#f0f0f0")
-gallery_button_row.pack(pady=5)
-
-gallery_listbox = tk.Listbox(gallery_frame, width=34, height=14)
-gallery_listbox.pack(padx=8, pady=5, fill=tk.X)
-
-gallery_image_label = tk.Label(gallery_frame, bg="#dddddd", width=32, height=12,
-                                text="Select a sample\nto preview its image",
-                                justify=tk.CENTER)
-gallery_image_label.pack(padx=8, pady=8)
-
-# Keeps sample_id list in the same order as the listbox rows, since
-# Listbox only stores display strings, not arbitrary data per row.
-gallery_sample_ids = []
-
-
-def refresh_gallery():
-    """Query MongoDB for recent samples and repopulate the listbox.
-
-    Runs the actual query in a background thread — _get_db() has a
-    3-second connection timeout, and this used to run directly on the
-    main Tkinter thread (including once at startup), which meant the
-    whole GUI window would hang for up to 3 seconds any time MongoDB
-    wasn't reachable. Now the query happens off-thread and only the
-    final UI update is marshalled back via root.after.
-    """
-    gallery_status_label.config(text="Loading...", fg="gray")
-
-    def query():
-        try:
-            samples = list_recent_samples(limit=30)
-        except (ImportError, RuntimeError) as e:
-            msg = str(e)
-            root.after(0, lambda msg=msg: gallery_status_label.config(
-                text=f"Mongo unavailable: {msg}", fg="red"))
-            return
-        except Exception as e:
-            msg = str(e)
-            root.after(0, lambda msg=msg: gallery_status_label.config(
-                text=f"Error: {msg}", fg="red"))
-            return
-
-        def apply():
-            gallery_listbox.delete(0, tk.END)
-            gallery_sample_ids.clear()
-            gallery_status_label.config(text=f"{len(samples)} sample(s)", fg="black")
-            for s in samples:
-                data = s.get("data", {}) or {}
-                label_text = data.get("predicted_label", "(unclassified)")
-                row_text = f'{s.get("date", "?")}  —  {label_text}'
-                gallery_listbox.insert(tk.END, row_text)
-                gallery_sample_ids.append(s["_id"])
-
-        root.after(0, apply)
-
-    threading.Thread(target=query, daemon=True).start()
-
-
-def on_gallery_select(event):
-    """Load and display the first image for the selected sample.
-    Also threaded — see refresh_gallery() for why."""
-    selection = gallery_listbox.curselection()
-    if not selection:
-        return
-    sample_id = gallery_sample_ids[selection[0]]
-
-    def query():
-        try:
-            images = get_images_for_sample(sample_id)
-        except Exception as e:
-            msg = str(e)
-            root.after(0, lambda msg=msg: gallery_image_label.config(
-                image="", text=f"Mongo error:\n{msg}"))
-            return
-
-        if not images:
-            root.after(0, lambda: gallery_image_label.config(
-                image="", text="No images for this sample"))
-            return
-
-        if not _PIL_AVAILABLE:
-            root.after(0, lambda: gallery_image_label.config(
-                image="", text="Pillow not installed.\nRun: pip install Pillow"))
-            return
-
-        image_path = images[0]["image_path"]
-        try:
-            img = Image.open(image_path)
-            img.thumbnail((240, 240))
-            photo = ImageTk.PhotoImage(img)
-        except (FileNotFoundError, OSError) as e:
-            msg = str(e)
-            root.after(0, lambda msg=msg: gallery_image_label.config(
-                image="", text=f"Could not load image:\n{image_path}\n{msg}"))
-            return
-
-        def apply():
-            gallery_image_label.image = photo  # keep a reference - Tkinter drops it otherwise
-            gallery_image_label.config(image=photo, text="")
-
-        root.after(0, apply)
-
-    threading.Thread(target=query, daemon=True).start()
-
-
-gallery_listbox.bind("<<ListboxSelect>>", on_gallery_select)
-
-
-def quick_capture_photo():
-    """Standalone single-shot capture, independent of the full
-    pickup-and-identify pipeline: no arm movement, no J4 rotation sweep,
-    no classification - just grab one frame from the station camera,
-    save it, log it to Mongo, and refresh the gallery."""
-    def execute():
-        try:
-            sample_id = new_sample_id()
-            frame_img = capture_station_frame()
-            image_path = save_image(frame_img, sample_id, "station", 0)
-            save_image_record(f"{sample_id}_station_0", sample_id, image_path, "station", 0)
-            save_sample(sample_id, str(date.today()),
-                        {"predicted_label": "(unclassified — manual capture)"})
-            root.after(0, refresh_gallery)
-        except (ImportError, RuntimeError, IOError, ConnectionError) as e:
-            msg = str(e)
-            root.after(0, lambda msg=msg: messagebox.showwarning(
-                "Capture Could Not Complete", msg))
-        except Exception as e:
-            msg = str(e)
-            root.after(0, lambda msg=msg: messagebox.showerror(
-                "Capture Error", f"Quick capture failed: {msg}"))
-
-    threading.Thread(target=execute, daemon=True).start()
-
-
-tk.Button(gallery_button_row, text="Capture Photo", bg="lightgreen",
-          command=quick_capture_photo).pack(side=tk.LEFT, padx=4)
-tk.Button(gallery_button_row, text="Refresh", command=refresh_gallery).pack(side=tk.LEFT, padx=4)
-
-# Initial load, so the panel isn't empty on startup if Mongo is already reachable
-refresh_gallery()
 
 # --- KEYBOARD BINDINGS ---
 # --- NEW AREA C: JOGGING BINDINGS ---
@@ -1592,9 +1657,29 @@ root.bind("<KeyRelease-w>",   handle_jog_release)
 root.bind("<KeyPress-s>",     lambda e: handle_jog_press("J3-"))
 root.bind("<KeyRelease-s>",   handle_jog_release)
 
+# J4 Control (Wrist rotation)
+root.bind("<KeyPress-q>",     lambda e: handle_jog_press("J4+"))
+root.bind("<KeyRelease-q>",   handle_jog_release)
+
+root.bind("<KeyPress-e>",     lambda e: handle_jog_press("J4-"))
+root.bind("<KeyRelease-e>",   handle_jog_release)
+
 
 
 update_gui_from_feedback()
+
+# Start listening for automatic-capture commands published by 4DAI (see
+# vision/config.py TOPIC_CAPTURE_COMMAND). This is what lets 4DAI's GUI
+# trigger a full "rotate + photograph" sequence with no manual
+# button-clicking on the arm side, per the transcript's requirement.
+start_capture_command_listener()
+
+# Generic remote control - lets 4DAI's own Arm Control page, an external
+# AI model, or any other MQTT publisher move the arm without touching
+# this machine (see TOPIC_ARM_MOVE_COMMAND in vision/config.py).
+start_move_command_listener()
+
+
 def on_app_close():
     """Release camera handles, the laser's serial connection, and the
     MQTT client cleanly on exit rather than leaving them open/locked."""

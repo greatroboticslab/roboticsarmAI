@@ -31,6 +31,7 @@ from vision.config import (
     MQTT_BROKER_PORT,
     TOPIC_ARM_OBJECT_CAPTURED,
     TOPIC_VISION_RESULT,
+    TOPIC_CAPTURE_STATUS,
 )
 
 _client = None
@@ -82,6 +83,22 @@ def publish_result(sample_id: str, result: dict) -> None:
         "result": result,
     })
     client.publish(TOPIC_VISION_RESULT, payload)
+
+
+def publish_capture_status(event: str, **fields) -> None:
+    """Report progress/completion of an automated capture sequence
+    started by a TOPIC_CAPTURE_COMMAND message from 4DAI.
+
+    event: "started" | "image" | "completed" | "error"
+    fields: whatever is relevant for that event, e.g.
+        started:   category, num_images, degrees_per_step
+        image:     category, sample_id, image_index, image_path
+        completed: category, sample_id, image_paths, values
+        error:     category, message
+    """
+    client = _get_client()
+    payload = json.dumps({"event": event, **fields})
+    client.publish(TOPIC_CAPTURE_STATUS, payload)
 
 
 def disconnect() -> None:
