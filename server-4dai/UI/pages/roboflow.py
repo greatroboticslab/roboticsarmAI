@@ -2,6 +2,8 @@ import streamlit as st
 import requests 
 from key import URL 
 from datetime import datetime 
+from io import BytesIO
+from PIL import Image
 import re 
 import json
 
@@ -165,7 +167,17 @@ with cols[0]:
                     lock = is_already_selected or st.session_state.lock2
 
                     with columns[count % 3]:
-                        st.image(actual_image.content,caption=f"Image ID: {image_id}",width="stretch")
+                        # BUGFIX (images occasionally stretched/distorted)
+                        # — same fix as view_data.py: resize with Pillow's
+                        # aspect-preserving thumbnail() ourselves instead
+                        # of relying on Streamlit's buggy width="stretch"
+                        # (streamlit/streamlit#12519).
+                        try:
+                            img = Image.open(BytesIO(actual_image.content))
+                            img.thumbnail((350, 350))
+                            st.image(img, caption=f"Image ID: {image_id}")
+                        except Exception:
+                            st.image(actual_image.content, caption=f"Image ID: {image_id}")
                         if st.button("Add", key=f"add_button{image_id}", disabled=lock, help="Please select RoboFlow account first/already added into selected images"):
                             st.session_state.selected_images.append({
                                 "image_id": image_id,

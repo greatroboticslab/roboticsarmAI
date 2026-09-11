@@ -2,6 +2,8 @@ import streamlit as st
 import requests
 from key import URL
 from datetime import datetime
+from io import BytesIO
+from PIL import Image
 import json 
 
 @st.fragment(run_every="1s")
@@ -107,7 +109,29 @@ for sample in samples:
 
 
                 with columns[count % 3]:
-                    st.image(actual_image.content,caption=f"Image ID: {image_id}",width="stretch")
+                    # BUGFIX (images occasionally stretched/distorted in
+                    # this grid): Streamlit's width="stretch" scales the
+                    # image to fill the column, but has a confirmed
+                    # upstream bug (streamlit/streamlit#12519) where that
+                    # scaling doesn't reliably preserve the image's own
+                    # aspect ratio — some images come out squashed/
+                    # stretched depending on how far their aspect ratio
+                    # is from the column's. Sidestepping the bug entirely:
+                    # resize the actual image ourselves with Pillow's
+                    # thumbnail() (which always preserves aspect ratio,
+                    # only ever scaling DOWN to fit within the box) before
+                    # handing it to st.image(), and let st.image show it
+                    # at that already-correct size (default width="content")
+                    # instead of asking Streamlit to stretch it.
+                    try:
+                        img = Image.open(BytesIO(actual_image.content))
+                        img.thumbnail((350, 350))
+                        st.image(img, caption=f"Image ID: {image_id}")
+                    except Exception:
+                        # Not a decodable image (or Pillow unavailable) —
+                        # fall back to the original bytes rather than
+                        # showing nothing.
+                        st.image(actual_image.content, caption=f"Image ID: {image_id}")
 
                     st.download_button(
                         label="Download Image",

@@ -49,7 +49,7 @@ from vision.config import (
 )
 from vision.messaging.publisher import publish_captured, publish_capture_status
 from vision.messaging.subscriber import subscribe
-from vision.storage import mongo_client, object_catalog, excel_export, json_logger, attribute_schema, session_manager, query_safety, package_export, storage_location
+from vision.storage import mongo_client, object_catalog, excel_export, json_logger, attribute_schema, session_manager, query_safety, package_export, storage_location, roboflow_export
 from vision.storage.capture_pipeline import record_capture
 from vision.services import rotation_coordinator
 from vision.config import DATA_AUTHORITY_MODE
@@ -144,6 +144,87 @@ def resolve_image_path(path: str) -> str:
 
     return path  # doesn't exist anywhere we know to look — let the caller's
                  # own error handling report exactly what was tried
+
+
+def _image_doc_title(doc: dict, prefix: str = "") -> str:
+    """Human-readable header for one image row in any of the photo
+    viewers below — shows WHICH channel/view a photo actually is
+    (view_label, e.g. "primary_split_r"/"primary_depth" — see
+    vision.camera.capture) instead of just a bare view_index number,
+    plus any user-set custom_label (e.g. "Left camera") once one's been
+    saved via the "Label" box next to each photo."""
+    source = doc.get("source", "?")
+    view_index = doc.get("view_index", "?")
+    view_label = doc.get("view_label")
+    custom_label = (doc.get("custom_label") or "").strip()
+    text = f"{prefix}{source}"
+    if view_label:
+        text += f" — {view_label}"
+    else:
+        text += f" — view {view_index}"
+    if custom_label:
+        text += f"  [{custom_label}]"
+    return text
+
+
+def _show_image_in_label(label_widget: tk.Label, path: str, max_size: tuple,
+                          photo_ref_list: list, raw_path: str = None):
+    """Loads `path` and displays it in `label_widget`, scaled DOWN (never
+    up/distorted) to fit within `max_size` via Pillow's thumbnail() —
+    which always preserves the image's own aspect ratio — rather than
+    forcing it to an exact fixed size, which is what was occasionally
+    stretching/squashing photos whose aspect ratio didn't match the
+    fixed box. `photo_ref_list` must be a list that outlives the label
+    (e.g. `viewer._photo_refs`) so Tk doesn't garbage-collect the
+    image out from under the widget. `raw_path`, if given and different
+    from `path`, is mentioned in the error message so a resolve_image_
+    path() fallback attempt is visible rather than silently hidden.
+    Returns True on success."""
+    try:
+        img = Image.open(path)
+        img.thumbnail(max_size)  # in place, aspect-ratio preserved, only ever shrinks
+        photo = ImageTk.PhotoImage(img)
+        photo_ref_list.append(photo)
+        label_widget.config(image=photo, text="")
+        label_widget.image = photo
+        return True
+    except Exception as e:
+        hint = "" if (raw_path is None or raw_path == path) else f"\n(tried: {path})"
+        label_widget.config(image="", text=f"Could not load '{raw_path or path}': {e}{hint}",
+                             fg="red", wraplength=520, justify=tk.LEFT)
+        return False
+
+
+def _add_image_label_editor(parent, doc: dict, status_label: tk.Label = None) -> None:
+    """Adds a small "Label:" entry + Save button under one photo so its
+    channel/view (see _image_doc_title) can also be annotated by
+    physical position — e.g. typing "Left camera" / "Right camera" for
+    a stereo camera's split_r/split_g/split_b outputs. Saved straight
+    to Mongo via mongo_client.update_image_custom_label(); `status_label`
+    (optional) gets a brief confirmation/error message."""
+    image_id = doc.get("_id")
+    if not image_id:
+        return
+    row = tk.Frame(parent)
+    row.pack(anchor="w", pady=(2, 0))
+    tk.Label(row, text="Label:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 4))
+    label_var = tk.StringVar(value=doc.get("custom_label") or "")
+    entry = tk.Entry(row, textvariable=label_var, width=24, font=("Arial", 8))
+    entry.pack(side=tk.LEFT, padx=(0, 4))
+
+    def save(_event=None):
+        try:
+            mongo_client.update_image_custom_label(image_id, label_var.get().strip())
+            doc["custom_label"] = label_var.get().strip()
+            if status_label is not None:
+                status_label.config(text="Label saved.", fg="green")
+        except Exception as e:
+            if status_label is not None:
+                status_label.config(text=f"Could not save label: {e}", fg="red")
+
+    tk.Button(row, text="Save", font=("Arial", 8), command=save).pack(side=tk.LEFT)
+    entry.bind("<Return>", save)
+
 
 # ---------------------------------------------------------------------------
 # Server URL — where images/samples get uploaded and where the
@@ -524,8 +605,8 @@ def capture_movement_snapshot(sample_id: str, label: str) -> None:
         for cam in list(list_configured_cameras().keys()):
             try:
                 for view_index, (suffix, frame) in enumerate(capture_frames_multi(cam)):
-                    path = save_image(frame, sample_id, cam, view_index)
-                    pairs.append((cam, path))
+                    path = save_image(frame, sample_id, cam, view_index, view_label=suffix)
+                    pairs.append((cam, path, suffix))
             except Exception as e:
                 print(f"[AUTO CAPTURE] '{cam}' unavailable for {sample_id}: {e}")
         if not pairs:
@@ -3380,26 +3461,20 @@ def show_object_detail(object_id: str, viewer_title_prefix: str = "Object"):
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
             viewer._photo_refs = []  # keep references so Tk doesn't garbage-collect them
+            img_status_label = tk.Label(viewer, text="", fg="gray", font=("Arial", 8))
+            img_status_label.pack(anchor="w", padx=10)
             for doc in image_docs:
                 raw_path = doc.get("image_path", "")
                 path = resolve_image_path(raw_path)
-                source = doc.get("source", "?")
-                view_index = doc.get("view_index", "?")
                 when = doc.get("captured_at", "")
                 row = tk.Frame(inner_frame, pady=8)
                 row.pack(fill=tk.X)
-                tk.Label(row, text=f"{source} — view {view_index}  ({when})",
+                tk.Label(row, text=f"{_image_doc_title(doc)}  ({when})",
                          font=("Arial", 9, "bold")).pack()
-                try:
-                    img = Image.open(path)
-                    img.thumbnail((700, 525))
-                    photo = ImageTk.PhotoImage(img)
-                    viewer._photo_refs.append(photo)
-                    tk.Label(row, image=photo).pack()
-                except Exception as e:
-                    hint = ("" if path == raw_path else f"\n(tried: {path})")
-                    tk.Label(row, text=f"Could not load '{raw_path}': {e}{hint}",
-                             fg="red", wraplength=680).pack()
+                img_label = tk.Label(row)
+                img_label.pack()
+                _show_image_in_label(img_label, path, (700, 525), viewer._photo_refs, raw_path=raw_path)
+                _add_image_label_editor(row, doc, img_status_label)
 
         root.after(0, build_ui)
 
@@ -3934,28 +4009,21 @@ def open_catalog_detail_viewer(event=None):
                          fg="red", padx=10, pady=10, anchor="w").pack(fill=tk.X)
             else:
                 viewer._photo_refs = []
+                catalog_img_status_label = tk.Label(outer_frame, text="", fg="gray", font=("Arial", 8))
+                catalog_img_status_label.pack(anchor="w", padx=10)
                 for doc in all_docs:
                     raw_path = doc.get("image_path", "")
                     path = resolve_image_path(raw_path)
-                    source = doc.get("source", "?")
-                    view_index = doc.get("view_index", "?")
                     when = doc.get("captured_at", "")
                     img_row = tk.Frame(outer_frame, pady=8)
                     img_row.pack(fill=tk.X, padx=10)
                     tk.Label(img_row, text=f"capture {doc.get('_object_id', '?')}  —  "
-                                            f"{source} / view {view_index}  ({when})",
+                                            f"{_image_doc_title(doc)}  ({when})",
                              font=("Arial", 9, "bold")).pack(anchor="w")
-                    try:
-                        img = Image.open(path)
-                        img.thumbnail((700, 525))
-                        photo = ImageTk.PhotoImage(img)
-                        viewer._photo_refs.append(photo)
-                        tk.Label(img_row, image=photo).pack(anchor="w")
-                    except Exception as e:
-                        hint = "" if path == raw_path else f"\n(tried: {path})"
-                        tk.Label(img_row, text=f"Could not load '{raw_path}': {e}{hint}",
-                                 fg="red", wraplength=680, justify=tk.LEFT, anchor="w"
-                                 ).pack(fill=tk.X)
+                    img_label = tk.Label(img_row)
+                    img_label.pack(anchor="w")
+                    _show_image_in_label(img_label, path, (700, 525), viewer._photo_refs, raw_path=raw_path)
+                    _add_image_label_editor(img_row, doc, catalog_img_status_label)
 
         root.after(0, build_ui)
 
@@ -4663,6 +4731,268 @@ def export_package_range_gui():
 
 tk.Button(package_range_frame, text="Export Range Package...", command=export_package_range_gui,
           bg="lightgreen").grid(row=1, column=4, sticky=tk.W, padx=(4, 0), pady=(2, 0))
+
+# =====================================================================
+# ROBOFLOW EXPORT — send captured images straight to a Roboflow project
+# over its REST API, using the exact same session/all-history/date-
+# range scoping as the Data Package export above (see
+# vision.storage.roboflow_export's module docstring). Credentials are
+# saved locally (plain JSON next to the repo, same as camera_settings.
+# json) so more than one Roboflow account/project can be picked from
+# without retyping the API key every time.
+# =====================================================================
+roboflow_frame = tk.LabelFrame(tab_sync_storage, text=" Roboflow Export ", padx=10, pady=10)
+roboflow_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+tk.Label(roboflow_frame,
+         text="Uploads captured photos directly to a Roboflow project (for labeling/training) "
+              "over its API — no manual download/re-upload needed. Each image's captured "
+              "attributes are sent along as Roboflow metadata. Credentials are used only in "
+              "memory for this run and are never saved to disk — sign in again each time you "
+              "open the app.",
+         fg="gray", font=("Arial", 8), wraplength=680, justify=tk.LEFT).pack(anchor=tk.W)
+
+roboflow_status_label = tk.Label(roboflow_frame, text="", fg="gray", wraplength=680, justify=tk.LEFT)
+roboflow_status_label.pack(anchor=tk.W, pady=(2, 4))
+
+# ---- Sign in — credentials are held in memory only for this run and
+# are NEVER written to disk (see vision.storage.roboflow_export's
+# module docstring). Re-enter them each time you (re)start the app or
+# after Sign Out; nothing is pre-filled or remembered between sessions.
+roboflow_cred_frame = tk.Frame(roboflow_frame)
+roboflow_cred_frame.pack(fill=tk.X, pady=(0, 4))
+tk.Label(roboflow_cred_frame, text="API key:").grid(row=0, column=0, sticky=tk.W)
+roboflow_apikey_var = tk.StringVar()
+roboflow_apikey_entry = tk.Entry(roboflow_cred_frame, textvariable=roboflow_apikey_var, width=26, show="*")
+roboflow_apikey_entry.grid(row=0, column=1, sticky=tk.W, padx=(4, 16))
+tk.Label(roboflow_cred_frame, text="Workspace:").grid(row=0, column=2, sticky=tk.W)
+roboflow_workspace_var = tk.StringVar()
+roboflow_workspace_entry = tk.Entry(roboflow_cred_frame, textvariable=roboflow_workspace_var, width=16)
+roboflow_workspace_entry.grid(row=0, column=3, sticky=tk.W, padx=(4, 16))
+tk.Label(roboflow_cred_frame, text="Project ID:").grid(row=0, column=4, sticky=tk.W)
+roboflow_project_var = tk.StringVar()
+roboflow_project_entry = tk.Entry(roboflow_cred_frame, textvariable=roboflow_project_var, width=20)
+roboflow_project_entry.grid(row=0, column=5, sticky=tk.W, padx=(4, 16))
+
+roboflow_signin_btn = tk.Button(roboflow_cred_frame, text="Sign In", bg="khaki")
+roboflow_signout_btn = tk.Button(roboflow_cred_frame, text="Sign Out", state=tk.DISABLED)
+roboflow_signin_btn.grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+roboflow_signout_btn.grid(row=1, column=2, sticky=tk.W, pady=(6, 0))
+
+
+def _set_roboflow_credential_fields_state(enabled: bool):
+    state = tk.NORMAL if enabled else tk.DISABLED
+    for entry in (roboflow_apikey_entry, roboflow_workspace_entry, roboflow_project_entry):
+        entry.config(state=state)
+    roboflow_signin_btn.config(state=tk.NORMAL if enabled else tk.DISABLED)
+    roboflow_signout_btn.config(state=tk.DISABLED if enabled else tk.NORMAL)
+
+
+def _do_roboflow_sign_in():
+    api_key = roboflow_apikey_var.get().strip()
+    workspace = roboflow_workspace_var.get().strip()
+    project_id = roboflow_project_var.get().strip()
+    roboflow_status_label.config(text="Verifying credentials with Roboflow...", fg="gray")
+
+    def worker():
+        ok, message = roboflow_export.sign_in(api_key, workspace, project_id)
+
+        def apply():
+            if ok:
+                # Wipe the typed API key from the entry/variable right away —
+                # it's held in vision.storage.roboflow_export's in-memory
+                # session from here on, not in this widget.
+                roboflow_apikey_var.set("")
+                _set_roboflow_credential_fields_state(False)
+                roboflow_status_label.config(
+                    text=f"Signed in to '{workspace}/{project_id}'.", fg="green")
+            else:
+                roboflow_status_label.config(text=message, fg="red")
+        root.after(0, apply)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _do_roboflow_sign_out():
+    roboflow_export.sign_out()
+    roboflow_apikey_var.set("")
+    roboflow_workspace_var.set("")
+    roboflow_project_var.set("")
+    _set_roboflow_credential_fields_state(True)
+    roboflow_status_label.config(text="Signed out — Roboflow credentials cleared from memory.", fg="blue")
+
+
+roboflow_signin_btn.config(command=_do_roboflow_sign_in)
+roboflow_signout_btn.config(command=_do_roboflow_sign_out)
+
+
+roboflow_scope_frame = tk.Frame(roboflow_frame)
+roboflow_scope_frame.pack(fill=tk.X, pady=(8, 0))
+tk.Label(roboflow_scope_frame, text="Upload:", font=("Arial", 9, "bold")).grid(row=0, column=0, sticky=tk.W)
+roboflow_scope_var = tk.StringVar(value="today")
+tk.Radiobutton(roboflow_scope_frame, text="Today's captures", variable=roboflow_scope_var,
+               value="today").grid(row=0, column=1, sticky=tk.W, padx=(8, 0))
+tk.Radiobutton(roboflow_scope_frame, text="Full history", variable=roboflow_scope_var,
+               value="all").grid(row=0, column=2, sticky=tk.W, padx=(8, 0))
+tk.Radiobutton(roboflow_scope_frame, text="Date range:", variable=roboflow_scope_var,
+               value="range").grid(row=0, column=3, sticky=tk.W, padx=(8, 0))
+roboflow_range_start_entry = tk.Entry(roboflow_scope_frame, width=12)
+roboflow_range_start_entry.grid(row=0, column=4, sticky=tk.W, padx=(4, 4))
+tk.Label(roboflow_scope_frame, text="to").grid(row=0, column=5)
+roboflow_range_end_entry = tk.Entry(roboflow_scope_frame, width=12)
+roboflow_range_end_entry.grid(row=0, column=6, sticky=tk.W, padx=(4, 0))
+tk.Label(roboflow_scope_frame, text="(YYYY-MM-DD each)", fg="gray", font=("Arial", 8)
+          ).grid(row=1, column=4, columnspan=3, sticky=tk.W)
+
+roboflow_split_row = tk.Frame(roboflow_frame)
+roboflow_split_row.pack(fill=tk.X, pady=(4, 0))
+tk.Label(roboflow_split_row, text="Dataset split:").pack(side=tk.LEFT, padx=(0, 4))
+roboflow_split_var = tk.StringVar(value="train")
+ttk.Combobox(roboflow_split_row, textvariable=roboflow_split_var, width=8, state="readonly",
+             values=["train", "valid", "test"]).pack(side=tk.LEFT, padx=(0, 16))
+tk.Label(roboflow_split_row, text="Batch name (optional):").pack(side=tk.LEFT, padx=(0, 4))
+roboflow_batch_var = tk.StringVar()
+tk.Entry(roboflow_split_row, textvariable=roboflow_batch_var, width=20).pack(side=tk.LEFT)
+tk.Label(roboflow_split_row, text="(groups this upload in Roboflow's web UI)",
+         fg="gray", font=("Arial", 8)).pack(side=tk.LEFT, padx=(8, 0))
+
+roboflow_progress = ttk.Progressbar(roboflow_frame, orient="horizontal", mode="determinate")
+roboflow_progress.pack(fill=tk.X, pady=(8, 4))
+
+
+def _current_roboflow_scope_kwargs():
+    scope = roboflow_scope_var.get()
+    if scope == "all":
+        return {"all_history": True}
+    if scope == "range":
+        parsed = _read_date_range_or_error(roboflow_range_start_entry, roboflow_range_end_entry)
+        if parsed is None:
+            return None
+        start_date, end_date = parsed
+        return {"start_date": start_date, "end_date": end_date}
+    return {"session_id": session_manager.today_session_id()}
+
+
+def _do_preview_roboflow_upload():
+    kwargs = _current_roboflow_scope_kwargs()
+    if kwargs is None:
+        return
+    roboflow_status_label.config(text="Counting images in scope...", fg="gray")
+
+    def worker():
+        try:
+            images = roboflow_export.gather_images_for_scope(**kwargs)
+            msg, color = f"{len(images)} image(s) found in this scope, ready to upload.", "blue"
+        except Exception as e:
+            msg, color = f"Could not gather images: {e}", "red"
+        root.after(0, lambda: roboflow_status_label.config(text=msg, fg=color))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+_roboflow_cancel_event = threading.Event()
+
+
+def _do_upload_to_roboflow():
+    cfg = roboflow_export.current_session()
+    if not cfg:
+        roboflow_status_label.config(text="Sign in to Roboflow first.", fg="red")
+        return
+    kwargs = _current_roboflow_scope_kwargs()
+    if kwargs is None:
+        return
+
+    def worker():
+        try:
+            images = roboflow_export.gather_images_for_scope(**kwargs)
+        except Exception as e:
+            root.after(0, lambda: roboflow_status_label.config(text=f"Could not gather images: {e}", fg="red"))
+            return
+        if not images:
+            root.after(0, lambda: roboflow_status_label.config(text="No images found in this scope.", fg="orange"))
+            return
+
+        def confirm_and_run():
+            if not messagebox.askyesno(
+                    "Upload to Roboflow",
+                    f"Upload {len(images)} image(s) to Roboflow project "
+                    f"'{cfg['workspace']}/{cfg['project_id']}' (split: {roboflow_split_var.get()})?"
+                    f"\n\nThis sends each image (and its captured attributes as metadata, via a "
+                    f"follow-up call — needs an API key with the image:tag scope or metadata "
+                    f"attachment will fail even though the photo itself uploads) over the "
+                    f"network. Already-uploaded images cannot be recalled from here — Cancel "
+                    f"during upload only stops images not yet attempted."):
+                return
+
+            _roboflow_cancel_event.clear()
+            roboflow_progress.config(maximum=len(images), value=0)
+            roboflow_status_label.config(text=f"Uploading 0/{len(images)}...", fg="gray")
+            roboflow_upload_btn.config(state=tk.DISABLED)
+            roboflow_cancel_btn.config(state=tk.NORMAL)
+
+            def upload_worker():
+                def progress_cb(done, total, result):
+                    def apply():
+                        roboflow_progress.config(value=done)
+                        state = "ok" if result["ok"] else f"FAILED ({result['message']})"
+                        roboflow_status_label.config(
+                            text=f"Uploading {done}/{total}... last: "
+                                 f"{os.path.basename(result['image_path'])} — {state}",
+                            fg="gray")
+                    root.after(0, apply)
+
+                success_count, failures = roboflow_export.upload_images(
+                    cfg["api_key"], cfg["workspace"], cfg["project_id"], images,
+                    split=roboflow_split_var.get(), batch_name=roboflow_batch_var.get().strip() or None,
+                    progress_cb=progress_cb, should_cancel=_roboflow_cancel_event.is_set)
+
+                def finish():
+                    attempted = success_count + len(failures)
+                    skipped = len(images) - attempted
+                    upload_failures = [f for f in failures if not f["message"].startswith("uploaded, but")]
+                    metadata_failures = [f for f in failures if f["message"].startswith("uploaded, but")]
+                    msg = f"Uploaded {success_count}/{len(images)} image(s) to Roboflow."
+                    if _roboflow_cancel_event.is_set() and skipped > 0:
+                        msg += f" Cancelled — {skipped} image(s) not attempted."
+                    if upload_failures:
+                        msg += f" {len(upload_failures)} failed to upload."
+                    if metadata_failures:
+                        msg += (f" {len(metadata_failures)} uploaded OK but couldn't attach metadata "
+                                f"(check the API key has the image:tag scope).")
+                    if failures:
+                        msg += " See console for details."
+                        for f in failures:
+                            print(f"[ROBOFLOW UPLOAD] {f['image_path']}: {f['message']}")
+                    roboflow_status_label.config(text=msg, fg=("green" if not failures else "orange"))
+                    roboflow_upload_btn.config(state=tk.NORMAL)
+                    roboflow_cancel_btn.config(state=tk.DISABLED)
+
+                root.after(0, finish)
+
+            threading.Thread(target=upload_worker, daemon=True).start()
+
+        root.after(0, confirm_and_run)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _do_cancel_roboflow_upload():
+    _roboflow_cancel_event.set()
+    roboflow_cancel_btn.config(state=tk.DISABLED)
+    roboflow_status_label.config(text="Cancelling — finishing the image currently in flight...", fg="orange")
+
+
+roboflow_btn_row = tk.Frame(roboflow_frame)
+roboflow_btn_row.pack(fill=tk.X)
+tk.Button(roboflow_btn_row, text="Preview Count", command=_do_preview_roboflow_upload
+          ).pack(side=tk.LEFT, padx=(0, 4))
+roboflow_upload_btn = tk.Button(roboflow_btn_row, text="Upload to Roboflow", command=_do_upload_to_roboflow,
+                                 bg="lightgreen")
+roboflow_upload_btn.pack(side=tk.LEFT, padx=4)
+roboflow_cancel_btn = tk.Button(roboflow_btn_row, text="Cancel", command=_do_cancel_roboflow_upload,
+                                 state=tk.DISABLED)
+roboflow_cancel_btn.pack(side=tk.LEFT, padx=4)
+
 
 # =====================================================================
 # STORAGE LOCATION (PERMANENT) — where everything above actually lives
@@ -5735,24 +6065,18 @@ def open_attribute_review_viewer(rows: list):
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
             viewer._photo_refs = []
+            dc_img_status_label = tk.Label(inner_frame, text="", fg="gray", font=("Arial", 8))
+            dc_img_status_label.pack(anchor="w")
             for doc in image_docs:
                 raw_path = doc.get("image_path", "")
                 path = resolve_image_path(raw_path)
-                src = doc.get("source", "?")
-                view_index = doc.get("view_index", "?")
                 img_row = tk.Frame(inner_frame, pady=6)
                 img_row.pack(fill=tk.X)
-                tk.Label(img_row, text=f"{src} — view {view_index}", font=("Arial", 9, "bold")).pack()
-                try:
-                    img = Image.open(path)
-                    img.thumbnail((520, 390))
-                    photo = ImageTk.PhotoImage(img)
-                    viewer._photo_refs.append(photo)
-                    tk.Label(img_row, image=photo).pack()
-                except Exception as e:
-                    hint = "" if path == raw_path else f"\n(tried: {path})"
-                    tk.Label(img_row, text=f"Could not load '{raw_path}': {e}{hint}",
-                             fg="red", wraplength=520).pack()
+                tk.Label(img_row, text=_image_doc_title(doc), font=("Arial", 9, "bold")).pack()
+                img_label = tk.Label(img_row)
+                img_label.pack()
+                _show_image_in_label(img_label, path, (520, 390), viewer._photo_refs, raw_path=raw_path)
+                _add_image_label_editor(img_row, doc, dc_img_status_label)
 
         # --- Nav / save row ---
         nav_frame = tk.Frame(viewer, padx=10, pady=8)
@@ -5951,22 +6275,18 @@ def open_inventory_review_viewer(entries: list):
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
             viewer._photo_refs = []
+            inv_img_status_label = tk.Label(inner_frame, text="", fg="gray", font=("Arial", 8))
+            inv_img_status_label.pack(anchor="w")
             for doc in all_docs:
                 raw_path = doc.get("image_path", "")
                 path = resolve_image_path(raw_path)
                 img_row = tk.Frame(inner_frame, pady=6)
                 img_row.pack(fill=tk.X)
-                tk.Label(img_row, text=f"{doc.get('source', '?')} — view {doc.get('view_index', '?')}",
-                         font=("Arial", 9, "bold")).pack()
-                try:
-                    img = Image.open(path)
-                    img.thumbnail((520, 390))
-                    photo = ImageTk.PhotoImage(img)
-                    viewer._photo_refs.append(photo)
-                    tk.Label(img_row, image=photo).pack()
-                except Exception as e:
-                    tk.Label(img_row, text=f"Could not load '{raw_path}': {e}",
-                             fg="red", wraplength=520).pack()
+                tk.Label(img_row, text=_image_doc_title(doc), font=("Arial", 9, "bold")).pack()
+                img_label = tk.Label(img_row)
+                img_label.pack()
+                _show_image_in_label(img_label, path, (520, 390), viewer._photo_refs, raw_path=raw_path)
+                _add_image_label_editor(img_row, doc, inv_img_status_label)
 
         nav_frame = tk.Frame(viewer, padx=10, pady=8)
         nav_frame.pack(fill=tk.X)
@@ -6511,7 +6831,8 @@ def run_manual_snapshot(sample_label: str, status_label_widget: tk.Label,
         for cam in camera_names:
             try:
                 for view_index, (suffix, frame) in enumerate(capture_frames_multi(cam)):
-                    saved_pairs.append((cam, save_image(frame, sample_id, cam, view_index)))
+                    path = save_image(frame, sample_id, cam, view_index, view_label=suffix)
+                    saved_pairs.append((cam, path, suffix))
             except Exception as e:
                 cam_errors[cam] = str(e)
 
@@ -6557,7 +6878,7 @@ def run_manual_snapshot(sample_label: str, status_label_widget: tk.Label,
                 )
                 submit_response.raise_for_status()
                 remote_sample_id = submit_response.json()["sample_id"]
-                for cam, path in saved_pairs:
+                for cam, path, _suffix in saved_pairs:
                     try:
                         with open(path, "rb") as image_file:
                             upload_response = requests.post(
@@ -6926,20 +7247,67 @@ def _do_apply_camera_settings(cam_name):
     depth_map = _camera_settings_vars[cam_name]["depth_map"].get()
     dual = _camera_settings_vars[cam_name]["dual"].get()
     extract_b = _camera_settings_vars[cam_name]["extract_b"].get()
+    channel_keep = [ch for ch, v in _camera_settings_vars[cam_name]["channel_keep"].items() if v.get()]
+    channel_keep_b = [ch for ch, v in _camera_settings_vars[cam_name]["channel_keep_b"].items() if v.get()]
+    depth_left_raw = _camera_settings_vars[cam_name]["depth_left"].get()
+    depth_right_raw = _camera_settings_vars[cam_name]["depth_right"].get()
+    depth_left = depth_left_raw if depth_left_raw in ("r", "g", "b", "a") else ""
+    depth_right = depth_right_raw if depth_right_raw in ("r", "g", "b", "a") else ""
     try:
         set_camera_settings(cam_name, extract_lenses=extract, keep_original=keep_orig,
                              alternate_lenses=alternate, depth_map=depth_map,
-                             dual_capture=dual, extract_lenses_b=extract_b)
+                             dual_capture=dual, extract_lenses_b=extract_b,
+                             channel_keep=channel_keep, channel_keep_b=channel_keep_b,
+                             depth_left_channel=depth_left, depth_right_channel=depth_right)
         note = " — pick A/B formats from the Detected Formats list above (Use as A / Use as B applies immediately)."
+        dropped = [ch.upper() for ch in ("r", "g", "b") if ch not in channel_keep]
         msg = (f"'{cam_name}': extract lenses = {extract}"
                + (f", keep original = {keep_orig}" if extract else "")
                + (f", alternate views (one per photo) = {alternate}" if extract else "")
-               + (f", depth map = {depth_map}" if extract else "")
+               + (f", dropped channels = {dropped or 'none'}" if extract else "")
+               + (f", depth map = {depth_map}" if (extract or depth_map) else "")
+               + (f" (left={depth_left_raw}, right={depth_right_raw})" if depth_map else "")
                + (f", dual-capture B = on (extract lenses B = {extract_b})" if dual else "")
                + note)
         camera_assign_status.config(text=msg, fg="green")
     except Exception as e:
         camera_assign_status.config(text=f"Could not apply settings for '{cam_name}': {e}", fg="red")
+
+
+def _do_set_manual_fps(cam_name, fps_var, target):
+    """Sets the requested FPS for profile A or B directly, without going
+    through Detect Formats — see the "Set FPS directly" row in
+    _rebuild_camera_assign_rows(). Updates the on-screen A:/B: label
+    immediately so the change is visible without re-opening the tab."""
+    txt = fps_var.get().strip()
+    if not txt:
+        camera_assign_status.config(text="Enter a whole-number fps value first.", fg="red")
+        return
+    try:
+        fps_val = int(txt)
+    except ValueError:
+        camera_assign_status.config(
+            text=f"'{txt}' is not a valid fps (must be a whole number).", fg="red")
+        return
+    vars_ = _camera_settings_vars[cam_name]
+    try:
+        if target == "a":
+            set_camera_settings(cam_name, fps=fps_val)
+            current = get_camera_settings(cam_name)
+            vars_["a_label"].set(f"A: {current['width']}x{current['height']} "
+                                  f"@ {current['fps'] or 'default'}fps")
+        else:
+            set_camera_settings(cam_name, fps_b=fps_val)
+            current = get_camera_settings(cam_name)
+            vars_["b_label"].set(f"B: {current['width_b']}x{current['height_b']} "
+                                  f"@ {current['fps_b'] or 'default'}fps")
+        camera_assign_status.config(
+            text=f"'{cam_name}' profile {target.upper()} fps set to {fps_val}. Not every "
+                 f"camera/driver honors every requested value — check the live feed or take "
+                 f"a capture to confirm it actually took effect.",
+            fg="blue")
+    except Exception as e:
+        camera_assign_status.config(text=f"Could not set fps for '{cam_name}': {e}", fg="red")
 
 
 def _do_detect_output_modes(cam_name, listbox_widget, res_filter_var, fps_filter_var):
@@ -7092,16 +7460,99 @@ def _rebuild_camera_assign_rows():
                              "the next one next time — instead of all views every photo)",
                         variable=alternate_var, font=("Arial", 8)).pack(side=tk.LEFT)
 
+        # Which extracted channels to actually keep as saved photos —
+        # e.g. uncheck "R" if this camera's R channel is known to carry
+        # nothing useful, so it's dropped instead of saved every photo.
+        # Saved channels are named by color/plane (see
+        # vision/camera/capture.py's _channel_label) — "primary_split_r",
+        # "primary_split_g", etc. — not a bare letter index, so it's
+        # clear which physical channel a saved photo actually came from.
+        channel_keep_row = tk.Frame(camera_assign_rows_frame)
+        channel_keep_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(channel_keep_row, text="Keep channels:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        saved_keep = current_settings["channel_keep"]
+        channel_keep_vars = {}
+        for ch in ("r", "g", "b"):
+            var = tk.BooleanVar(value=(saved_keep is None or ch in saved_keep))
+            channel_keep_vars[ch] = var
+            tk.Checkbutton(channel_keep_row, text=ch.upper(), variable=var,
+                            font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(channel_keep_row,
+                 text="(uncheck a channel that's known to contain nothing useful for this "
+                      "camera so it's dropped instead of saved every photo — e.g. a blank R)",
+                 fg="gray", font=("Arial", 8), wraplength=460, justify=tk.LEFT).pack(side=tk.LEFT)
+
+        channel_keep_b_row = tk.Frame(camera_assign_rows_frame)
+        channel_keep_b_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(channel_keep_b_row, text="Keep channels (B):", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        saved_keep_b = current_settings["channel_keep_b"]
+        channel_keep_b_vars = {}
+        for ch in ("r", "g", "b"):
+            var = tk.BooleanVar(value=(saved_keep_b is None or ch in saved_keep_b))
+            channel_keep_b_vars[ch] = var
+            tk.Checkbutton(channel_keep_b_row, text=ch.upper(), variable=var,
+                            font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+
+        # Manual FPS entry — set a framerate directly without needing to
+        # run Detect Formats first (which is the only other way to
+        # change fps). Doesn't touch resolution/format; not every
+        # camera/driver honors every value requested.
+        manual_fps_row = tk.Frame(camera_assign_rows_frame)
+        manual_fps_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(manual_fps_row, text="Set FPS directly — A:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 4))
+        manual_fps_var = tk.StringVar(value=str(current_settings["fps"]) if current_settings["fps"] else "")
+        tk.Entry(manual_fps_row, textvariable=manual_fps_var, width=6).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(manual_fps_row, text="Set", font=("Arial", 8),
+                  command=lambda n=cam_name, v=manual_fps_var: _do_set_manual_fps(n, v, "a")
+                  ).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(manual_fps_row, text="B:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 4))
+        manual_fps_b_var = tk.StringVar(value=str(current_settings["fps_b"]) if current_settings["fps_b"] else "")
+        tk.Entry(manual_fps_row, textvariable=manual_fps_b_var, width=6).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(manual_fps_row, text="Set", font=("Arial", 8),
+                  command=lambda n=cam_name, v=manual_fps_b_var: _do_set_manual_fps(n, v, "b")
+                  ).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(manual_fps_row, text="(any whole number — not every camera/driver honors "
+                                       "every value; try it and check the live feed/a capture)",
+                 fg="gray", font=("Arial", 8)).pack(side=tk.LEFT)
+
         depth_row = tk.Frame(camera_assign_rows_frame)
         depth_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         depth_var = tk.BooleanVar(value=current_settings["depth_map"])
         tk.Checkbutton(depth_row,
-                        text="Generate a depth map (from split A + B, treated as left/right) "
-                             "using open-source stereo matching",
+                        text="Generate a depth map using open-source stereo matching",
                         variable=depth_var, font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 8))
         calib_status_var = tk.StringVar(
             value="calibrated" if stereo_depth.has_calibration(cam_name) else "not calibrated (less accurate)")
         tk.Label(depth_row, textvariable=calib_status_var, font=("Arial", 8), fg="gray").pack(side=tk.LEFT)
+
+        depth_channels_row = tk.Frame(camera_assign_rows_frame)
+        depth_channels_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(depth_channels_row, text="Depth pair — Left:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        _depth_choices = ["(default: 1st extracted)", "r", "g", "b", "a"]
+        depth_left_var = tk.StringVar(value=current_settings["depth_left_channel"] or _depth_choices[0])
+        ttk.Combobox(depth_channels_row, textvariable=depth_left_var, width=20, state="readonly",
+                     values=_depth_choices).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(depth_channels_row, text="Right:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        _depth_choices_r = ["(default: 2nd extracted)", "r", "g", "b", "a"]
+        depth_right_var = tk.StringVar(value=current_settings["depth_right_channel"] or _depth_choices_r[0])
+        ttk.Combobox(depth_channels_row, textvariable=depth_right_var, width=20, state="readonly",
+                     values=_depth_choices_r).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(depth_channels_row,
+                 text="(which split channel feeds each side of the depth map — independent "
+                      "of \"Keep channels\" above, so a channel can feed depth even if it's "
+                      "not itself saved as a photo)",
+                 fg="gray", font=("Arial", 8), wraplength=460, justify=tk.LEFT).pack(side=tk.LEFT)
+
+        mono_depth_row = tk.Frame(camera_assign_rows_frame)
+        mono_depth_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(mono_depth_row,
+                 text="Also works for a plain mono/single-channel camera (e.g. the arm's "
+                      "wrist camera) — it reuses that one frame for both sides since there's "
+                      "no real second view. There is NO actual stereo baseline in that case, "
+                      "so the result is heavily inaccurate — a rough placeholder only, not a "
+                      "real depth map.",
+                 fg="darkred", font=("Arial", 8, "italic"), wraplength=560, justify=tk.LEFT
+                 ).pack(side=tk.LEFT)
 
         calib_row = tk.Frame(camera_assign_rows_frame)
         calib_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
@@ -7145,7 +7596,8 @@ def _rebuild_camera_assign_rows():
         tk.Label(detect_row, text="fps:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
         fps_filter_var = tk.StringVar(value="Any")
         ttk.Combobox(detect_row, textvariable=fps_filter_var, width=6,
-                     values=["Any", "15", "24", "30", "60"]).pack(side=tk.LEFT, padx=(0, 8))
+                     values=["Any", "5", "10", "15", "20", "24", "25", "30",
+                             "50", "60", "90", "120"]).pack(side=tk.LEFT, padx=(0, 8))
         tk.Button(detect_row, text="Detect Formats", bg="lightgray", font=("Arial", 8),
                   command=lambda n=cam_name, lb=modes_listbox, rv=res_filter_var, fv=fps_filter_var:
                       _do_detect_output_modes(n, lb, rv, fv)
@@ -7173,6 +7625,8 @@ def _rebuild_camera_assign_rows():
             "a_label": a_label_var, "extract": extract_var,
             "keep_orig": keep_orig_var, "alternate": alternate_var, "depth_map": depth_var,
             "dual": dual_var, "b_label": b_label_var, "extract_b": extract_b_var,
+            "channel_keep": channel_keep_vars, "channel_keep_b": channel_keep_b_vars,
+            "depth_left": depth_left_var, "depth_right": depth_right_var,
         }
 
         apply_row = tk.Frame(camera_assign_rows_frame)
@@ -7900,6 +8354,15 @@ def on_app_close():
         release_all()
     except Exception as e:
         print(f"[CLEANUP] Camera release skipped: {e}")
+
+    # Roboflow credentials are session-only/in-memory (never written to
+    # disk — see vision.storage.roboflow_export's module docstring);
+    # explicitly discard them on exit rather than relying solely on
+    # process teardown to clear that memory.
+    try:
+        roboflow_export.sign_out()
+    except Exception as e:
+        print(f"[CLEANUP] Roboflow sign-out skipped: {e}")
 
     try:
         from vision.camera.laser import close as close_laser

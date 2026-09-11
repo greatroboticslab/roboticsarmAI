@@ -269,6 +269,22 @@ def get_camera_settings(name: str) -> dict:
         "alternate_lenses": bool(saved.get("alternate_lenses", False)),
         "depth_map": bool(saved.get("depth_map", False)),
         "dual_capture": bool(saved.get("dual_capture", False)),
+        # Which extracted channels to actually keep as saved photos —
+        # None/empty means "keep every extracted channel" (the old,
+        # only, behavior). A list like ["g", "b"] drops any channel not
+        # named (e.g. an "r" channel that's known to contain nothing
+        # useful for this camera). See set_camera_settings' docstring.
+        "channel_keep": list(saved.get("channel_keep") or []) or None,
+        "channel_keep_b": list(saved.get("channel_keep_b") or []) or None,
+        # Which two extracted channels feed the depth map, by channel
+        # label (see _channel_label — "r"/"g"/"b"/"a"/"mono"/"ch<N>").
+        # None means "use whichever two channels were extracted first"
+        # (the old, only, behavior). These are looked up in the FULL
+        # (unfiltered) set of extracted channels, so a channel can feed
+        # depth even if channel_keep above has dropped it from the
+        # saved photos.
+        "depth_left_channel": saved.get("depth_left_channel"),
+        "depth_right_channel": saved.get("depth_right_channel"),
         "width_b": saved.get("width_b") or width,
         "height_b": saved.get("height_b") or height,
         "fps_b": saved.get("fps_b", fps),
@@ -282,6 +298,8 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
                          keep_original: bool = None, alternate_lenses: bool = None,
                          depth_map: bool = None,
                          dual_capture: bool = None,
+                         channel_keep=None, channel_keep_b=None,
+                         depth_left_channel: str = None, depth_right_channel: str = None,
                          width_b: int = None, height_b: int = None,
                          fps_b: int = None, format_request_b: str = None,
                          extract_lenses_b: bool = None) -> None:
@@ -292,7 +310,21 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
     so a change takes effect on the very next frame rather than needing
     a reconnect. Pass format_request="" (empty string, not None — None
     means "leave whatever's already saved alone") to explicitly clear
-    back to driver-default."""
+    back to driver-default.
+
+    channel_keep/channel_keep_b: list of channel labels ("r"/"g"/"b"/
+        "a"/"ch<N>" — see _channel_label) to actually save as photos
+        out of everything extract_lenses splits out; any extracted
+        channel not named here is simply dropped instead of saved.
+        Pass [] (empty list, not None) to explicitly go back to "keep
+        every channel" — None means "leave whatever's already saved
+        alone", same convention as format_request above.
+    depth_left_channel/depth_right_channel: channel labels used as the
+        left/right pair fed into the depth map, independent of
+        channel_keep (a channel can feed depth without also being kept
+        as a saved photo). Pass "" to clear back to the default (first
+        two extracted channels). None leaves whatever's saved alone.
+    """
     name = str(name).strip()
     if not name:
         raise ValueError("Camera name cannot be empty.")
@@ -315,6 +347,14 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
         entry["depth_map"] = bool(depth_map)
     if dual_capture is not None:
         entry["dual_capture"] = bool(dual_capture)
+    if channel_keep is not None:
+        entry["channel_keep"] = list(channel_keep)
+    if channel_keep_b is not None:
+        entry["channel_keep_b"] = list(channel_keep_b)
+    if depth_left_channel is not None:
+        entry["depth_left_channel"] = depth_left_channel or None
+    if depth_right_channel is not None:
+        entry["depth_right_channel"] = depth_right_channel or None
     if width_b is not None:
         entry["width_b"] = int(width_b)
     if height_b is not None:
@@ -380,6 +420,34 @@ def _normalize_frame_for_save(frame):
     return cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
 
+# Human-readable channel names, in the same order cv2 actually stores
+# planes (index 0 first) — matches the physical B/G/R(/A) labelling
+# printed on this kind of camera's RGB24 output, so a user comparing
+# "which channel had nothing useful in it" against the saved photos
+# sees the same letter both places. Falls back to "ch<N>" for channel
+# counts this table doesn't cover.
+_CHANNEL_NAMES_BY_COUNT = {
+    2: ["ch0", "ch1"],
+    3: ["b", "g", "r"],
+    4: ["b", "g", "r", "a"],
+}
+
+
+def _channel_label(index: int, total: int) -> str:
+    """Human label for extracted-channel plane `index` of `total` total
+    channels — "r"/"g"/"b"/"a" for the common cases, "mono" for a
+    single-channel frame, "ch<N>" otherwise. Used both for the saved-
+    photo suffix (see _apply_extraction) and for choosing which
+    channel(s) to keep/drop (see get_camera_settings' channel_keep) or
+    to feed the depth map (depth_left_channel/depth_right_channel)."""
+    if total <= 1:
+        return "mono"
+    names = _CHANNEL_NAMES_BY_COUNT.get(total)
+    if names and index < len(names):
+        return names[index]
+    return f"ch{index}"
+
+
 def _extract_lenses(frame) -> list:
     """
     Splits a multi-channel frame into one grayscale image PER CHANNEL.
@@ -399,16 +467,18 @@ def _extract_lenses(frame) -> list:
     separate grayscale image — the three actual "lenses"/views, each
     correctly viewable on its own.
 
-    Returns a list of single-channel frames, one per channel (typically
-    3 for a color-shaped frame). A frame that's already single-channel
-    (Y16/GREY/mono) has nothing to extract — returned as a one-item list
-    unchanged.
+    Returns a list of (channel_label, single-channel-frame) tuples, one
+    per channel (typically 3 for a color-shaped frame) — see
+    _channel_label() for what the label looks like. A frame that's
+    already single-channel (Y16/GREY/mono) has nothing to extract —
+    returned as a one-item list, labelled "mono", unchanged.
     """
     if frame is None:
-        return [frame]
+        return [("mono", frame)]
     if frame.ndim < 3 or frame.shape[2] < 2:
-        return [frame]  # already single-channel — nothing to extract
-    return [frame[:, :, i] for i in range(frame.shape[2])]
+        return [("mono", frame)]  # already single-channel — nothing to extract
+    total = frame.shape[2]
+    return [(_channel_label(i, total), frame[:, :, i]) for i in range(total)]
 
 
 # Per-camera "which lens comes next" cycling position for "alternate_lenses"
@@ -827,8 +897,8 @@ def probe_camera_modes(camera_name: str, resolution_filter: tuple = None,
     "mono" attempt (kept — it DOES work on some ordinary webcams).
     When the search is unfiltered (testing every resolution/fps), only
     [driver default, "mono"] are tried per resolution/fps pair to keep
-    the total sweep bounded (13 resolutions x 4 framerates x 2 = up to
-    104 attempts). When resolution and/or fps has been narrowed down via
+    the total sweep bounded (13 resolutions x 11 framerates x 2 = up to
+    286 attempts). When resolution and/or fps has been narrowed down via
     the filters, the FULL set of candidate FOURCC codes is also tried at
     each remaining resolution/fps pair, since the search space shrinks
     enough to afford it — this is how you actually confirm/find e.g.
@@ -864,7 +934,7 @@ def probe_camera_modes(camera_name: str, resolution_filter: tuple = None,
             (752, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960),
             (1280, 1024), (1600, 1200), (1920, 1080),
         ]
-    framerates = [fps_filter] if fps_filter else [15, 24, 30, 60]
+    framerates = [fps_filter] if fps_filter else [5, 10, 15, 20, 24, 25, 30, 50, 60, 90, 120]
 
     narrowed = bool(resolution_filter or fps_filter)
     format_requests = [None, "mono"] + (list(_CANDIDATE_FOURCCS) if narrowed else [])
@@ -935,8 +1005,26 @@ def probe_camera_modes(camera_name: str, resolution_filter: tuple = None,
     return working
 
 
+def _pick_depth_source(lenses: list, wanted_label: str, fallback_index: int):
+    """Resolves one side (left or right) of the depth-map pair: prefer
+    the extracted channel named `wanted_label` (e.g. "r"/"g"/"b" — see
+    _channel_label/depth_left_channel/depth_right_channel), falling
+    back to `fallback_index` into `lenses` if `wanted_label` wasn't
+    set or doesn't match anything actually extracted this frame (e.g.
+    the camera only produced fewer channels than expected)."""
+    if wanted_label:
+        for label, f in lenses:
+            if label == wanted_label:
+                return f
+    if 0 <= fallback_index < len(lenses):
+        return lenses[fallback_index][1]
+    return None
+
+
 def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: bool,
-                       keep_original: bool, alternate: bool, depth_map: bool) -> list:
+                       keep_original: bool, alternate: bool, depth_map: bool,
+                       channel_keep: list = None,
+                       depth_left_channel: str = None, depth_right_channel: str = None) -> list:
     """
     Shared "what do we actually save for this frame" logic for both the
     primary and alternate profiles in capture_frames_multi() below.
@@ -945,49 +1033,98 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
     filenames say what they actually are instead of a bare letter. If
     extraction is off, just the one frame under `profile_label`. If it's
     on:
-      - alternate=False (default): every extracted lens, every capture,
-        suffixed "<profile_label>_splitA", "..._splitB", "..._splitC"
-        etc. (a letter per channel — descriptive, not a numeric index).
-      - alternate=True: only ONE lens this capture, suffixed with
-        whichever letter is next in rotation (see _next_lens_index),
-        cycling to the next one next time — "the next photo is just the
-        other secondary view" instead of every view every time.
+      - Every channel _extract_lenses() actually finds is labelled by
+        color/plane ("r"/"g"/"b"/"a"/"ch<N>" — see _channel_label), NOT
+        a bare index, so a channel that turns out to contain nothing
+        useful (e.g. a blank "r" channel) can be identified by name and
+        dropped via `channel_keep` below rather than by trial and error.
+      - channel_keep: if given (non-empty), only extracted channels
+        whose label is IN this list are actually saved as photos —
+        anything else extracted this frame is silently skipped. None/
+        empty keeps every extracted channel (old behavior).
+      - alternate=False (default): every KEPT channel, every capture,
+        suffixed "<profile_label>_split_<label>" (e.g. "primary_split_r",
+        "primary_split_g").
+      - alternate=True: only ONE channel this capture (from the KEPT
+        set), cycling to the next one next time — "the next photo is
+        just the other secondary view" instead of every view every
+        time. Rotation position is tracked per-camera, independent of
+        channel_keep, but only ever lands on a currently-kept channel.
       - keep_original=True additionally includes the un-split original
         combined frame as one more entry, suffixed "<profile_label>_original".
       - depth_map=True additionally computes and saves a depth/disparity
-        image (see vision.camera.stereo_depth) from the FIRST TWO
-        extracted lenses (splitA/splitB — assumed left/right, since a
-        stereo camera's combined output conventionally packs left then
-        right), suffixed "<profile_label>_depth". Requires at least 2
-        lenses to have actually been extracted; no-ops (with a console
-        note) if there weren't at least 2, or if depth computation
-        itself fails for any reason (bad/misaligned pair, etc) — a
-        failed depth map should never block saving the actual photos.
+        image (see vision.camera.stereo_depth), suffixed
+        "<profile_label>_depth". The two channels fed into it are
+        chosen by depth_left_channel/depth_right_channel (by label —
+        see _pick_depth_source), independent of channel_keep, so a
+        channel can feed depth even if it's been dropped from the saved
+        photos; if neither is set, this falls back to the first two
+        extracted channels (old behavior).
+
+        MONO CAMERAS: if the frame only has ONE channel at all (a plain
+        mono/grayscale camera — e.g. a single non-stereo camera on the
+        arm's wrist — there is no second view to pair it with), the
+        SAME single frame is used for both sides so a depth map can
+        still be produced on request rather than refusing outright.
+        This has no real stereo baseline whatsoever, so the result is
+        expected to be heavily inaccurate/near-meaningless — it's
+        offered anyway (clearly flagged, both here in the console and
+        wherever the UI surfaces this toggle) because a rough result on
+        request beats a hard refusal for someone who just wants to see
+        something. Any real depth failure (bad/misaligned pair, etc.)
+        never blocks saving the actual photos.
     """
-    if not extract_on:
+    if not extract_on and not depth_map:
         return [(profile_label, frame)]
-    lenses = _extract_lenses(frame)
-    if len(lenses) <= 1:
-        results = [(profile_label, lenses[0])]
-    elif alternate:
-        idx = _next_lens_index.get(camera_name, 0) % len(lenses)
-        _next_lens_index[camera_name] = idx + 1
-        results = [(f"{profile_label}_split{chr(65 + idx)}", lenses[idx])]
-    else:
-        results = [(f"{profile_label}_split{chr(65 + i)}", f) for i, f in enumerate(lenses)]
-    if keep_original and len(lenses) > 1:
-        results.append((f"{profile_label}_original", frame))
+    lenses = _extract_lenses(frame)  # list of (channel_label, frame)
+    is_mono = len(lenses) <= 1
+
+    # Depth: resolve BEFORE the channel_keep filter below, so a channel
+    # used for depth doesn't also have to be kept as a saved photo. Also
+    # computed even when extract_on is False — a plain mono/single-lens
+    # camera (nothing to "extract") can still request a depth map; see
+    # the mono handling below.
     if depth_map:
-        if len(lenses) >= 2:
-            try:
-                depth = stereo_depth.compute_depth_map(camera_name, lenses[0], lenses[1])
-                if depth is not None:
-                    results.append((f"{profile_label}_depth", depth))
-            except Exception as e:
-                print(f"[STEREO DEPTH] Could not compute depth map for '{camera_name}': {e}")
+        if is_mono:
+            print(f"[STEREO DEPTH] '{camera_name}' is a single-channel/mono camera — "
+                  f"no second view exists to pair with it. Computing a depth map anyway "
+                  f"using the same mono frame for both sides, as requested; this has NO "
+                  f"real stereo baseline and the result is expected to be heavily "
+                  f"inaccurate — treat it as a rough placeholder, not a real depth map.")
+            left_src = right_src = lenses[0][1]
         else:
-            print(f"[STEREO DEPTH] '{camera_name}': depth map needs at least 2 extracted "
-                  f"lenses (left+right) — this frame only produced {len(lenses)}.")
+            left_src = _pick_depth_source(lenses, depth_left_channel, 0)
+            right_src = _pick_depth_source(lenses, depth_right_channel, 1)
+
+    if not extract_on:
+        results = [(profile_label, frame)]
+    elif is_mono:
+        results = [(profile_label, lenses[0][1])]
+    else:
+        kept = [(lbl, f) for lbl, f in lenses if not channel_keep or lbl in channel_keep]
+        if not kept:
+            # channel_keep dropped everything (e.g. every box was
+            # unchecked) — never silently save nothing; fall back to
+            # keeping all of them rather than losing the capture.
+            kept = lenses
+        if alternate:
+            idx = _next_lens_index.get(camera_name, 0) % len(kept)
+            _next_lens_index[camera_name] = idx + 1
+            label, f = kept[idx]
+            results = [(f"{profile_label}_split_{label}", f)]
+        else:
+            results = [(f"{profile_label}_split_{label}", f) for label, f in kept]
+        if keep_original:
+            results.append((f"{profile_label}_original", frame))
+
+    if depth_map:
+        try:
+            depth = stereo_depth.compute_depth_map(camera_name, left_src, right_src)
+            if depth is not None:
+                suffix = f"{profile_label}_depth" + ("_mono_est" if is_mono else "")
+                results.append((suffix, depth))
+        except Exception as e:
+            print(f"[STEREO DEPTH] Could not compute depth map for '{camera_name}': {e}")
     return results
 
 
@@ -1018,15 +1155,19 @@ def capture_frames_multi(camera_name: str) -> list:
 
     Returns a list of (suffix, frame) pairs. Normal case: one pair,
     suffix "primary". If the primary profile's extract_lenses is on and
-    the frame has multiple channels: one pair per channel ("primary_
-    splitA", "primary_splitB", ...) normally, or just ONE pair for
-    whichever lens is next in rotation if alternate_lenses is on, plus a
-    "primary_original" pair too if keep_original is on. Dual capture
-    adds the equivalent "alternate"/"alternate_splitA".."alternate_
-    original" pairs for the second (actually-different-camera-output)
-    profile. Callers save each pair under a different view_index so they
-    never collide on disk (see main.py's capture_movement_snapshot()/
-    run_manual_snapshot()).
+    the frame has multiple channels: one pair per KEPT channel
+    ("primary_split_r", "primary_split_g", ...— named by channel, see
+    _channel_label/channel_keep) normally, or just ONE pair for
+    whichever channel is next in rotation if alternate_lenses is on,
+    plus a "primary_original" pair too if keep_original is on. Dual
+    capture adds the equivalent "alternate"/"alternate_split_r"..
+    "alternate_original" pairs for the second (actually-different-
+    camera-output) profile. Callers save each pair under a different
+    view_index so they never collide on disk (see main.py's
+    capture_movement_snapshot()/run_manual_snapshot()), and should also
+    pass the suffix itself through as the saved photo's view_label (see
+    save_image) so it stays identifiable later in the GUI/database
+    rather than just being a bare view-index number.
     """
     configured = list_configured_cameras()
     if camera_name not in configured:
@@ -1041,7 +1182,9 @@ def capture_frames_multi(camera_name: str) -> list:
     frame_a = _capture_from_index(index, camera_name=camera_name)
     results = _apply_extraction(camera_name, "primary", frame_a, settings["extract_lenses"],
                                  settings["keep_original"], settings["alternate_lenses"],
-                                 settings["depth_map"])
+                                 settings["depth_map"], channel_keep=settings["channel_keep"],
+                                 depth_left_channel=settings["depth_left_channel"],
+                                 depth_right_channel=settings["depth_right_channel"])
 
     if not settings["dual_capture"]:
         return results
@@ -1080,7 +1223,9 @@ def capture_frames_multi(camera_name: str) -> list:
 
     results += _apply_extraction(camera_name, "alternate", frame_b, settings["extract_lenses_b"],
                                   settings["keep_original"], settings["alternate_lenses"],
-                                  settings["depth_map"])
+                                  settings["depth_map"], channel_keep=settings["channel_keep_b"],
+                                  depth_left_channel=settings["depth_left_channel"],
+                                  depth_right_channel=settings["depth_right_channel"])
     return results
 
 
@@ -1108,7 +1253,7 @@ def capture_lens_pair(camera_name: str):
             f"frame is a multi-channel combined stereo pair, like the See3CAM_Stereo's RGB24 "
             f"output."
         )
-    return lenses[0], lenses[1]
+    return lenses[0][1], lenses[1][1]
 
 
 def capture_frame(camera_name: str):
@@ -1164,12 +1309,16 @@ def frame_to_rgb(frame):
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def save_image(frame, sample_id: str, source: str, view_index: int = 0) -> str:
+def save_image(frame, sample_id: str, source: str, view_index: int = 0, view_label: str = None) -> str:
     """
     [WIRED] Persist a captured frame to disk and return its path.
 
-    Filename is `YYYYMMDD_HHMMSS_<source>_<view_index>.jpg` (per the
-    plan: date + time + the existing source/view_index naming), inside
+    Filename is `YYYYMMDD_HHMMSS_<source>_<view_index>.jpg`, or
+    `YYYYMMDD_HHMMSS_<source>_<view_index>_<view_label>.jpg` when
+    `view_label` is given — the suffix capture_frames_multi() already
+    returns for each saved frame (e.g. "primary_split_r", "primary_
+    depth"), so a filename on disk says WHICH channel/view it actually
+    is instead of just a bare, meaningless view-index number. Inside
     the existing images/<sample_id>/ per-object folder — so filenames
     stay sortable/searchable on their own, folder-per-object grouping
     is unchanged, and two captures of the same object/source/view_index
@@ -1190,7 +1339,9 @@ def save_image(frame, sample_id: str, source: str, view_index: int = 0) -> str:
     _require_cv2()
     sample_dir = ensure_sample_dir(sample_id)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    image_path = os.path.abspath(os.path.join(sample_dir, f"{timestamp}_{source}_{view_index}.jpg"))
+    label_suffix = f"_{view_label}" if view_label else ""
+    image_path = os.path.abspath(
+        os.path.join(sample_dir, f"{timestamp}_{source}_{view_index}{label_suffix}.jpg"))
     ok = cv2.imwrite(image_path, frame)
     if not ok:
         raise IOError(f"Failed to write image to {image_path}")

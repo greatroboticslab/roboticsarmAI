@@ -395,9 +395,17 @@ def delete_objects_bulk(mongo_filter: dict) -> tuple:
 
 def save_image_record(image_id: str, object_id: str, image_path: str,
                        source: str, view_index: int, session_id: str = None,
-                       captured_at: "datetime | None" = None) -> None:
+                       captured_at: "datetime | None" = None,
+                       view_label: str = None) -> None:
     """Write an image document. `object_id` is the FK back to the
-    `objects` collection (the capture this photo belongs to)."""
+    `objects` collection (the capture this photo belongs to).
+
+    view_label: the suffix capture_frames_multi()/save_image() actually
+        used for this photo (e.g. "primary_split_r", "primary_depth") —
+        i.e. WHICH channel/view this is, not just a bare view_index
+        number. None for photos taken outside the extraction path
+        (single-frame-per-camera captures), same as before this field
+        existed."""
     db = _get_db()
     db[MONGO_IMAGES_COLLECTION].insert_one({
         "_id": image_id,
@@ -406,8 +414,21 @@ def save_image_record(image_id: str, object_id: str, image_path: str,
         "image_path": image_path,
         "source": source,
         "view_index": view_index,
+        "view_label": view_label,
+        # User-editable annotation (e.g. "Left camera"/"Right camera") —
+        # set later via update_image_custom_label(), blank until then.
+        "custom_label": "",
         "captured_at": captured_at or datetime.now(),
     })
+
+
+def update_image_custom_label(image_id: str, custom_label: str) -> None:
+    """Sets the user-editable annotation on one image document — e.g.
+    labelling a split channel by which physical camera/lens it actually
+    came from ("Left camera"/"Right camera"), from the photo viewer."""
+    db = _get_db()
+    db[MONGO_IMAGES_COLLECTION].update_one(
+        {"_id": image_id}, {"$set": {"custom_label": custom_label}})
 
 
 def get_images_for_object(object_id: str) -> list:

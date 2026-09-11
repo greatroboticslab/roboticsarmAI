@@ -84,15 +84,22 @@ def record_capture(name: str, image_paths_by_source, category: str = None,
         image_paths_by_source: EITHER {source_name: saved_image_path}
               (the original, simple shape — at most one image per
               camera, e.g. {"station": "...", "wrist": "..."}), OR a
-              list of (source_name, saved_image_path) pairs — needed
-              whenever the SAME source appears more than once, e.g. a
-              rotation-sequence capture with 6 photos all from the
-              "station" camera at different J4 angles. A plain dict
-              can't represent that (duplicate keys collide), so the
-              list form is what
-              vision.services.rotation_coordinator-based capture flows
-              use; every other caller can keep passing a plain dict
-              unchanged.
+              list of (source_name, saved_image_path) 2-tuples, OR a
+              list of (source_name, saved_image_path, view_label)
+              3-tuples — needed whenever the SAME source appears more
+              than once, e.g. a rotation-sequence capture with 6 photos
+              all from the "station" camera at different J4 angles, or
+              a lens-extraction capture with several channels/views
+              from the same camera. A plain dict can't represent that
+              (duplicate keys collide), so the list form is what
+              vision.services.rotation_coordinator-based and lens-
+              extraction capture flows use; every other caller can keep
+              passing a plain dict (or 2-tuples) unchanged. The
+              3-tuple's view_label (e.g. "primary_split_r",
+              "primary_depth") is stored on the image record so the
+              GUI/database can show WHICH channel/view a photo actually
+              is instead of just a bare view-index number — see
+              vision.camera.capture.save_image/capture_frames_multi.
         category/color/size/position/attributes: see build_object_data().
         export_excel: if False, skips step 6 (e.g. for a burst of many
               rapid captures where you'd rather refresh the report once
@@ -125,20 +132,25 @@ def record_capture(name: str, image_paths_by_source, category: str = None,
     mongo_client.save_object(object_id, session_id, str(captured_at.date()), data,
                               captured_at=captured_at)
 
-    # Normalize to a list of (source, path) pairs so a source can
-    # legitimately appear more than once (see docstring above) — a plain
-    # dict is accepted as-is via .items() for backward compatibility.
+    # Normalize to a list of (source, path, view_label) triples so a
+    # source can legitimately appear more than once (see docstring
+    # above) — a plain dict, or a list of plain (source, path) pairs,
+    # is accepted as-is for backward compatibility, with view_label
+    # defaulting to None.
     if isinstance(image_paths_by_source, dict):
-        source_path_pairs = list(image_paths_by_source.items())
+        raw_pairs = list(image_paths_by_source.items())
     else:
-        source_path_pairs = list(image_paths_by_source)
+        raw_pairs = list(image_paths_by_source)
+    source_path_triples = [
+        (item[0], item[1], item[2] if len(item) > 2 else None) for item in raw_pairs
+    ]
 
     image_paths = []
-    for view_index, (source, path) in enumerate(source_path_pairs):
+    for view_index, (source, path, view_label) in enumerate(source_path_triples):
         image_id = str(uuid.uuid4())
         mongo_client.save_image_record(
             image_id, object_id, path, source, view_index,
-            session_id=session_id, captured_at=captured_at,
+            session_id=session_id, captured_at=captured_at, view_label=view_label,
         )
         image_paths.append(path)
 
