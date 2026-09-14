@@ -37,6 +37,7 @@ from vision.camera.capture import (
     set_camera_settings,
     capture_frames_multi,
     probe_camera_modes,
+    list_native_formats,
     capture_lens_pair,
 )
 from vision.camera import stereo_depth
@@ -4856,6 +4857,16 @@ tk.Entry(roboflow_split_row, textvariable=roboflow_batch_var, width=20).pack(sid
 tk.Label(roboflow_split_row, text="(groups this upload in Roboflow's web UI)",
          fg="gray", font=("Arial", 8)).pack(side=tk.LEFT, padx=(8, 0))
 
+roboflow_skip_row = tk.Frame(roboflow_frame)
+roboflow_skip_row.pack(fill=tk.X, pady=(2, 0))
+roboflow_skip_uploaded_var = tk.BooleanVar(value=True)
+tk.Checkbutton(roboflow_skip_row, text="Skip images already uploaded to this project",
+               variable=roboflow_skip_uploaded_var).pack(side=tk.LEFT)
+tk.Label(roboflow_skip_row,
+         text="(tracked per-image, per-project — re-running an export won't waste uploads "
+              "re-sending the same photo; uncheck to force everything in scope again)",
+         fg="gray", font=("Arial", 8), wraplength=460, justify=tk.LEFT).pack(side=tk.LEFT, padx=(6, 0))
+
 roboflow_progress = ttk.Progressbar(roboflow_frame, orient="horizontal", mode="determinate")
 roboflow_progress.pack(fill=tk.X, pady=(8, 4))
 
@@ -4863,14 +4874,24 @@ roboflow_progress.pack(fill=tk.X, pady=(8, 4))
 def _current_roboflow_scope_kwargs():
     scope = roboflow_scope_var.get()
     if scope == "all":
-        return {"all_history": True}
-    if scope == "range":
+        base = {"all_history": True}
+    elif scope == "range":
         parsed = _read_date_range_or_error(roboflow_range_start_entry, roboflow_range_end_entry)
         if parsed is None:
             return None
         start_date, end_date = parsed
-        return {"start_date": start_date, "end_date": end_date}
-    return {"session_id": session_manager.today_session_id()}
+        base = {"start_date": start_date, "end_date": end_date}
+    else:
+        base = {"session_id": session_manager.today_session_id()}
+    # "Skip already uploaded" needs to know WHICH project to check
+    # against, so it only applies once signed in — Preview Count can
+    # still be used beforehand, just without that filtering.
+    cfg = roboflow_export.current_session()
+    if cfg and roboflow_skip_uploaded_var.get():
+        base.update(workspace=cfg["workspace"], project_id=cfg["project_id"], skip_uploaded=True)
+    else:
+        base["skip_uploaded"] = False
+    return base
 
 
 def _do_preview_roboflow_upload():
@@ -4881,8 +4902,13 @@ def _do_preview_roboflow_upload():
 
     def worker():
         try:
-            images = roboflow_export.gather_images_for_scope(**kwargs)
-            msg, color = f"{len(images)} image(s) found in this scope, ready to upload.", "blue"
+            images, already_uploaded_count = roboflow_export.gather_images_for_scope(**kwargs)
+            msg = f"{len(images)} image(s) in this scope, ready to upload."
+            if already_uploaded_count:
+                msg += f" ({already_uploaded_count} already uploaded to this project — skipped.)"
+            elif not kwargs.get("skip_uploaded"):
+                msg += " (sign in to also see how many of these are already uploaded.)"
+            color = "blue"
         except Exception as e:
             msg, color = f"Could not gather images: {e}", "red"
         root.after(0, lambda: roboflow_status_label.config(text=msg, fg=color))
@@ -4904,12 +4930,14 @@ def _do_upload_to_roboflow():
 
     def worker():
         try:
-            images = roboflow_export.gather_images_for_scope(**kwargs)
+            images, already_uploaded_count = roboflow_export.gather_images_for_scope(**kwargs)
         except Exception as e:
             root.after(0, lambda: roboflow_status_label.config(text=f"Could not gather images: {e}", fg="red"))
             return
         if not images:
-            root.after(0, lambda: roboflow_status_label.config(text="No images found in this scope.", fg="orange"))
+            msg = ("No new images to upload — everything in this scope is already uploaded "
+                   "to this project." if already_uploaded_count else "No images found in this scope.")
+            root.after(0, lambda: roboflow_status_label.config(text=msg, fg="orange"))
             return
 
         def confirm_and_run():
@@ -4992,8 +5020,6 @@ roboflow_upload_btn.pack(side=tk.LEFT, padx=4)
 roboflow_cancel_btn = tk.Button(roboflow_btn_row, text="Cancel", command=_do_cancel_roboflow_upload,
                                  state=tk.DISABLED)
 roboflow_cancel_btn.pack(side=tk.LEFT, padx=4)
-
-
 # =====================================================================
 # STORAGE LOCATION (PERMANENT) — where everything above actually lives
 # on disk: images, CSV/JSON logs, the Excel report. See
@@ -7249,24 +7275,49 @@ def _do_apply_camera_settings(cam_name):
     extract_b = _camera_settings_vars[cam_name]["extract_b"].get()
     channel_keep = [ch for ch, v in _camera_settings_vars[cam_name]["channel_keep"].items() if v.get()]
     channel_keep_b = [ch for ch, v in _camera_settings_vars[cam_name]["channel_keep_b"].items() if v.get()]
+    split_mode = _camera_settings_vars[cam_name]["split_mode"].get()
+    spatial_orientation = _camera_settings_vars[cam_name]["spatial_orientation"].get()
+    split_mode_b = _camera_settings_vars[cam_name]["split_mode_b"].get()
+    spatial_orientation_b = _camera_settings_vars[cam_name]["spatial_orientation_b"].get()
+    try:
+        spatial_parts = int(_camera_settings_vars[cam_name]["spatial_parts"].get().strip())
+        spatial_parts_b = int(_camera_settings_vars[cam_name]["spatial_parts_b"].get().strip())
+        if spatial_parts < 2 or spatial_parts_b < 2:
+            raise ValueError("parts must be 2 or more")
+    except ValueError as e:
+        camera_assign_status.config(text=f"'{cam_name}': invalid spatial parts value — {e}", fg="red")
+        return
     depth_left_raw = _camera_settings_vars[cam_name]["depth_left"].get()
     depth_right_raw = _camera_settings_vars[cam_name]["depth_right"].get()
-    depth_left = depth_left_raw if depth_left_raw in ("r", "g", "b", "a") else ""
-    depth_right = depth_right_raw if depth_right_raw in ("r", "g", "b", "a") else ""
+    depth_colorize = _camera_settings_vars[cam_name]["depth_colorize"].get()
+    _valid_depth_labels = ("r", "g", "b", "a", "left", "right", "top", "bottom")
+    depth_left = depth_left_raw if depth_left_raw in _valid_depth_labels else ""
+    depth_right = depth_right_raw if depth_right_raw in _valid_depth_labels else ""
     try:
         set_camera_settings(cam_name, extract_lenses=extract, keep_original=keep_orig,
                              alternate_lenses=alternate, depth_map=depth_map,
                              dual_capture=dual, extract_lenses_b=extract_b,
                              channel_keep=channel_keep, channel_keep_b=channel_keep_b,
-                             depth_left_channel=depth_left, depth_right_channel=depth_right)
+                             split_mode=split_mode, spatial_orientation=spatial_orientation,
+                             spatial_parts=spatial_parts,
+                             split_mode_b=split_mode_b, spatial_orientation_b=spatial_orientation_b,
+                             spatial_parts_b=spatial_parts_b,
+                             depth_left_channel=depth_left, depth_right_channel=depth_right,
+                             depth_colorize=depth_colorize)
         note = " — pick A/B formats from the Detected Formats list above (Use as A / Use as B applies immediately)."
-        dropped = [ch.upper() for ch in ("r", "g", "b") if ch not in channel_keep]
+        all_labels = ("r", "g", "b", "left", "right", "top", "bottom")
+        dropped = [ch.capitalize() if len(ch) > 1 else ch.upper()
+                   for ch in all_labels if ch not in channel_keep]
         msg = (f"'{cam_name}': extract lenses = {extract}"
+               + (f", split by {split_mode}"
+                  + (f" ({spatial_orientation}, {spatial_parts} parts)" if split_mode == "spatial" else "")
+                  if extract else "")
                + (f", keep original = {keep_orig}" if extract else "")
                + (f", alternate views (one per photo) = {alternate}" if extract else "")
-               + (f", dropped channels = {dropped or 'none'}" if extract else "")
-               + (f", depth map = {depth_map}" if (extract or depth_map) else "")
-               + (f" (left={depth_left_raw}, right={depth_right_raw})" if depth_map else "")
+               + (f", dropped pieces = {dropped or 'none'}" if extract else "")
+               + (f", depth/disparity = {depth_map}" if (extract or depth_map) else "")
+               + (f" (left={depth_left_raw}, right={depth_right_raw}, colorize={depth_colorize})"
+                  if depth_map else "")
                + (f", dual-capture B = on (extract lenses B = {extract_b})" if dual else "")
                + note)
         camera_assign_status.config(text=msg, fg="green")
@@ -7372,6 +7423,52 @@ def _do_detect_output_modes(cam_name, listbox_widget, res_filter_var, fps_filter
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _do_show_native_formats(cam_name):
+    """Runs vision.camera.capture.list_native_formats() (v4l2-ctl
+    --list-formats-ext) and shows the raw driver-reported result in a
+    small viewer window — see that function's docstring for why this
+    is the authoritative way to check whether a stereo/multi-lens
+    camera has a genuine per-side color mode, rather than the guess-
+    and-check Detect Formats list above."""
+    camera_assign_status.config(text=f"Querying '{cam_name}' via v4l2-ctl...", fg="gray")
+
+    def worker():
+        result = list_native_formats(cam_name)
+
+        def report():
+            if not result["ok"]:
+                camera_assign_status.config(text=result["message"], fg="red")
+                return
+            camera_assign_status.config(
+                text=f"'{cam_name}' ({result['device']}): {len(result['formats'])} native "
+                     f"format(s) reported by the driver — see viewer window.", fg="green")
+            viewer = tk.Toplevel(root)
+            viewer.title(f"Native Formats — {cam_name} ({result['device']})")
+            viewer.geometry("640x480")
+            tk.Label(viewer,
+                     text="Straight from the driver (v4l2-ctl --list-formats-ext) — the ground "
+                          "truth of every pixel format/resolution this camera's firmware "
+                          "actually advertises, including anything the app's own Detect "
+                          "Formats guess-list above doesn't happen to try. Look here for a "
+                          "genuine per-side/stereo color format (often a wider side-by-side or "
+                          "top/bottom frame) rather than the R/G/B-channel-packing workaround.",
+                     wraplength=600, justify=tk.LEFT, fg="gray").pack(fill=tk.X, padx=10, pady=(10, 4))
+            text_frame = tk.Frame(viewer)
+            text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+            scrollbar = tk.Scrollbar(text_frame)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            text_widget = tk.Text(text_frame, wrap=tk.NONE, font=("Consolas", 9),
+                                   yscrollcommand=scrollbar.set)
+            text_widget.pack(fill=tk.BOTH, expand=True)
+            scrollbar.config(command=text_widget.yview)
+            text_widget.insert(tk.END, result["raw_output"] or "(driver returned no formats)")
+            text_widget.config(state=tk.DISABLED)
+
+        root.after(0, report)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def _do_pick_detected_mode(cam_name, listbox_widget, target):
     """target is 'a' or 'b' — applies the clicked detected format
     IMMEDIATELY (resolution + fps + the exact pixel-format request that
@@ -7460,38 +7557,90 @@ def _rebuild_camera_assign_rows():
                              "the next one next time — instead of all views every photo)",
                         variable=alternate_var, font=("Arial", 8)).pack(side=tk.LEFT)
 
-        # Which extracted channels to actually keep as saved photos —
-        # e.g. uncheck "R" if this camera's R channel is known to carry
-        # nothing useful, so it's dropped instead of saved every photo.
-        # Saved channels are named by color/plane (see
-        # vision/camera/capture.py's _channel_label) — "primary_split_r",
-        # "primary_split_g", etc. — not a bare letter index, so it's
-        # clear which physical channel a saved photo actually came from.
+        # Split mode toggle — HOW extract_lenses actually cuts a frame
+        # apart. "Channel" (the original/default) treats R/G/B/A planes
+        # of a color-shaped frame as separate views — right for a
+        # camera that packs unrelated views into one RGB frame's
+        # channels (e.g. a stereo camera whose "color" output is really
+        # two grayscale views stuffed into R and G with B empty).
+        # "Spatial" instead cuts the frame apart by SPACE into left/
+        # right (or top/bottom) pieces — right for a camera whose
+        # driver hands back a genuine combined side-by-side/over-under
+        # frame instead. Use "Show Native Formats (v4l2-ctl)" below to
+        # check which kind of frame this camera's driver actually
+        # produces rather than guessing.
+        split_mode_row = tk.Frame(camera_assign_rows_frame)
+        split_mode_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(split_mode_row, text="Split by:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        split_mode_var = tk.StringVar(value=current_settings["split_mode"])
+        tk.Radiobutton(split_mode_row, text="Channel (R/G/B packed)", variable=split_mode_var,
+                        value="channel", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(split_mode_row, text="Spatial (side-by-side / top-bottom)",
+                        variable=split_mode_var, value="spatial", font=("Arial", 8)
+                        ).pack(side=tk.LEFT, padx=(0, 10))
+        spatial_orientation_var = tk.StringVar(value=current_settings["spatial_orientation"])
+        ttk.Combobox(split_mode_row, textvariable=spatial_orientation_var, width=11, state="readonly",
+                     values=["horizontal", "vertical"]).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(split_mode_row, text="parts:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        spatial_parts_var = tk.StringVar(value=str(current_settings["spatial_parts"]))
+        tk.Entry(split_mode_row, textvariable=spatial_parts_var, width=3).pack(side=tk.LEFT)
+        tk.Label(split_mode_row, text="(orientation/parts only apply in Spatial mode; "
+                                       "horizontal = left/right, vertical = top/bottom)",
+                 fg="gray", font=("Arial", 8)).pack(side=tk.LEFT, padx=(6, 0))
+
+        split_mode_b_row = tk.Frame(camera_assign_rows_frame)
+        split_mode_b_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(split_mode_b_row, text="Split by (B):", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        split_mode_b_var = tk.StringVar(value=current_settings["split_mode_b"])
+        tk.Radiobutton(split_mode_b_row, text="Channel", variable=split_mode_b_var,
+                        value="channel", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(split_mode_b_row, text="Spatial", variable=split_mode_b_var,
+                        value="spatial", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 10))
+        spatial_orientation_b_var = tk.StringVar(value=current_settings["spatial_orientation_b"])
+        ttk.Combobox(split_mode_b_row, textvariable=spatial_orientation_b_var, width=11, state="readonly",
+                     values=["horizontal", "vertical"]).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(split_mode_b_row, text="parts:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        spatial_parts_b_var = tk.StringVar(value=str(current_settings["spatial_parts_b"]))
+        tk.Entry(split_mode_b_row, textvariable=spatial_parts_b_var, width=3).pack(side=tk.LEFT)
+
+        # Which extracted pieces to actually keep as saved photos — e.g.
+        # uncheck "R" if this camera's R channel is known to carry
+        # nothing useful (Channel mode), or uncheck "Right" if only the
+        # left view is wanted (Spatial mode). Both label sets are shown
+        # together rather than swapping the row's contents based on the
+        # radio button above, since which ones actually apply depends
+        # on Split-by mode and this way nothing has to be rebuilt when
+        # that's toggled. Saved photos are named by whichever label
+        # actually produced them (see vision/camera/capture.py's
+        # _channel_label/_extract_lenses_spatial) — "primary_split_r",
+        # "primary_split_left", etc. — not a bare index, so it's clear
+        # which physical piece a saved photo actually came from.
         channel_keep_row = tk.Frame(camera_assign_rows_frame)
         channel_keep_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
-        tk.Label(channel_keep_row, text="Keep channels:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(channel_keep_row, text="Keep pieces:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
         saved_keep = current_settings["channel_keep"]
         channel_keep_vars = {}
-        for ch in ("r", "g", "b"):
+        for ch in ("r", "g", "b", "left", "right", "top", "bottom"):
             var = tk.BooleanVar(value=(saved_keep is None or ch in saved_keep))
             channel_keep_vars[ch] = var
-            tk.Checkbutton(channel_keep_row, text=ch.upper(), variable=var,
-                            font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Checkbutton(channel_keep_row, text=ch.capitalize() if len(ch) > 1 else ch.upper(),
+                            variable=var, font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
         tk.Label(channel_keep_row,
-                 text="(uncheck a channel that's known to contain nothing useful for this "
-                      "camera so it's dropped instead of saved every photo — e.g. a blank R)",
+                 text="(only the labels matching the current Split-by mode above are "
+                      "meaningful — uncheck a piece known to carry nothing useful so it's "
+                      "dropped instead of saved every photo)",
                  fg="gray", font=("Arial", 8), wraplength=460, justify=tk.LEFT).pack(side=tk.LEFT)
 
         channel_keep_b_row = tk.Frame(camera_assign_rows_frame)
         channel_keep_b_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
-        tk.Label(channel_keep_b_row, text="Keep channels (B):", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(channel_keep_b_row, text="Keep pieces (B):", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
         saved_keep_b = current_settings["channel_keep_b"]
         channel_keep_b_vars = {}
-        for ch in ("r", "g", "b"):
+        for ch in ("r", "g", "b", "left", "right", "top", "bottom"):
             var = tk.BooleanVar(value=(saved_keep_b is None or ch in saved_keep_b))
             channel_keep_b_vars[ch] = var
-            tk.Checkbutton(channel_keep_b_row, text=ch.upper(), variable=var,
-                            font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Checkbutton(channel_keep_b_row, text=ch.capitalize() if len(ch) > 1 else ch.upper(),
+                            variable=var, font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
 
         # Manual FPS entry — set a framerate directly without needing to
         # run Detect Formats first (which is the only other way to
@@ -7519,21 +7668,36 @@ def _rebuild_camera_assign_rows():
         depth_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         depth_var = tk.BooleanVar(value=current_settings["depth_map"])
         tk.Checkbutton(depth_row,
-                        text="Generate a depth map using open-source stereo matching",
+                        text="Generate a disparity map (+ metric depth map if calibrated) "
+                             "using open-source stereo matching",
                         variable=depth_var, font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 8))
         calib_status_var = tk.StringVar(
-            value="calibrated" if stereo_depth.has_calibration(cam_name) else "not calibrated (less accurate)")
+            value="calibrated — both disparity + real metric depth will be saved"
+            if stereo_depth.has_calibration(cam_name)
+            else "not calibrated — only disparity (relative, no real-world scale) will be saved")
         tk.Label(depth_row, textvariable=calib_status_var, font=("Arial", 8), fg="gray").pack(side=tk.LEFT)
+
+        depth_colorize_row = tk.Frame(camera_assign_rows_frame)
+        depth_colorize_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        depth_colorize_var = tk.BooleanVar(value=current_settings["depth_colorize"])
+        tk.Checkbutton(depth_colorize_row,
+                        text="Colorize disparity/depth output (near/far as a color gradient, "
+                             "like a typical depth-camera viewer)",
+                        variable=depth_colorize_var, font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(depth_colorize_row,
+                 text="(a readability aid only — this is NOT real captured color; a depth/"
+                      "disparity map has one value per pixel, not three)",
+                 fg="gray", font=("Arial", 8)).pack(side=tk.LEFT)
 
         depth_channels_row = tk.Frame(camera_assign_rows_frame)
         depth_channels_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(depth_channels_row, text="Depth pair — Left:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
-        _depth_choices = ["(default: 1st extracted)", "r", "g", "b", "a"]
+        _depth_choices = ["(default: 1st extracted)", "r", "g", "b", "a", "left", "right", "top", "bottom"]
         depth_left_var = tk.StringVar(value=current_settings["depth_left_channel"] or _depth_choices[0])
         ttk.Combobox(depth_channels_row, textvariable=depth_left_var, width=20, state="readonly",
                      values=_depth_choices).pack(side=tk.LEFT, padx=(0, 10))
         tk.Label(depth_channels_row, text="Right:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
-        _depth_choices_r = ["(default: 2nd extracted)", "r", "g", "b", "a"]
+        _depth_choices_r = ["(default: 2nd extracted)", "r", "g", "b", "a", "left", "right", "top", "bottom"]
         depth_right_var = tk.StringVar(value=current_settings["depth_right_channel"] or _depth_choices_r[0])
         ttk.Combobox(depth_channels_row, textvariable=depth_right_var, width=20, state="readonly",
                      values=_depth_choices_r).pack(side=tk.LEFT, padx=(0, 10))
@@ -7548,9 +7712,10 @@ def _rebuild_camera_assign_rows():
         tk.Label(mono_depth_row,
                  text="Also works for a plain mono/single-channel camera (e.g. the arm's "
                       "wrist camera) — it reuses that one frame for both sides since there's "
-                      "no real second view. There is NO actual stereo baseline in that case, "
-                      "so the result is heavily inaccurate — a rough placeholder only, not a "
-                      "real depth map.",
+                      "no real second view, producing only a disparity placeholder (never a "
+                      "calibrated metric depth map — calibration itself needs two genuinely "
+                      "different lenses). There is NO actual stereo baseline in that case, "
+                      "so the result is heavily inaccurate — a rough placeholder only.",
                  fg="darkred", font=("Arial", 8, "italic"), wraplength=560, justify=tk.LEFT
                  ).pack(side=tk.LEFT)
 
@@ -7608,6 +7773,18 @@ def _rebuild_camera_assign_rows():
                  "sweep doesn't have time to check everywhere)", fg="gray",
                  font=("Arial", 8), wraplength=520, justify=tk.LEFT).pack(side=tk.LEFT)
 
+        native_formats_row = tk.Frame(camera_assign_rows_frame)
+        native_formats_row.pack(fill=tk.X, pady=(0, 4), padx=(12, 0))
+        tk.Button(native_formats_row, text="Show Native Formats (v4l2-ctl)", font=("Arial", 8),
+                  command=lambda n=cam_name: _do_show_native_formats(n)
+                  ).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(native_formats_row,
+                 text="(asks the driver directly what it actually supports, instead of "
+                      "guessing from the candidate list above — the place to check whether a "
+                      "stereo camera has a real per-side color mode instead of the R/G/B-"
+                      "channel-packing workaround. Linux only.)",
+                 fg="gray", font=("Arial", 8), wraplength=560, justify=tk.LEFT).pack(side=tk.LEFT)
+
         dual_row = tk.Frame(camera_assign_rows_frame)
         dual_row.pack(fill=tk.X, pady=(0, 2), padx=(12, 0))
         dual_var = tk.BooleanVar(value=current_settings["dual_capture"])
@@ -7626,7 +7803,12 @@ def _rebuild_camera_assign_rows():
             "keep_orig": keep_orig_var, "alternate": alternate_var, "depth_map": depth_var,
             "dual": dual_var, "b_label": b_label_var, "extract_b": extract_b_var,
             "channel_keep": channel_keep_vars, "channel_keep_b": channel_keep_b_vars,
+            "split_mode": split_mode_var, "spatial_orientation": spatial_orientation_var,
+            "spatial_parts": spatial_parts_var,
+            "split_mode_b": split_mode_b_var, "spatial_orientation_b": spatial_orientation_b_var,
+            "spatial_parts_b": spatial_parts_b_var,
             "depth_left": depth_left_var, "depth_right": depth_right_var,
+            "depth_colorize": depth_colorize_var,
         }
 
         apply_row = tk.Frame(camera_assign_rows_frame)

@@ -419,7 +419,40 @@ def save_image_record(image_id: str, object_id: str, image_path: str,
         # set later via update_image_custom_label(), blank until then.
         "custom_label": "",
         "captured_at": captured_at or datetime.now(),
+        # Which Roboflow project(s) this exact saved photo has already
+        # been uploaded to — {"<workspace>/<project_id>": {"uploaded_at":
+        # ..., "roboflow_image_id": ...}} — see
+        # mark_image_uploaded_to_roboflow()/is_image_uploaded_to_roboflow()
+        # below, used to skip already-uploaded images on a later export
+        # run instead of re-sending (and re-burning API calls/rate limit
+        # budget on) something Roboflow already has.
+        "roboflow_uploads": {},
     })
+
+
+def mark_image_uploaded_to_roboflow(image_id: str, project_key: str, roboflow_image_id: str = None) -> None:
+    """Records that this image has been uploaded to Roboflow project
+    `project_key` (conventionally "<workspace>/<project_id>", see
+    vision.storage.roboflow_export) — called once per successful
+    upload (including a Roboflow-reported "duplicate", which still
+    means the content is safely on Roboflow even with no new id). Keyed
+    by project so the SAME photo can independently be uploaded to more
+    than one Roboflow project without one marking it done for both."""
+    db = _get_db()
+    db[MONGO_IMAGES_COLLECTION].update_one(
+        {"_id": image_id},
+        {"$set": {f"roboflow_uploads.{project_key}": {
+            "uploaded_at": datetime.now(), "roboflow_image_id": roboflow_image_id or "",
+        }}},
+    )
+
+
+def is_image_uploaded_to_roboflow(image_doc: dict, project_key: str) -> bool:
+    """True if `image_doc` (as returned by get_images_for_object() etc.)
+    already has an upload record for `project_key`. A plain dict lookup
+    on the caller's already-fetched doc — no extra DB round trip — so
+    this is cheap to call once per image while scoping an export."""
+    return bool((image_doc.get("roboflow_uploads") or {}).get(project_key))
 
 
 def update_image_custom_label(image_id: str, custom_label: str) -> None:

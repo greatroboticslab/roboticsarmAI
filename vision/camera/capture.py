@@ -276,6 +276,22 @@ def get_camera_settings(name: str) -> dict:
         # useful for this camera). See set_camera_settings' docstring.
         "channel_keep": list(saved.get("channel_keep") or []) or None,
         "channel_keep_b": list(saved.get("channel_keep_b") or []) or None,
+        # How extract_lenses actually cuts a frame apart — "channel"
+        # (default, the old/only behavior: split by R/G/B/A plane, for
+        # a camera that packs unrelated views into one color-shaped
+        # frame's channels) or "spatial" (cut by space into left/right
+        # or top/bottom halves, for a camera whose driver hands back a
+        # genuine side-by-side/over-under combined frame instead — see
+        # _extract_lenses_spatial). Use
+        # vision.camera.capture.list_native_formats() to check which
+        # kind of frame this camera's driver actually produces rather
+        # than guessing.
+        "split_mode": saved.get("split_mode") or "channel",
+        "spatial_orientation": saved.get("spatial_orientation") or "horizontal",
+        "spatial_parts": int(saved.get("spatial_parts") or 2),
+        "split_mode_b": saved.get("split_mode_b") or "channel",
+        "spatial_orientation_b": saved.get("spatial_orientation_b") or "horizontal",
+        "spatial_parts_b": int(saved.get("spatial_parts_b") or 2),
         # Which two extracted channels feed the depth map, by channel
         # label (see _channel_label — "r"/"g"/"b"/"a"/"mono"/"ch<N>").
         # None means "use whichever two channels were extracted first"
@@ -285,6 +301,11 @@ def get_camera_settings(name: str) -> dict:
         # saved photos.
         "depth_left_channel": saved.get("depth_left_channel"),
         "depth_right_channel": saved.get("depth_right_channel"),
+        # False-colors the disparity/depth outputs (see
+        # vision.camera.stereo_depth._visualize) instead of plain
+        # grayscale — a readability aid only, not real captured color;
+        # a depth/disparity map has one value per pixel, not three.
+        "depth_colorize": bool(saved.get("depth_colorize", False)),
         "width_b": saved.get("width_b") or width,
         "height_b": saved.get("height_b") or height,
         "fps_b": saved.get("fps_b", fps),
@@ -299,7 +320,10 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
                          depth_map: bool = None,
                          dual_capture: bool = None,
                          channel_keep=None, channel_keep_b=None,
+                         split_mode: str = None, spatial_orientation: str = None, spatial_parts: int = None,
+                         split_mode_b: str = None, spatial_orientation_b: str = None, spatial_parts_b: int = None,
                          depth_left_channel: str = None, depth_right_channel: str = None,
+                         depth_colorize: bool = None,
                          width_b: int = None, height_b: int = None,
                          fps_b: int = None, format_request_b: str = None,
                          extract_lenses_b: bool = None) -> None:
@@ -312,18 +336,40 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
     means "leave whatever's already saved alone") to explicitly clear
     back to driver-default.
 
-    channel_keep/channel_keep_b: list of channel labels ("r"/"g"/"b"/
-        "a"/"ch<N>" — see _channel_label) to actually save as photos
-        out of everything extract_lenses splits out; any extracted
-        channel not named here is simply dropped instead of saved.
-        Pass [] (empty list, not None) to explicitly go back to "keep
-        every channel" — None means "leave whatever's already saved
-        alone", same convention as format_request above.
+    channel_keep/channel_keep_b: list of piece labels ("r"/"g"/"b"/"a"/
+        "ch<N>" for split_mode="channel", or "left"/"right"/"top"/
+        "bottom"/"part<N>" for split_mode="spatial" — see
+        _channel_label/_extract_lenses_spatial) to actually save as
+        photos out of everything extract_lenses splits out; any
+        extracted piece not named here is simply dropped instead of
+        saved. Pass [] (empty list, not None) to explicitly go back to
+        "keep every piece" — None means "leave whatever's already
+        saved alone", same convention as format_request above.
+    split_mode/split_mode_b: "channel" (default — split by R/G/B/A
+        plane, for a camera that packs unrelated views into one color-
+        shaped frame's channels) or "spatial" (split by space into
+        left/right or top/bottom pieces, for a camera whose driver
+        hands back a genuine side-by-side/over-under combined frame
+        instead — see _extract_lenses_spatial's docstring). Use
+        list_native_formats() to check which kind of frame this
+        camera's driver actually produces rather than guessing. Only
+        matters when extract_lenses/extract_lenses_b is also on.
+    spatial_orientation/spatial_orientation_b: "horizontal" (default,
+        left/right) or "vertical" (top/bottom) — only used when the
+        matching split_mode is "spatial".
+    spatial_parts/spatial_parts_b: how many equal pieces to cut a
+        spatial split into (default 2). Only used when the matching
+        split_mode is "spatial".
     depth_left_channel/depth_right_channel: channel labels used as the
         left/right pair fed into the depth map, independent of
         channel_keep (a channel can feed depth without also being kept
         as a saved photo). Pass "" to clear back to the default (first
-        two extracted channels). None leaves whatever's saved alone.
+        two extracted channels/pieces). None leaves whatever's saved
+        alone.
+    depth_colorize: False-colors the disparity/metric-depth outputs
+        (see vision.camera.stereo_depth._visualize) instead of plain
+        grayscale — a readability aid only; see that function's
+        docstring for why this isn't real captured color.
     """
     name = str(name).strip()
     if not name:
@@ -351,10 +397,24 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
         entry["channel_keep"] = list(channel_keep)
     if channel_keep_b is not None:
         entry["channel_keep_b"] = list(channel_keep_b)
+    if split_mode is not None:
+        entry["split_mode"] = split_mode
+    if spatial_orientation is not None:
+        entry["spatial_orientation"] = spatial_orientation
+    if spatial_parts is not None:
+        entry["spatial_parts"] = int(spatial_parts)
+    if split_mode_b is not None:
+        entry["split_mode_b"] = split_mode_b
+    if spatial_orientation_b is not None:
+        entry["spatial_orientation_b"] = spatial_orientation_b
+    if spatial_parts_b is not None:
+        entry["spatial_parts_b"] = int(spatial_parts_b)
     if depth_left_channel is not None:
         entry["depth_left_channel"] = depth_left_channel or None
     if depth_right_channel is not None:
         entry["depth_right_channel"] = depth_right_channel or None
+    if depth_colorize is not None:
+        entry["depth_colorize"] = bool(depth_colorize)
     if width_b is not None:
         entry["width_b"] = int(width_b)
     if height_b is not None:
@@ -479,6 +539,75 @@ def _extract_lenses(frame) -> list:
         return [("mono", frame)]  # already single-channel — nothing to extract
     total = frame.shape[2]
     return [(_channel_label(i, total), frame[:, :, i]) for i in range(total)]
+
+
+_SPATIAL_LABELS_BY_PARTS = {
+    2: ["left", "right"],   # horizontal orientation
+}
+_SPATIAL_LABELS_BY_PARTS_VERTICAL = {
+    2: ["top", "bottom"],
+}
+
+
+def _extract_lenses_spatial(frame, orientation: str = "horizontal", parts: int = 2) -> list:
+    """
+    Alternative to _extract_lenses() above, for a camera whose driver
+    hands back a genuine SIDE-BY-SIDE (or top/bottom) combined frame —
+    e.g. a true stereo "concat" format like e-con's Tara/See3CAM_Stereo
+    sends: one wide mono frame that's really two native-resolution
+    views placed next to each other, NOT color data. Splitting THAT
+    kind of frame by channel (_extract_lenses) would be wrong — there's
+    nothing meaningful in its R/G/B planes, if it even has any; it
+    needs to be cut apart by SPACE instead, back to left/right (or top/
+    bottom) halves.
+
+    This is exactly the spatial-slicing behavior _extract_lenses'
+    docstring calls out as the WRONG operation for THAT camera's RGB24-
+    channel-packed output — it isn't wrong in general, just for that
+    specific format. Which one actually applies depends entirely on
+    what format the camera/driver is really handing back; see
+    get_camera_settings' split_mode and vision.camera.capture.
+    list_native_formats(), which is how to check which one you
+    actually have instead of guessing.
+
+    orientation: "horizontal" cuts left-to-right into `parts` equal-
+        width vertical strips (the standard "side-by-side" stereo
+        layout); "vertical" cuts top-to-bottom into `parts` equal-
+        height horizontal strips ("over/under" layout).
+    parts: how many equal segments to cut into (2 for a standard stereo
+        pair). A dimension not evenly divisible by `parts` has its
+        remainder dropped from the last segment rather than raising,
+        so an odd width/height doesn't hard-fail a capture.
+
+    Returns a list of (label, frame) tuples — "left"/"right" or "top"/
+    "bottom" for the parts=2 case (matching _channel_label's naming
+    convention so the rest of _apply_extraction doesn't need to care
+    which extraction function actually produced a given label), or
+    "part0"/"part1"/... for anything else.
+    """
+    if frame is None or parts < 2:
+        return [("mono", frame)]
+    label_table = (_SPATIAL_LABELS_BY_PARTS if orientation == "horizontal"
+                   else _SPATIAL_LABELS_BY_PARTS_VERTICAL)
+    labels = label_table.get(parts) or [f"part{i}" for i in range(parts)]
+    axis_size = frame.shape[1] if orientation == "horizontal" else frame.shape[0]
+    step = axis_size // parts
+    segments = []
+    for i in range(parts):
+        start, end = i * step, (i + 1) * step
+        piece = frame[:, start:end] if orientation == "horizontal" else frame[start:end, :]
+        segments.append((labels[i], piece))
+    return segments
+
+
+def _split_frame(frame, split_mode: str, spatial_orientation: str, spatial_parts: int) -> list:
+    """Single dispatch point used by _apply_extraction/capture_lens_pair
+    to pick _extract_lenses() (by-channel) vs _extract_lenses_spatial()
+    (by-space) based on this camera's split_mode setting — see
+    get_camera_settings' docstring for what each mode is for."""
+    if split_mode == "spatial":
+        return _extract_lenses_spatial(frame, orientation=spatial_orientation, parts=spatial_parts)
+    return _extract_lenses(frame)
 
 
 # Per-camera "which lens comes next" cycling position for "alternate_lenses"
@@ -859,6 +988,85 @@ def probe_camera_formats(camera_name: str) -> list:
     return working
 
 
+def list_native_formats(camera_name: str) -> dict:
+    """
+    Asks the OS/driver directly (via `v4l2-ctl --list-formats-ext`)
+    which pixel formats/resolutions/framerates this camera's firmware
+    ACTUALLY advertises. This is the ground truth, unlike
+    probe_camera_formats()/probe_camera_modes() above, which only try a
+    fixed GUESS-list of common FOURCCs against OpenCV and report
+    whichever ones happen to come back non-blank — a real format the
+    guess-list doesn't happen to include (or a genuine per-eye color
+    mode a stereo camera exposes as its own distinct format rather than
+    packed into the channels of a combined RGB frame) would never show
+    up there, but WILL show up here, straight from the driver.
+
+    This is the right first thing to check when a stereo/multi-lens
+    camera's only usable color mode turns out to be several unrelated
+    grayscale views packed into one RGB24 frame's R/G/B channels (see
+    _extract_lenses' docstring for why that channel-packing trick
+    exists at all) — if the hardware genuinely has a proper per-side
+    color mode, it'll be listed here as its own format entry (often as
+    a wider side-by-side or top/bottom frame, not a same-sized RGB
+    frame) even though the guess-based prober never tried requesting
+    it. If it's NOT listed here at all, the sensor itself is almost
+    certainly monochrome per side (very common for stereo/depth camera
+    modules — real per-pixel color doubles the data a depth pipeline
+    has to move for information depth-matching doesn't need) and no
+    software fix on this end can conjure color the sensor never
+    captured; extract_lenses' channel-split IS the workaround for that
+    case, not a bug to fix further.
+
+    Linux/V4L2 only — this shells out to v4l2-ctl (part of the
+    `v4l-utils` package; `sudo apt install v4l-utils` if missing), which
+    doesn't exist on Windows/macOS UVC stacks. Returns a dict rather
+    than raising on any failure (wrong OS, tool missing, camera not
+    assigned, etc.) since this is a diagnostic nicety and its absence
+    shouldn't block anything else in the app:
+
+      OK:     {"ok": True, "device": "/dev/videoN", "raw_output": str,
+               "formats": [{"fourcc", "description", "sizes": [str,...]}, ...]}
+      Not OK: {"ok": False, "message": str}
+    """
+    import platform
+    import re
+    import subprocess
+
+    if platform.system() != "Linux":
+        return {"ok": False,
+                "message": "Native format listing needs v4l2-ctl, which is Linux/V4L2-only "
+                            f"(this system reports '{platform.system()}')."}
+    configured = list_configured_cameras()
+    if camera_name not in configured:
+        return {"ok": False, "message": f"'{camera_name}' isn't assigned to a camera index."}
+    device = f"/dev/video{configured[camera_name]}"
+    try:
+        result = subprocess.run(["v4l2-ctl", "-d", device, "--list-formats-ext"],
+                                 capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return {"ok": False,
+                "message": "v4l2-ctl isn't installed — try `sudo apt install v4l-utils`."}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": f"Timed out querying {device}."}
+    if result.returncode != 0:
+        return {"ok": False,
+                "message": f"v4l2-ctl reported an error for {device}: {result.stderr.strip()}"}
+
+    formats = []
+    current = None
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        header = re.match(r"\[\d+\]:\s+'(\w{3,4})'\s*\(([^)]*)\)", stripped)
+        if header:
+            current = {"fourcc": header.group(1), "description": header.group(2), "sizes": []}
+            formats.append(current)
+            continue
+        size = re.match(r"Size:\s+\S+\s+(\d+x\d+)", stripped)
+        if size and current is not None:
+            current["sizes"].append(size.group(1))
+    return {"ok": True, "device": device, "raw_output": result.stdout, "formats": formats}
+
+
 def probe_camera_modes(camera_name: str, resolution_filter: tuple = None,
                         fps_filter: int = None) -> list:
     """
@@ -1024,7 +1232,10 @@ def _pick_depth_source(lenses: list, wanted_label: str, fallback_index: int):
 def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: bool,
                        keep_original: bool, alternate: bool, depth_map: bool,
                        channel_keep: list = None,
-                       depth_left_channel: str = None, depth_right_channel: str = None) -> list:
+                       split_mode: str = "channel", spatial_orientation: str = "horizontal",
+                       spatial_parts: int = 2,
+                       depth_left_channel: str = None, depth_right_channel: str = None,
+                       depth_colorize: bool = False) -> list:
     """
     Shared "what do we actually save for this frame" logic for both the
     primary and alternate profiles in capture_frames_multi() below.
@@ -1033,11 +1244,14 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
     filenames say what they actually are instead of a bare letter. If
     extraction is off, just the one frame under `profile_label`. If it's
     on:
-      - Every channel _extract_lenses() actually finds is labelled by
-        color/plane ("r"/"g"/"b"/"a"/"ch<N>" — see _channel_label), NOT
-        a bare index, so a channel that turns out to contain nothing
-        useful (e.g. a blank "r" channel) can be identified by name and
-        dropped via `channel_keep` below rather than by trial and error.
+      - Every piece _split_frame() actually finds (by channel, or by
+        space if split_mode="spatial" — see that function and
+        get_camera_settings' split_mode) is labelled ("r"/"g"/"b"/"a"/
+        "ch<N>" for channel mode, "left"/"right"/"top"/"bottom"/
+        "part<N>" for spatial mode), NOT a bare index, so a piece that
+        turns out to contain nothing useful (e.g. a blank "r" channel)
+        can be identified by name and dropped via `channel_keep` below
+        rather than by trial and error.
       - channel_keep: if given (non-empty), only extracted channels
         whose label is IN this list are actually saved as photos —
         anything else extracted this frame is silently skipped. None/
@@ -1052,9 +1266,25 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
         channel_keep, but only ever lands on a currently-kept channel.
       - keep_original=True additionally includes the un-split original
         combined frame as one more entry, suffixed "<profile_label>_original".
-      - depth_map=True additionally computes and saves a depth/disparity
-        image (see vision.camera.stereo_depth), suffixed
-        "<profile_label>_depth". The two channels fed into it are
+      - depth_map=True additionally computes and saves a disparity
+        image, suffixed "<profile_label>_disparity" — a RELATIVE
+        "brighter/more saturated = closer" visualization with no real-
+        world scale, always produced whenever the pair looks usable at
+        all (no calibration required). If a stereo calibration is
+        ALSO saved for this camera (see vision.camera.stereo_depth's
+        calibration wizard), an ADDITIONAL "<profile_label>_depth"
+        image is produced too — a true METRIC depth visualization
+        (real millimeters, using the calibrated baseline between the
+        two lenses) rather than just raw disparity magnitude. Without
+        calibration, only the disparity image is produced — there's no
+        way to know real-world scale without it, so this doesn't
+        pretend to have calibrated depth it doesn't have.
+        depth_colorize=True false-colors both of the above (near/far as
+        a color gradient, the same idea as a typical depth-camera
+        viewer) instead of plain grayscale — purely a readability aid,
+        not real captured color (a depth/disparity map has one value
+        per pixel, not three — see vision.camera.stereo_depth._visualize
+        for why). The two channels fed into either computation are
         chosen by depth_left_channel/depth_right_channel (by label —
         see _pick_depth_source), independent of channel_keep, so a
         channel can feed depth even if it's been dropped from the saved
@@ -1064,19 +1294,22 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
         MONO CAMERAS: if the frame only has ONE channel at all (a plain
         mono/grayscale camera — e.g. a single non-stereo camera on the
         arm's wrist — there is no second view to pair it with), the
-        SAME single frame is used for both sides so a depth map can
-        still be produced on request rather than refusing outright.
+        SAME single frame is used for both sides so a disparity image
+        can still be produced on request rather than refusing outright.
         This has no real stereo baseline whatsoever, so the result is
         expected to be heavily inaccurate/near-meaningless — it's
         offered anyway (clearly flagged, both here in the console and
         wherever the UI surfaces this toggle) because a rough result on
         request beats a hard refusal for someone who just wants to see
-        something. Any real depth failure (bad/misaligned pair, etc.)
-        never blocks saving the actual photos.
+        something. A mono camera can never produce the calibrated
+        metric "_depth" image (calibration itself needs two genuinely
+        different lenses; see vision.camera.stereo_depth's calibration
+        wizard), only the disparity placeholder. Any real depth/
+        disparity failure never blocks saving the actual photos.
     """
     if not extract_on and not depth_map:
         return [(profile_label, frame)]
-    lenses = _extract_lenses(frame)  # list of (channel_label, frame)
+    lenses = _split_frame(frame, split_mode, spatial_orientation, spatial_parts)  # list of (label, frame)
     is_mono = len(lenses) <= 1
 
     # Depth: resolve BEFORE the channel_keep filter below, so a channel
@@ -1087,7 +1320,7 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
     if depth_map:
         if is_mono:
             print(f"[STEREO DEPTH] '{camera_name}' is a single-channel/mono camera — "
-                  f"no second view exists to pair with it. Computing a depth map anyway "
+                  f"no second view exists to pair with it. Computing a disparity image anyway "
                   f"using the same mono frame for both sides, as requested; this has NO "
                   f"real stereo baseline and the result is expected to be heavily "
                   f"inaccurate — treat it as a rough placeholder, not a real depth map.")
@@ -1119,12 +1352,18 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
 
     if depth_map:
         try:
-            depth = stereo_depth.compute_depth_map(camera_name, left_src, right_src)
-            if depth is not None:
-                suffix = f"{profile_label}_depth" + ("_mono_est" if is_mono else "")
-                results.append((suffix, depth))
+            disparity_vis, depth_vis = stereo_depth.compute_depth_map_and_metric(
+                camera_name, left_src, right_src, colorize=depth_colorize)
+            if disparity_vis is not None:
+                suffix = f"{profile_label}_disparity" + ("_mono_est" if is_mono else "")
+                results.append((suffix, disparity_vis))
+            if depth_vis is not None:
+                # Only ever non-None when a saved calibration (with a Q
+                # matrix — see run_calibration) exists for this camera;
+                # never happens for the mono placeholder case above.
+                results.append((f"{profile_label}_depth", depth_vis))
         except Exception as e:
-            print(f"[STEREO DEPTH] Could not compute depth map for '{camera_name}': {e}")
+            print(f"[STEREO DEPTH] Could not compute depth/disparity for '{camera_name}': {e}")
     return results
 
 
@@ -1183,8 +1422,12 @@ def capture_frames_multi(camera_name: str) -> list:
     results = _apply_extraction(camera_name, "primary", frame_a, settings["extract_lenses"],
                                  settings["keep_original"], settings["alternate_lenses"],
                                  settings["depth_map"], channel_keep=settings["channel_keep"],
+                                 split_mode=settings["split_mode"],
+                                 spatial_orientation=settings["spatial_orientation"],
+                                 spatial_parts=settings["spatial_parts"],
                                  depth_left_channel=settings["depth_left_channel"],
-                                 depth_right_channel=settings["depth_right_channel"])
+                                 depth_right_channel=settings["depth_right_channel"],
+                                 depth_colorize=settings["depth_colorize"])
 
     if not settings["dual_capture"]:
         return results
@@ -1224,34 +1467,46 @@ def capture_frames_multi(camera_name: str) -> list:
     results += _apply_extraction(camera_name, "alternate", frame_b, settings["extract_lenses_b"],
                                   settings["keep_original"], settings["alternate_lenses"],
                                   settings["depth_map"], channel_keep=settings["channel_keep_b"],
+                                  split_mode=settings["split_mode_b"],
+                                  spatial_orientation=settings["spatial_orientation_b"],
+                                  spatial_parts=settings["spatial_parts_b"],
                                   depth_left_channel=settings["depth_left_channel"],
-                                  depth_right_channel=settings["depth_right_channel"])
+                                  depth_right_channel=settings["depth_right_channel"],
+                                  depth_colorize=settings["depth_colorize"])
     return results
 
 
 def capture_lens_pair(camera_name: str):
     """
     Grabs one frame from `camera_name` and extracts it into individual
-    lenses (see _extract_lenses), returning the first two as
-    (left, right) — regardless of that camera's saved extract_lenses/
-    depth_map settings. Used by the stereo calibration wizard (see
+    lenses (via _split_frame — respects this camera's saved split_mode/
+    spatial_orientation/spatial_parts, same as a real capture would),
+    returning the first two as (left, right) — regardless of that
+    camera's saved extract_lenses/depth_map ON/OFF settings (split_mode
+    itself still applies, since calibration needs the SAME split
+    behavior a real capture would use, or the calibration would be
+    computed against a different left/right pairing than actual
+    captures produce). Used by the stereo calibration wizard (see
     vision.camera.stereo_depth) to pull a fresh Left/Right pair on
     demand for "Add Calibration Image", without needing extraction
     turned on as a persistent capture setting. Raises ValueError if the
-    frame doesn't actually split into at least 2 lenses (e.g. this isn't
-    a multi-channel/stereo-style camera).
+    frame doesn't actually split into at least 2 pieces (e.g. this isn't
+    a multi-channel/stereo-style camera, or spatial_parts/channel count
+    is too low).
     """
     configured = list_configured_cameras()
     if camera_name not in configured:
         raise ValueError(f"Unknown camera '{camera_name}'.")
+    settings = get_camera_settings(camera_name)
     frame = _capture_from_index(configured[camera_name], camera_name=camera_name)
-    lenses = _extract_lenses(frame)
+    lenses = _split_frame(frame, settings["split_mode"], settings["spatial_orientation"],
+                           settings["spatial_parts"])
     if len(lenses) < 2:
         raise ValueError(
-            f"'{camera_name}' only produced {len(lenses)} channel(s) — needs at least 2 "
+            f"'{camera_name}' only produced {len(lenses)} piece(s) — needs at least 2 "
             f"(left+right) for stereo calibration/depth. This only works for a camera whose "
-            f"frame is a multi-channel combined stereo pair, like the See3CAM_Stereo's RGB24 "
-            f"output."
+            f"frame is a multi-channel or genuine side-by-side combined stereo pair, like the "
+            f"See3CAM_Stereo's output."
         )
     return lenses[0][1], lenses[1][1]
 

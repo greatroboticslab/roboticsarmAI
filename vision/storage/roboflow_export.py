@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Callable, List, Optional, Tuple
 
 import requests
@@ -69,6 +70,56 @@ import requests
 from vision.storage import attribute_schema, mongo_client, session_manager
 
 _ROBOFLOW_API_BASE = "https://api.roboflow.com"
+
+# How many times a single request retries on HTTP 429 before giving up,
+# and the backoff schedule (seconds) used when Roboflow's response
+# doesn't include a Retry-After header telling us exactly how long to
+# wait. See _request_with_backoff()'s docstring.
+_MAX_429_RETRIES = 4
+_BACKOFF_SCHEDULE = [1, 2, 4, 8]
+
+
+def _request_with_backoff(method: str, url: str, **kwargs) -> requests.Response:
+    """
+    Issues one HTTP request, automatically retrying on 429 Too Many
+    Requests — Roboflow (like most APIs) rate-limits how fast a single
+    key can hit its endpoints; uploading/tagging a whole batch of
+    images back-to-back with no delay at all runs into this quickly,
+    which is what was showing up as "uploaded but metadata failed to
+    attach: HTTP 429" with no retry at all.
+
+    Honors a `Retry-After` response header when Roboflow sends one
+    (waits exactly that long); otherwise falls back to a fixed backoff
+    schedule (1s, 2s, 4s, 8s). Gives up after _MAX_429_RETRIES retries
+    and returns the last 429 response as-is — callers already treat any
+    non-200 response as a failure, so nothing else needs to change to
+    benefit from this.
+
+    Only retries on 429 specifically — a real error (400/401/403/404/
+    5xx) is returned immediately rather than retried, since those won't
+    resolve themselves by waiting.
+    """
+    resp = requests.request(method, url, **kwargs)
+    attempt = 0
+    while resp.status_code == 429 and attempt < _MAX_429_RETRIES:
+        retry_after = resp.headers.get("Retry-After")
+        try:
+            wait_seconds = float(retry_after) if retry_after else _BACKOFF_SCHEDULE[attempt]
+        except ValueError:
+            wait_seconds = _BACKOFF_SCHEDULE[attempt]
+        time.sleep(wait_seconds)
+        # A retried request needs to re-send the SAME file content — if
+        # `files` includes an already-opened file object (as
+        # upload_image() below does), it was fully read by the attempt
+        # that just failed, so it has to be rewound or the retry would
+        # upload zero bytes rather than actually retrying.
+        for value in (kwargs.get("files") or {}).values():
+            file_obj = value[1] if isinstance(value, (tuple, list)) else value
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+        resp = requests.request(method, url, **kwargs)
+        attempt += 1
+    return resp
 
 # In-memory ONLY — never written to disk. See module docstring.
 _session: Optional[dict] = None  # {"api_key", "workspace", "project_id"} or None
@@ -171,8 +222,19 @@ def _object_metadata(obj: dict) -> dict:
     return metadata
 
 
+def project_key(workspace: str, project_id: str) -> str:
+    """Canonical key used to record/check per-project upload status on
+    an image doc (see mongo_client.mark_image_uploaded_to_roboflow) —
+    just "<workspace>/<project_id>", factored out so gather_images_for_
+    scope() and upload_images() can't accidentally drift out of sync on
+    the format."""
+    return f"{workspace}/{project_id}"
+
+
 def gather_images_for_scope(session_id: str = None, all_history: bool = False,
-                             start_date: str = None, end_date: str = None) -> List[dict]:
+                             start_date: str = None, end_date: str = None,
+                             workspace: str = None, project_id: str = None,
+                             skip_uploaded: bool = True) -> Tuple[List[dict], int]:
     """
     Same scoping rules as vision.storage.package_export.export_package
     (checked in this order: start_date+end_date range > all_history >
@@ -186,6 +248,22 @@ def gather_images_for_scope(session_id: str = None, all_history: bool = False,
     anything missing is silently skipped here (the caller — the GUI —
     is the one that reports totals/warnings to the user, same division
     of responsibility as export_package).
+
+    skip_uploaded (default True): when `workspace`/`project_id` are
+    given, an image already recorded as uploaded to that exact project
+    (see mongo_client.mark_image_uploaded_to_roboflow — set after every
+    successful upload_images() call) is left OUT of the returned list
+    entirely, so re-running an export doesn't burn API calls/rate-limit
+    budget re-sending something Roboflow already has. Pass
+    skip_uploaded=False to force everything in scope to be included
+    again regardless of prior upload history (e.g. deliberately
+    re-uploading after deleting the project on Roboflow's side).
+
+    Returns (images, already_uploaded_count) — the second value is how
+    many images in scope were left out specifically because they were
+    already uploaded (not because their file was missing), so the GUI
+    can report "N new, M already uploaded" rather than just a bare
+    count that looks like scope shrank for no visible reason.
     """
     if start_date and end_date:
         objects = mongo_client.objects_in_date_range(start_date, end_date)
@@ -195,13 +273,19 @@ def gather_images_for_scope(session_id: str = None, all_history: bool = False,
         session_id = session_id or session_manager.today_session_id()
         objects = mongo_client.find_objects({"session_id": session_id}, limit=100000, sort_ascending=True)
 
+    key = project_key(workspace, project_id) if (skip_uploaded and workspace and project_id) else None
+
     images = []
+    already_uploaded_count = 0
     for obj in objects:
         object_id = obj["_id"]
         metadata = _object_metadata(obj)
         for img in mongo_client.get_images_for_object(object_id):
             path = img.get("image_path", "")
             if not path or not os.path.exists(path):
+                continue
+            if key and mongo_client.is_image_uploaded_to_roboflow(img, key):
+                already_uploaded_count += 1
                 continue
             images.append({
                 "image_id": img.get("_id"),
@@ -212,7 +296,7 @@ def gather_images_for_scope(session_id: str = None, all_history: bool = False,
                 "custom_label": img.get("custom_label") or "",
                 "metadata": metadata,
             })
-    return images
+    return images, already_uploaded_count
 
 
 def upload_image(api_key: str, project_id: str, image_path: str, name: str = None,
@@ -254,7 +338,8 @@ def upload_image(api_key: str, project_id: str, image_path: str, name: str = Non
         form_fields["batch"] = batch_name
     try:
         with open(image_path, "rb") as f:
-            resp = requests.post(url, params=params, files={"file": f}, data=form_fields, timeout=30)
+            resp = _request_with_backoff("POST", url, params=params, files={"file": f},
+                                          data=form_fields, timeout=30)
     except OSError as e:
         return False, f"Could not read file: {e}", ""
     except requests.RequestException as e:
@@ -273,6 +358,49 @@ def upload_image(api_key: str, project_id: str, image_path: str, name: str = Non
     return False, f"Roboflow reported failure: {body}", ""
 
 
+def upload_yolo_box_annotation(api_key: str, project_id: str, roboflow_image_id: str,
+                                class_name: str, cx_norm: float, cy_norm: float,
+                                w_norm: float, h_norm: float) -> Tuple[bool, str]:
+    """
+    Attaches ONE bounding-box annotation to an image ALREADY uploaded to
+    Roboflow (see upload_image — this needs the "id" it returns), via:
+
+        POST https://api.roboflow.com/dataset/<project_id>/annotate/<roboflow_image_id>
+             ?api_key=...&name=<arbitrary .txt filename>
+        body (text/plain): "<class_index> <cx> <cy> <w> <h>"  (YOLO format,
+             one line per box — here always exactly one line/one box)
+
+    (see docs.roboflow.com "Upload an Annotation"). YOLO format expects
+    all five numbers normalized 0-1 relative to image width/height —
+    cx_norm/cy_norm is the box CENTER, w_norm/h_norm is the box size,
+    NOT corner coordinates; get this wrong and the box lands in the
+    wrong place or the wrong size without any error being raised.
+
+    Only ever sends class index "0" with a labelmap mapping it to
+    `class_name` — this always uploads exactly one box per call, so
+    there's never a second class index to coordinate.
+
+    NOTE: this REPLACES any existing annotation on that image (per
+    Roboflow's own behavior for this endpoint) — calling it twice on
+    the same image overwrites the first box, it doesn't add a second
+    one. Fine for this codebase's use (one laser-indicated point per
+    photo), but not a general-purpose "add another box" primitive.
+
+    Returns (ok, message).
+    """
+    annotation_line = f"0 {cx_norm:.6f} {cy_norm:.6f} {w_norm:.6f} {h_norm:.6f}\n"
+    url = f"{_ROBOFLOW_API_BASE}/dataset/{project_id}/annotate/{roboflow_image_id}"
+    params = {"api_key": api_key, "name": "laser_point.txt"}
+    body = {"annotationFile": annotation_line, "labelmap": {"0": class_name}}
+    try:
+        resp = _request_with_backoff("POST", url, params=params, json=body, timeout=15)
+    except requests.RequestException as e:
+        return False, f"Annotation upload failed: {e}"
+    if resp.status_code == 200:
+        return True, "annotation uploaded"
+    return False, f"Annotation upload failed (HTTP {resp.status_code}): {resp.text[:200]}"
+
+
 def attach_metadata(api_key: str, workspace: str, image_id: str, metadata: dict) -> Tuple[bool, str]:
     """
     Attaches key/value metadata to an already-uploaded image via
@@ -288,14 +416,17 @@ def attach_metadata(api_key: str, workspace: str, image_id: str, metadata: dict)
     here even though the upload itself succeeded, which is reported as
     a failure message rather than silently swallowed, since the image
     would otherwise sit on Roboflow with none of its captured
-    attributes attached and no obvious sign why.
+    attributes attached and no obvious sign why. A 429 (rate limited)
+    is retried automatically with backoff — see _request_with_backoff —
+    so this only reports a 429-shaped failure if Roboflow is STILL
+    rate-limiting after several retries.
     """
     if not metadata:
         return True, "no metadata to attach"
     url = f"{_ROBOFLOW_API_BASE}/{workspace}/images/{image_id}/metadata"
     try:
-        resp = requests.post(url, params={"api_key": api_key},
-                              json={"metadata": metadata}, timeout=15)
+        resp = _request_with_backoff("POST", url, params={"api_key": api_key},
+                                      json={"metadata": metadata}, timeout=15)
         if resp.status_code == 200:
             return True, "metadata attached"
         return False, f"metadata attach failed (HTTP {resp.status_code}): {resp.text[:200]}"
@@ -343,6 +474,19 @@ def upload_images(api_key: str, workspace: str, project_id: str, images: List[di
     in flight — a large "full history" upload can otherwise run for a
     long time with no way to stop it early.
 
+    Every image that DOES make it onto Roboflow (upload success OR
+    duplicate) is recorded via
+    mongo_client.mark_image_uploaded_to_roboflow() under this exact
+    "<workspace>/<project_id>" — see project_key() — so a later
+    gather_images_for_scope() call against the same project skips it
+    instead of uploading it again. This happens even if its metadata
+    attach then fails, since the PHOTO is genuinely already on
+    Roboflow; a metadata-attach retry for an image already recorded as
+    uploaded currently has to be done by hand (metadata isn't
+    re-attempted automatically on a later run) — flagging this since
+    it's the one place "skip if already uploaded" and "metadata
+    attach failed" can end up slightly at odds.
+
     Returns (success_count, failures) — success_count only counts
     images that actually made it into the project (upload success OR
     duplicate); a metadata-attach failure on an otherwise-successful
@@ -350,12 +494,20 @@ def upload_images(api_key: str, workspace: str, project_id: str, images: List[di
     success_count, since the photo itself is safely on Roboflow either
     way. A failure on one image never stops the rest of the batch.
     """
+    key = project_key(workspace, project_id)
     total = len(images)
     success_count = 0
     failures: List[dict] = []
     for i, image in enumerate(images, start=1):
         if should_cancel and should_cancel():
             break
+        if i > 1:
+            # Small proactive gap between images — each one is already
+            # up to 2 requests (upload + metadata attach); pacing them
+            # slightly cuts down how often the reactive 429 backoff in
+            # _request_with_backoff even needs to kick in, rather than
+            # firing every single image in a big batch flat-out.
+            time.sleep(0.25)
         display_name = image.get("view_label") or image.get("source") or image.get("image_id") or "image"
         ok, message, image_id = upload_image(
             api_key, project_id, image["image_path"],
@@ -364,6 +516,12 @@ def upload_images(api_key: str, workspace: str, project_id: str, images: List[di
         )
         if ok:
             success_count += 1
+            if image.get("image_id"):
+                try:
+                    mongo_client.mark_image_uploaded_to_roboflow(image["image_id"], key, image_id)
+                except Exception as e:
+                    print(f"[ROBOFLOW UPLOAD] Uploaded but could not record locally "
+                          f"(will be re-attempted next export): {e}")
             if image_id and image.get("metadata"):
                 meta_ok, meta_message = attach_metadata(api_key, workspace, image_id, image["metadata"])
                 if not meta_ok:
