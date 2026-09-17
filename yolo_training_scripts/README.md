@@ -93,20 +93,79 @@ PDF text-extraction artifact truncated it).
   ```bash
   pip install ultralytics
   python train_yolo.py --dataset-dir ../../dataset --model yolov8n.pt --epochs 100 --imgsz 640 --batch 16
+
+  # train, then immediately evaluate the best checkpoint (val split, plus test if present)
+  python train_yolo.py --dataset-dir ../../dataset --epochs 100 --evaluate
   ```
 
   Common flags: `--device 0` (GPU index / `cpu` / `mps`), `--batch`,
   `--imgsz`, `--patience` (early stopping), `--project`/`--name` (where
-  runs are saved), `--resume`.
+  runs are saved), `--resume`, `--evaluate`.
+
+- **`evaluate.py`** — standalone evaluation for any trained checkpoint.
+  Runs ultralytics' standard detection metrics (precision, recall, mAP50,
+  mAP50-95) overall and per class, and writes both a readable report and a
+  CSV.
+
+  ```bash
+  # evaluate against the validation split (default)
+  python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset
+
+  # evaluate against a held-out test split instead
+  python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset --split test
+
+  # evaluate against train too, e.g. to compare and check for overfitting
+  python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset --split train
+  ```
+
+  Writes `runs/val/<name>/evaluation_report.txt` (overall + per-class
+  table, worst classes called out) and `evaluation_per_class.csv`.
+
+- **`resplit_dataset.py`** — rebuilds train/valid/test from scratch at a
+  ratio you choose. Two modes:
+  - `--mode object-disjoint` (default): every object (every `Pdfname` id)
+    ends up entirely in one split — never split across train and
+    valid/test, even if two objects co-occur in the same photo (those are
+    grouped together too). This avoids validation/test scores being
+    inflated by near-duplicate photos of the *same physical item* the
+    model already saw in training, and lets you widen the training set
+    (e.g. an 80/20 or 90/10 ratio) when you only have a few images per
+    object.
+  - `--mode random`: classic per-image random shuffle, ignoring object
+    identity, for comparison.
+
+  Non-destructive by default — writes to `dataset/resplit_preview/`
+  (or `--output-dir`) without touching your current train/valid/test.
+  Pass `--apply-in-place` to actually replace them (your existing
+  train/valid/test are renamed to `<split>.bak_<timestamp>` first, and the
+  new split is fully staged before anything existing is touched or moved,
+  so a mid-run failure can't leave you with data half-written or lost).
+
+  ```bash
+  # preview a 70/20/10 split with no object leakage across splits
+  python resplit_dataset.py --dataset-dir ../../dataset --train-ratio 0.7 --val-ratio 0.2 --test-ratio 0.1
+
+  # inspect dataset/resplit_preview/, then actually use it:
+  python resplit_dataset.py --dataset-dir ../../dataset --train-ratio 0.7 --val-ratio 0.2 --test-ratio 0.1 --apply-in-place
+  ```
+
+  Its report calls out the achieved vs. target ratio per split, how many
+  distinct objects and label instances ended up in each, and explicitly
+  flags (or confirms the absence of) any object appearing in more than one
+  split.
 
 ## Typical workflow
 
 ```bash
 cd scripts/yolo_training
 python build_dataset.py --dataset-dir ../../dataset
-#  -> review dataset/dataset_build_report.txt, resolve any [CONFLICT] entries
-#     by re-checking/re-drawing bounding boxes for that object, if needed
-python train_yolo.py --dataset-dir ../../dataset --model yolov8n.pt --epochs 100
+#  -> review dataset/dataset_build_report.txt
+
+# optional: widen the training set with a leakage-free resplit
+python resplit_dataset.py --dataset-dir ../../dataset --train-ratio 0.8 --val-ratio 0.2 --apply-in-place
+
+python train_yolo.py --dataset-dir ../../dataset --model yolov8n.pt --epochs 100 --evaluate
+#  -> review runs/val/exp_eval_val/evaluation_report.txt
 ```
 
 ## Dependencies

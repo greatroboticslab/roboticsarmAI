@@ -4,10 +4,9 @@ train_yolo.py
 
 Trains a YOLO model on the dataset/ folder.
 
-Run build_dataset.py FIRST. This script will refuse to train on data.yaml
-directly if a data.corrected.yaml exists and hasn't been reconciled (i.e. it
-prefers data.corrected.yaml, the output of the PDF-label reconciliation step,
-over the raw data.yaml, unless you explicitly pass --data to override).
+Run build_dataset.py FIRST. This script prefers dataset/data.corrected.yaml
+(the output of the PDF-label reconciliation step) over the raw
+dataset/data.yaml, unless you explicitly pass --data to override.
 
 Usage:
     # 1) reconcile labels from the PDFs first
@@ -15,6 +14,9 @@ Usage:
 
     # 2) train
     python train_yolo.py --dataset-dir ../dataset --model yolov8n.pt --epochs 100
+
+    # train, then immediately run validation-set evaluation on the best checkpoint
+    python train_yolo.py --dataset-dir ../dataset --epochs 100 --evaluate
 
     # override everything explicitly
     python train_yolo.py --data ../dataset/data.yaml --model yolov8s.pt --epochs 150 --imgsz 640 --batch 16
@@ -26,24 +28,7 @@ import argparse
 import sys
 from pathlib import Path
 
-
-def resolve_data_yaml(dataset_dir: Path | None, explicit_data: Path | None) -> Path:
-    if explicit_data is not None:
-        return explicit_data
-    if dataset_dir is None:
-        raise SystemExit("Provide either --dataset-dir or --data")
-    corrected = dataset_dir / "data.corrected.yaml"
-    raw = dataset_dir / "data.yaml"
-    if corrected.exists():
-        print(f"[info] using reconciled config: {corrected}")
-        print("        (run build_dataset.py again any time the PDFs change)")
-        return corrected
-    if raw.exists():
-        print(f"[warn] no data.corrected.yaml found -- using raw {raw} as-is.")
-        print("        Run build_dataset.py first to reconcile class names against the")
-        print("        latest PDF corrections before training on real data.")
-        return raw
-    raise SystemExit(f"Neither data.corrected.yaml nor data.yaml found under {dataset_dir}")
+from yolo_common import resolve_data_yaml
 
 
 def main():
@@ -60,6 +45,11 @@ def main():
     ap.add_argument("--name", default="exp", help="Run name (subfolder under --project)")
     ap.add_argument("--patience", type=int, default=50, help="Early-stopping patience (epochs with no improvement)")
     ap.add_argument("--resume", action="store_true", help="Resume the most recent interrupted run")
+    ap.add_argument(
+        "--evaluate", action="store_true",
+        help="After training, run evaluate.py's validation pass on the best checkpoint "
+             "(validation split, plus test split too if the dataset has one) and write a report.",
+    )
     args = ap.parse_args()
 
     try:
@@ -85,10 +75,34 @@ def main():
     if args.device is not None:
         train_kwargs["device"] = args.device
 
-    results = model.train(**train_kwargs)
+    model.train(**train_kwargs)
+    best_weights = Path(args.project) / args.name / "weights" / "best.pt"
     print("\nTraining complete.")
-    print(f"Best weights: {Path(args.project) / args.name / 'weights' / 'best.pt'}")
-    return results
+    print(f"Best weights: {best_weights}")
+
+    if args.evaluate:
+        if not best_weights.exists():
+            print(f"[warn] --evaluate was set but {best_weights} doesn't exist; skipping evaluation.")
+            return
+        print("\nRunning post-training evaluation...")
+        from evaluate import run_evaluation
+
+        splits_to_run = ["val"]
+        if args.dataset_dir is not None and (args.dataset_dir / "test" / "images").exists():
+            splits_to_run.append("test")
+
+        for split in splits_to_run:
+            print(f"\n--- evaluating on '{split}' split ---")
+            run_evaluation(
+                weights=best_weights,
+                data_yaml=data_yaml,
+                split=split,
+                imgsz=args.imgsz,
+                batch=args.batch,
+                device=args.device,
+                project=args.project,
+                name=f"{args.name}_eval_{split}",
+            )
 
 
 if __name__ == "__main__":
