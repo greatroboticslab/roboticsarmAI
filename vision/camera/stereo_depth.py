@@ -269,7 +269,8 @@ def _to_gray_u8(frame):
     return frame
 
 
-def compute_disparity(camera_name: str, left_frame, right_frame):
+def compute_disparity(camera_name: str, left_frame, right_frame,
+                       num_disparities: int = 128, block_size: int = 7, min_disparity: int = 0):
     """
     Core stereo matching step, factored out so both the disparity
     VISUALIZATION and the METRIC depth conversion below build on the
@@ -282,6 +283,17 @@ def compute_disparity(camera_name: str, left_frame, right_frame):
     that normalization is a visualization detail, and normalizing here
     would throw away the actual scale reprojectImageTo3D() needs to
     convert to real millimeters), or None if the pair isn't usable.
+
+    num_disparities/block_size/min_disparity: tunable StereoSGBM search
+    parameters — see get_camera_settings' stereo_num_disparities/
+    stereo_block_size/stereo_min_disparity in vision.camera.capture for
+    why these matter: if the TRUE pixel disparity between this camera's
+    left/right views exceeds num_disparities (128 px by default), the
+    matcher can't find a valid match for a huge swath of the image at
+    all — see _invalid_mask()/_visualize()'s docstrings for what that
+    looks like once rendered. Increasing num_disparities (always a
+    multiple of 16) is usually the fix for a working distance where 128
+    isn't enough range.
     """
     _require_cv2()
     if left_frame is None or right_frame is None:
@@ -295,12 +307,14 @@ def compute_disparity(camera_name: str, left_frame, right_frame):
         gray_l = cv2.remap(gray_l, calib["map1x"], calib["map1y"], cv2.INTER_LINEAR)
         gray_r = cv2.remap(gray_r, calib["map2x"], calib["map2y"], cv2.INTER_LINEAR)
 
-    # StereoSGBM with reasonable general-purpose defaults. numDisparities
-    # must be a positive multiple of 16; blockSize odd, typically 3-11.
-    block_size = 7
-    num_disparities = 128
+    # numDisparities must be a positive multiple of 16; blockSize odd,
+    # typically 3-11. Silently round rather than let cv2 raise on a
+    # value a settings file/GUI field passed in slightly off.
+    num_disparities = max(16, (int(num_disparities) // 16) * 16 or 16)
+    if block_size % 2 == 0:
+        block_size += 1
     stereo = cv2.StereoSGBM_create(
-        minDisparity=0,
+        minDisparity=int(min_disparity),
         numDisparities=num_disparities,
         blockSize=block_size,
         P1=8 * 3 * block_size ** 2,
@@ -314,7 +328,36 @@ def compute_disparity(camera_name: str, left_frame, right_frame):
     return stereo.compute(gray_l, gray_r).astype(np.float32) / 16.0
 
 
-def _visualize(array, colorize: bool = False):
+def _invalid_mask(disparity, min_disparity: int = 0):
+    """
+    Identifies pixels StereoSGBM couldn't find ANY valid match for.
+    OpenCV's stereo matchers mark a failed pixel with a fixed sentinel
+    value (min_disparity - 1) rather than leaving it out of the array —
+    so unless those pixels are excluded before normalizing for display,
+    a large failed region (common when the true disparity exceeds
+    num_disparities' search range, or the pair isn't well rectified)
+    dominates the min/max range cv2.normalize() computes. Concretely,
+    THIS is what causes a disparity image to render as one flat solid
+    block on one side and a flat solid block on the other, instead of a
+    smooth gradient: the huge invalid region collapses to a single
+    value at one extreme, and the real (but comparatively tiny) range
+    of valid disparities gets stretched across the rest — that is NOT
+    what a working disparity map is supposed to look like; it's the
+    visual signature of stereo matching failing across most of the
+    frame, not an actual distance gradient.
+
+    Returns (mask, invalid_fraction) — mask is a boolean array, True
+    where the pixel is invalid; invalid_fraction is what fraction
+    [0-1] of the whole image that covers, for a quick "is this
+    healthy" number a caller can log/show without inspecting the mask
+    itself.
+    """
+    mask = disparity <= (min_disparity - 1)
+    invalid_fraction = float(mask.sum()) / mask.size if mask.size else 0.0
+    return mask, invalid_fraction
+
+
+def _visualize(array, colorize: bool = False, invalid_mask=None):
     """
     Normalizes any single-channel float array (disparity in pixels, or
     depth in mm) to an 8-bit image for saving/display, then optionally
@@ -322,6 +365,15 @@ def _visualize(array, colorize: bool = False):
     gradient — e.g. blue-to-red — the same idea as how a RealSense
     viewer or most depth-camera tools show depth, rather than a flat
     grayscale gradient that's harder to read at a glance).
+
+    invalid_mask (see _invalid_mask): when given, those pixels are
+    EXCLUDED from the min/max range used to stretch the rest of the
+    image, and are always rendered as pure black regardless of where
+    that would otherwise fall — this is the fix for the disparity map
+    rendering as two flat solid blocks instead of a real gradient (see
+    _invalid_mask's docstring for the full explanation). Without a
+    mask, every pixel (including any sentinel invalid values) is
+    normalized together, which is the old, misleading behavior.
 
     IMPORTANT: this "color" is a VISUALIZATION AID ONLY — it is not,
     and cannot be, the scene's real color. A disparity/depth map has
@@ -338,14 +390,26 @@ def _visualize(array, colorize: bool = False):
     _require_cv2()
     if array is None:
         return None
-    normalized = cv2.normalize(array, None, 0, 255, cv2.NORM_MINMAX)
-    u8 = np.uint8(normalized)
+
+    if invalid_mask is not None and invalid_mask.any() and not invalid_mask.all():
+        valid = array[~invalid_mask]
+        vmin, vmax = float(valid.min()), float(valid.max())
+        if vmax <= vmin:
+            u8 = np.zeros(array.shape, dtype=np.uint8)
+        else:
+            scaled = np.clip((array - vmin) / (vmax - vmin) * 255.0, 0, 255)
+            u8 = scaled.astype(np.uint8)
+        u8[invalid_mask] = 0  # always solid black — conventional "no data here", not a real value
+    else:
+        normalized = cv2.normalize(array, None, 0, 255, cv2.NORM_MINMAX)
+        u8 = np.uint8(normalized)
+
     if colorize:
         return cv2.applyColorMap(u8, cv2.COLORMAP_JET)
     return u8
 
 
-def disparity_to_depth_mm(camera_name: str, disparity):
+def disparity_to_depth_mm(camera_name: str, disparity, invalid_mask=None):
     """
     Converts a raw disparity array (see compute_disparity) into an
     actual METRIC depth map — real distance in millimeters at every
@@ -362,6 +426,12 @@ def disparity_to_depth_mm(camera_name: str, disparity):
     won't have it), there's no way to know the real-world scale, so
     this returns None rather than guessing.
 
+    invalid_mask (see _invalid_mask): pixels already known to have no
+    valid disparity are zeroed here too, on top of reprojectImageTo3D's
+    own output — passing this in avoids recomputing the same mask
+    disparity_to_depth_mm's caller (compute_depth_map_and_metric) also
+    needs for the disparity visualization.
+
     Returns a float32 array (mm, one value per pixel; pixels with no
     valid disparity are set to 0) or None if no usable calibration is
     saved for `camera_name`.
@@ -374,12 +444,15 @@ def disparity_to_depth_mm(camera_name: str, disparity):
         return None
     points_3d = cv2.reprojectImageTo3D(disparity, calib["Q"])
     depth_mm = points_3d[:, :, 2].astype(np.float32)
-    invalid = (disparity <= 0) | ~np.isfinite(depth_mm) | (depth_mm < 0)
+    invalid = ~np.isfinite(depth_mm) | (depth_mm < 0)
+    if invalid_mask is not None:
+        invalid = invalid | invalid_mask
     depth_mm[invalid] = 0
     return depth_mm
 
 
-def compute_depth_map(camera_name: str, left_frame, right_frame, colorize: bool = False):
+def compute_depth_map(camera_name: str, left_frame, right_frame, colorize: bool = False,
+                       num_disparities: int = 128, block_size: int = 7, min_disparity: int = 0):
     """
     Computes a disparity VISUALIZATION from a Left/Right pair — kept
     for backward compatibility with existing callers (this is the
@@ -408,6 +481,10 @@ def compute_depth_map(camera_name: str, left_frame, right_frame, colorize: bool 
         image (brighter = closer); True returns a false-colored BGR
         image instead — see _visualize()'s docstring for why this is a
         visualization aid, not real captured color.
+    num_disparities/block_size/min_disparity: see compute_disparity's
+        docstring — tune these if most of the output renders as one
+        flat block (see _invalid_mask's docstring for why that happens
+        and what it means).
 
     Returns the visualization array, or None if the pair doesn't look
     usable for stereo matching.
@@ -421,11 +498,24 @@ def compute_depth_map(camera_name: str, left_frame, right_frame, colorize: bool 
             "has_native_depth_support() returned True but no native depth backend "
             "is actually implemented yet — this is a placeholder for future work."
         )
-    disparity = compute_disparity(camera_name, left_frame, right_frame)
-    return _visualize(disparity, colorize=colorize)
+    disparity = compute_disparity(camera_name, left_frame, right_frame,
+                                   num_disparities=num_disparities, block_size=block_size,
+                                   min_disparity=min_disparity)
+    if disparity is None:
+        return None
+    mask, invalid_fraction = _invalid_mask(disparity, min_disparity)
+    if invalid_fraction > 0.4:
+        print(f"[STEREO DEPTH] '{camera_name}': stereo matching found NO valid disparity for "
+              f"{invalid_fraction:.0%} of the frame — the resulting map will show a large solid "
+              f"black region rather than a real gradient there. This usually means the true "
+              f"pixel disparity exceeds num_disparities ({num_disparities}) for this working "
+              f"distance, or the pair isn't well calibrated/rectified — try raising "
+              f"num_disparities (a multiple of 16) and/or (re)running calibration.")
+    return _visualize(disparity, colorize=colorize, invalid_mask=mask)
 
 
-def compute_depth_map_and_metric(camera_name: str, left_frame, right_frame, colorize: bool = False):
+def compute_depth_map_and_metric(camera_name: str, left_frame, right_frame, colorize: bool = False,
+                                  num_disparities: int = 128, block_size: int = 7, min_disparity: int = 0):
     """
     The fuller version of compute_depth_map() above: computes disparity
     ONCE (see compute_disparity), then produces BOTH outputs from it —
@@ -445,9 +535,19 @@ def compute_depth_map_and_metric(camera_name: str, left_frame, right_frame, colo
          to fabricate real-world scale without it, so this doesn't
          pretend to.
 
+    Both outputs exclude pixels with no valid disparity match from
+    their normalization range (see _invalid_mask/_visualize) — WITHOUT
+    this, a large failed-matching region renders as a flat solid block
+    dominating half the image instead of a real gradient; a console
+    warning is also printed (see compute_depth_map) if that failed
+    region covers more than 40% of the frame, since that's a sign
+    something needs tuning (num_disparities too small, pair not
+    calibrated/rectified), not how a healthy result looks.
+
     colorize applies to both outputs identically — see _visualize()'s
     docstring for why this "color" is a false-color visualization aid,
-    not real captured scene color.
+    not real captured scene color. num_disparities/block_size/
+    min_disparity: see compute_disparity's docstring.
 
     Returns (disparity_vis, depth_vis_or_None) — either element can
     still be None if the pair wasn't usable for stereo matching at all
@@ -462,10 +562,20 @@ def compute_depth_map_and_metric(camera_name: str, left_frame, right_frame, colo
             "has_native_depth_support() returned True but no native depth backend "
             "is actually implemented yet — this is a placeholder for future work."
         )
-    disparity = compute_disparity(camera_name, left_frame, right_frame)
+    disparity = compute_disparity(camera_name, left_frame, right_frame,
+                                   num_disparities=num_disparities, block_size=block_size,
+                                   min_disparity=min_disparity)
     if disparity is None:
         return None, None
-    disparity_vis = _visualize(disparity, colorize=colorize)
-    depth_mm = disparity_to_depth_mm(camera_name, disparity)
-    depth_vis = _visualize(depth_mm, colorize=colorize) if depth_mm is not None else None
+    mask, invalid_fraction = _invalid_mask(disparity, min_disparity)
+    if invalid_fraction > 0.4:
+        print(f"[STEREO DEPTH] '{camera_name}': stereo matching found NO valid disparity for "
+              f"{invalid_fraction:.0%} of the frame — the resulting map(s) will show a large "
+              f"solid black region rather than a real gradient there. This usually means the "
+              f"true pixel disparity exceeds num_disparities ({num_disparities}) for this "
+              f"working distance, or the pair isn't well calibrated/rectified — try raising "
+              f"num_disparities (a multiple of 16) and/or (re)running calibration.")
+    disparity_vis = _visualize(disparity, colorize=colorize, invalid_mask=mask)
+    depth_mm = disparity_to_depth_mm(camera_name, disparity, invalid_mask=mask)
+    depth_vis = _visualize(depth_mm, colorize=colorize, invalid_mask=mask) if depth_mm is not None else None
     return disparity_vis, depth_vis

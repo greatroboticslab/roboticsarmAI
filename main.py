@@ -603,7 +603,7 @@ def capture_movement_snapshot(sample_id: str, label: str) -> None:
     camera failing (unplugged, busy, etc.) doesn't stop the others."""
     def worker():
         pairs = []
-        for cam in list(list_configured_cameras().keys()):
+        for cam in list(list_configured_cameras(enabled_only=True).keys()):
             try:
                 for view_index, (suffix, frame) in enumerate(capture_frames_multi(cam)):
                     path = save_image(frame, sample_id, cam, view_index, view_label=suffix)
@@ -1543,7 +1543,7 @@ def _middleman_capture_executor(object_id: str = None):
     """
     sample_id = object_id or new_sample_id()
     frames = []
-    for camera_name in list_configured_cameras():
+    for camera_name in list_configured_cameras(enabled_only=True):
         try:
             frame = capture_frame(camera_name)
             frames.append((camera_name, 0, frame))
@@ -2189,7 +2189,7 @@ def photograph_at_current_position():
     # Work over however many cameras are actually configured in
     # vision/config.py's CAMERAS dict. If a camera is missing/unplugged,
     # it's skipped rather than aborting the whole capture.
-    cameras_to_use = list_configured_cameras()
+    cameras_to_use = list_configured_cameras(enabled_only=True)
     views = []
     failed_cameras = []
 
@@ -2297,7 +2297,7 @@ def run_automatic_capture_sequence(category: str, num_images: int,
         if hard_deck_error:
             raise RuntimeError(hard_deck_error)
 
-        cameras_to_use = list_configured_cameras()
+        cameras_to_use = list_configured_cameras(enabled_only=True)
         failed_cameras = set()
 
         for i in range(num_images):
@@ -5448,7 +5448,7 @@ def run_data_collection_rotation_local(name, category, color, size,
         if hard_deck_error:
             raise RuntimeError(hard_deck_error)
 
-        cameras_to_use = list_configured_cameras()
+        cameras_to_use = list_configured_cameras(enabled_only=True)
         failed_cameras = set()
         sample_id = new_sample_id()  # just a disk-folder id (images/<id>/) — unrelated
                                       # to the Mongo object_id record_capture() mints below
@@ -6841,7 +6841,7 @@ def run_manual_snapshot(sample_label: str, status_label_widget: tk.Label,
         the standard Database-tab list refreshes — e.g. the Data
         Collection tab's "Today's Captures" list.
     """
-    camera_names = list(live_feed_panels.keys()) or list(list_configured_cameras().keys())
+    camera_names = list(live_feed_panels.keys()) or list(list_configured_cameras(enabled_only=True).keys())
     status_label_widget.config(
         text=f"Capturing '{sample_label}' from {len(camera_names)} camera(s): "
              f"{', '.join(camera_names)}...",
@@ -7009,7 +7009,7 @@ def _build_camera_panels():
         child.destroy()
     live_feed_panels.clear()
 
-    configured = list(list_configured_cameras().keys())
+    configured = list(list_configured_cameras(enabled_only=True).keys())
     _camera_names = [name for name in configured if is_camera_available(name)]
     if not _camera_names:
         # Nothing responded — DEMO MODE, no cv2/hardware, or genuinely
@@ -7064,7 +7064,7 @@ def _warm_camera_handles():
     launch means that cost is paid during startup instead, once, before
     anyone's watching a specific move for a fast response.
     """
-    for cam_name in list_configured_cameras():
+    for cam_name in list_configured_cameras(enabled_only=True):
         try:
             capture_frame(cam_name)
         except Exception as e:
@@ -7294,6 +7294,17 @@ def _do_apply_camera_settings(cam_name):
     depth_left = depth_left_raw if depth_left_raw in _valid_depth_labels else ""
     depth_right = depth_right_raw if depth_right_raw in _valid_depth_labels else ""
     try:
+        stereo_num_disparities = int(_camera_settings_vars[cam_name]["stereo_num_disparities"].get().strip())
+        stereo_block_size = int(_camera_settings_vars[cam_name]["stereo_block_size"].get().strip())
+        stereo_min_disparity = int(_camera_settings_vars[cam_name]["stereo_min_disparity"].get().strip())
+        if stereo_num_disparities < 16 or stereo_num_disparities % 16 != 0:
+            raise ValueError("num disparities must be a positive multiple of 16")
+        if stereo_block_size < 1:
+            raise ValueError("block size must be positive")
+    except ValueError as e:
+        camera_assign_status.config(text=f"'{cam_name}': invalid disparity-search value — {e}", fg="red")
+        return
+    try:
         set_camera_settings(cam_name, extract_lenses=extract, keep_original=keep_orig,
                              alternate_lenses=alternate, depth_map=depth_map,
                              dual_capture=dual, extract_lenses_b=extract_b,
@@ -7303,7 +7314,10 @@ def _do_apply_camera_settings(cam_name):
                              split_mode_b=split_mode_b, spatial_orientation_b=spatial_orientation_b,
                              spatial_parts_b=spatial_parts_b,
                              depth_left_channel=depth_left, depth_right_channel=depth_right,
-                             depth_colorize=depth_colorize)
+                             depth_colorize=depth_colorize,
+                             stereo_num_disparities=stereo_num_disparities,
+                             stereo_block_size=stereo_block_size,
+                             stereo_min_disparity=stereo_min_disparity)
         note = " — pick A/B formats from the Detected Formats list above (Use as A / Use as B applies immediately)."
         all_labels = ("r", "g", "b", "left", "right", "top", "bottom")
         dropped = [ch.capitalize() if len(ch) > 1 else ch.upper()
@@ -7316,7 +7330,8 @@ def _do_apply_camera_settings(cam_name):
                + (f", alternate views (one per photo) = {alternate}" if extract else "")
                + (f", dropped pieces = {dropped or 'none'}" if extract else "")
                + (f", depth/disparity = {depth_map}" if (extract or depth_map) else "")
-               + (f" (left={depth_left_raw}, right={depth_right_raw}, colorize={depth_colorize})"
+               + (f" (left={depth_left_raw}, right={depth_right_raw}, colorize={depth_colorize}, "
+                  f"num_disparities={stereo_num_disparities}, block_size={stereo_block_size})"
                   if depth_map else "")
                + (f", dual-capture B = on (extract lenses B = {extract_b})" if dual else "")
                + note)
@@ -7518,9 +7533,29 @@ def _rebuild_camera_assign_rows():
     device_names = list_camera_device_names()
     current = list_configured_cameras()
     for cam_name, cam_index in sorted(current.items()):
+        current_settings = get_camera_settings(cam_name)
+        is_enabled = current_settings["enabled"]
+
         row = tk.Frame(camera_assign_rows_frame)
         row.pack(fill=tk.X, pady=2)
-        tk.Label(row, text=cam_name, width=12, anchor=tk.W).pack(side=tk.LEFT)
+        name_label = tk.Label(row, text=(cam_name if is_enabled else f"{cam_name} (disabled)"),
+                               width=16, anchor=tk.W, fg=("black" if is_enabled else "gray"))
+        name_label.pack(side=tk.LEFT)
+
+        def _do_toggle_camera_enabled(n=cam_name):
+            new_state = not get_camera_settings(n)["enabled"]
+            set_camera_settings(n, enabled=new_state)
+            camera_assign_status.config(
+                text=f"'{n}' {'enabled' if new_state else 'disabled — skipped by every capture, '
+                                                            'live feed, and startup warm-up until '
+                                                            're-enabled'}.",
+                fg="green" if new_state else "orange")
+            _rebuild_camera_assign_rows()
+
+        tk.Button(row, text=("Disable" if is_enabled else "Enable"),
+                  bg=("salmon" if is_enabled else "lightgreen"),
+                  command=_do_toggle_camera_enabled).pack(side=tk.LEFT, padx=(4, 8))
+
         tk.Label(row, text="device index:").pack(side=tk.LEFT, padx=(4, 2))
         idx_var = tk.StringVar(value=str(cam_index))
         _camera_assign_index_vars[cam_name] = idx_var
@@ -7534,8 +7569,6 @@ def _rebuild_camera_assign_rows():
             tk.Label(row, text=f"(detected: {detected_name})", fg="gray",
                      font=("Arial", 8)).pack(side=tk.LEFT, padx=(8, 0))
 
-        current_settings = get_camera_settings(cam_name)
-
         selected_row = tk.Frame(camera_assign_rows_frame)
         selected_row.pack(fill=tk.X, pady=(0, 2), padx=(12, 0))
         a_label_var = tk.StringVar(
@@ -7546,7 +7579,29 @@ def _rebuild_camera_assign_rows():
         tk.Checkbutton(selected_row, text="Extract Lenses (split channels into separate photos)",
                         variable=extract_var, font=("Arial", 8)).pack(side=tk.LEFT)
 
-        extract_options_row = tk.Frame(camera_assign_rows_frame)
+        # ---- Sections below are hidden until the setting that makes
+        # them relevant is turned on, instead of always showing every
+        # possible field regardless of whether it applies to this
+        # camera (e.g. split/channel-keep controls only matter once
+        # "Extract Lenses" is on; depth-tuning controls only matter
+        # once "Generate a disparity map" is on). Each toggle's trace
+        # below shows/hides its container frame immediately, and the
+        # visibility is also set once up front to match whatever's
+        # already saved, so reopening this tab doesn't hide a section
+        # whose setting is already turned on.
+        extract_dependent_frame = tk.Frame(camera_assign_rows_frame)
+        depth_dependent_frame = tk.Frame(camera_assign_rows_frame)
+        dual_dependent_frame = tk.Frame(camera_assign_rows_frame)
+        # Packed HERE (immediately), fixing its position among this
+        # camera's other rows right now — children added to it further
+        # down (even much further down, interspersed with other rows'
+        # construction) still render inside this same block, in this
+        # same position, since a frame's spot among ITS OWN siblings is
+        # locked in at the moment IT is packed, independent of when
+        # children are added to it afterward.
+        extract_dependent_frame.pack(fill=tk.X)
+
+        extract_options_row = tk.Frame(extract_dependent_frame)
         extract_options_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         keep_orig_var = tk.BooleanVar(value=current_settings["keep_original"])
         tk.Checkbutton(extract_options_row, text="Also keep the original (un-split) photo",
@@ -7566,10 +7621,10 @@ def _rebuild_camera_assign_rows():
         # "Spatial" instead cuts the frame apart by SPACE into left/
         # right (or top/bottom) pieces — right for a camera whose
         # driver hands back a genuine combined side-by-side/over-under
-        # frame instead. Use "Show Native Formats (v4l2-ctl)" below to
-        # check which kind of frame this camera's driver actually
-        # produces rather than guessing.
-        split_mode_row = tk.Frame(camera_assign_rows_frame)
+        # frame instead. Use "Show Native Formats" below to check which
+        # kind of frame this camera's driver actually produces rather
+        # than guessing.
+        split_mode_row = tk.Frame(extract_dependent_frame)
         split_mode_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(split_mode_row, text="Split by:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
         split_mode_var = tk.StringVar(value=current_settings["split_mode"])
@@ -7588,7 +7643,7 @@ def _rebuild_camera_assign_rows():
                                        "horizontal = left/right, vertical = top/bottom)",
                  fg="gray", font=("Arial", 8)).pack(side=tk.LEFT, padx=(6, 0))
 
-        split_mode_b_row = tk.Frame(camera_assign_rows_frame)
+        split_mode_b_row = tk.Frame(dual_dependent_frame)
         split_mode_b_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(split_mode_b_row, text="Split by (B):", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
         split_mode_b_var = tk.StringVar(value=current_settings["split_mode_b"])
@@ -7615,7 +7670,7 @@ def _rebuild_camera_assign_rows():
         # _channel_label/_extract_lenses_spatial) — "primary_split_r",
         # "primary_split_left", etc. — not a bare index, so it's clear
         # which physical piece a saved photo actually came from.
-        channel_keep_row = tk.Frame(camera_assign_rows_frame)
+        channel_keep_row = tk.Frame(extract_dependent_frame)
         channel_keep_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(channel_keep_row, text="Keep pieces:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
         saved_keep = current_settings["channel_keep"]
@@ -7631,7 +7686,7 @@ def _rebuild_camera_assign_rows():
                       "dropped instead of saved every photo)",
                  fg="gray", font=("Arial", 8), wraplength=460, justify=tk.LEFT).pack(side=tk.LEFT)
 
-        channel_keep_b_row = tk.Frame(camera_assign_rows_frame)
+        channel_keep_b_row = tk.Frame(dual_dependent_frame)
         channel_keep_b_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(channel_keep_b_row, text="Keep pieces (B):", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 6))
         saved_keep_b = current_settings["channel_keep_b"]
@@ -7645,7 +7700,8 @@ def _rebuild_camera_assign_rows():
         # Manual FPS entry — set a framerate directly without needing to
         # run Detect Formats first (which is the only other way to
         # change fps). Doesn't touch resolution/format; not every
-        # camera/driver honors every value requested.
+        # camera/driver honors every value requested. Always visible —
+        # useful with or without extraction/depth turned on.
         manual_fps_row = tk.Frame(camera_assign_rows_frame)
         manual_fps_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(manual_fps_row, text="Set FPS directly — A:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 4))
@@ -7677,7 +7733,9 @@ def _rebuild_camera_assign_rows():
             else "not calibrated — only disparity (relative, no real-world scale) will be saved")
         tk.Label(depth_row, textvariable=calib_status_var, font=("Arial", 8), fg="gray").pack(side=tk.LEFT)
 
-        depth_colorize_row = tk.Frame(camera_assign_rows_frame)
+        depth_dependent_frame.pack(fill=tk.X)  # locks position right after depth_row, see comment above
+
+        depth_colorize_row = tk.Frame(depth_dependent_frame)
         depth_colorize_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         depth_colorize_var = tk.BooleanVar(value=current_settings["depth_colorize"])
         tk.Checkbutton(depth_colorize_row,
@@ -7689,7 +7747,7 @@ def _rebuild_camera_assign_rows():
                       "disparity map has one value per pixel, not three)",
                  fg="gray", font=("Arial", 8)).pack(side=tk.LEFT)
 
-        depth_channels_row = tk.Frame(camera_assign_rows_frame)
+        depth_channels_row = tk.Frame(depth_dependent_frame)
         depth_channels_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(depth_channels_row, text="Depth pair — Left:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
         _depth_choices = ["(default: 1st extracted)", "r", "g", "b", "a", "left", "right", "top", "bottom"]
@@ -7707,7 +7765,34 @@ def _rebuild_camera_assign_rows():
                       "not itself saved as a photo)",
                  fg="gray", font=("Arial", 8), wraplength=460, justify=tk.LEFT).pack(side=tk.LEFT)
 
-        mono_depth_row = tk.Frame(camera_assign_rows_frame)
+        # StereoSGBM search-range tuning — the most common fix for a
+        # disparity/depth output that renders as one flat solid block
+        # instead of a real gradient (see vision.camera.stereo_depth's
+        # _invalid_mask docstring): the true pixel disparity at this
+        # camera's actual working distance exceeding num_disparities
+        # means stereo matching fails outright across most of the
+        # frame. Raise num_disparities (always a multiple of 16) if a
+        # console warning about matching failing for a large fraction
+        # of the frame shows up after a capture.
+        stereo_tuning_row = tk.Frame(depth_dependent_frame)
+        stereo_tuning_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
+        tk.Label(stereo_tuning_row, text="Disparity search — num disparities:",
+                 font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        stereo_num_disp_var = tk.StringVar(value=str(current_settings["stereo_num_disparities"]))
+        tk.Entry(stereo_tuning_row, textvariable=stereo_num_disp_var, width=5).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(stereo_tuning_row, text="block size:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        stereo_block_size_var = tk.StringVar(value=str(current_settings["stereo_block_size"]))
+        tk.Entry(stereo_tuning_row, textvariable=stereo_block_size_var, width=4).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(stereo_tuning_row, text="min disparity:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        stereo_min_disp_var = tk.StringVar(value=str(current_settings["stereo_min_disparity"]))
+        tk.Entry(stereo_tuning_row, textvariable=stereo_min_disp_var, width=5).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(stereo_tuning_row,
+                 text="(num disparities must be a multiple of 16 — raise this if the console "
+                      "warns that matching failed across a large fraction of the frame; block "
+                      "size should stay odd, 3-11 typical)",
+                 fg="gray", font=("Arial", 8), wraplength=440, justify=tk.LEFT).pack(side=tk.LEFT)
+
+        mono_depth_row = tk.Frame(depth_dependent_frame)
         mono_depth_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Label(mono_depth_row,
                  text="Also works for a plain mono/single-channel camera (e.g. the arm's "
@@ -7719,7 +7804,7 @@ def _rebuild_camera_assign_rows():
                  fg="darkred", font=("Arial", 8, "italic"), wraplength=560, justify=tk.LEFT
                  ).pack(side=tk.LEFT)
 
-        calib_row = tk.Frame(camera_assign_rows_frame)
+        calib_row = tk.Frame(depth_dependent_frame)
         calib_row.pack(fill=tk.X, pady=(0, 2), padx=(28, 0))
         tk.Button(calib_row, text="Start Calibration", font=("Arial", 8),
                   command=lambda n=cam_name: _do_start_calibration(n)).pack(side=tk.LEFT, padx=(0, 4))
@@ -7775,14 +7860,15 @@ def _rebuild_camera_assign_rows():
 
         native_formats_row = tk.Frame(camera_assign_rows_frame)
         native_formats_row.pack(fill=tk.X, pady=(0, 4), padx=(12, 0))
-        tk.Button(native_formats_row, text="Show Native Formats (v4l2-ctl)", font=("Arial", 8),
+        tk.Button(native_formats_row, text="Show Native Formats", font=("Arial", 8),
                   command=lambda n=cam_name: _do_show_native_formats(n)
                   ).pack(side=tk.LEFT, padx=(0, 8))
         tk.Label(native_formats_row,
                  text="(asks the driver directly what it actually supports, instead of "
                       "guessing from the candidate list above — the place to check whether a "
                       "stereo camera has a real per-side color mode instead of the R/G/B-"
-                      "channel-packing workaround. Linux only.)",
+                      "channel-packing workaround. Linux (v4l2-ctl) or Windows (ffmpeg/"
+                      "DirectShow) — see the console/status message if neither is available.)",
                  fg="gray", font=("Arial", 8), wraplength=560, justify=tk.LEFT).pack(side=tk.LEFT)
 
         dual_row = tk.Frame(camera_assign_rows_frame)
@@ -7798,6 +7884,48 @@ def _rebuild_camera_assign_rows():
         tk.Checkbutton(dual_row, text="Extract Lenses (B)", variable=extract_b_var,
                         font=("Arial", 8)).pack(side=tk.LEFT)
 
+        dual_dependent_frame.pack(fill=tk.X)  # locks position right after dual_row, see comment above
+
+        apply_row = tk.Frame(camera_assign_rows_frame)
+        apply_row.pack(fill=tk.X, pady=(0, 8), padx=(12, 0))
+        tk.Button(apply_row, text="Apply Settings", bg="lightyellow",
+                  command=lambda n=cam_name: _do_apply_camera_settings(n)).pack(side=tk.LEFT)
+
+        # Show/hide the three dependent sections based on their
+        # controlling checkbox. Re-showing uses before=<anchor> rather
+        # than a bare pack() — Tkinter's pack manager otherwise inserts
+        # a re-shown widget at whatever's CURRENTLY the end of its
+        # parent's pack order (i.e. after apply_row, at the very
+        # bottom) instead of back in its original slot, the first time
+        # a hidden section is toggled back on after being hidden once.
+        # manual_fps_row/modes_frame/apply_row are resolved from the
+        # enclosing scope at CALL time (not captured as default
+        # arguments), since apply_row in particular doesn't exist yet
+        # at the point these functions are defined.
+        def _update_extract_visibility(*_args, f=extract_dependent_frame, v=extract_var):
+            (f.pack(fill=tk.X, before=manual_fps_row) if v.get() else f.pack_forget())
+
+        def _update_depth_visibility(*_args, f=depth_dependent_frame, v=depth_var):
+            (f.pack(fill=tk.X, before=modes_frame) if v.get() else f.pack_forget())
+
+        def _update_dual_visibility(*_args, f=dual_dependent_frame, v=dual_var):
+            (f.pack(fill=tk.X, before=apply_row) if v.get() else f.pack_forget())
+
+        extract_var.trace_add("write", _update_extract_visibility)
+        depth_var.trace_add("write", _update_depth_visibility)
+        dual_var.trace_add("write", _update_dual_visibility)
+        # Initial sync to match whatever's already saved — every
+        # dependent frame is already in its correct slot from the
+        # explicit pack() calls above, so this only needs to HIDE ones
+        # that should start hidden (never needs the before= path yet,
+        # since nothing's been toggled off-then-on at this point).
+        if not extract_var.get():
+            extract_dependent_frame.pack_forget()
+        if not depth_var.get():
+            depth_dependent_frame.pack_forget()
+        if not dual_var.get():
+            dual_dependent_frame.pack_forget()
+
         _camera_settings_vars[cam_name] = {
             "a_label": a_label_var, "extract": extract_var,
             "keep_orig": keep_orig_var, "alternate": alternate_var, "depth_map": depth_var,
@@ -7809,12 +7937,9 @@ def _rebuild_camera_assign_rows():
             "spatial_parts_b": spatial_parts_b_var,
             "depth_left": depth_left_var, "depth_right": depth_right_var,
             "depth_colorize": depth_colorize_var,
+            "stereo_num_disparities": stereo_num_disp_var, "stereo_block_size": stereo_block_size_var,
+            "stereo_min_disparity": stereo_min_disp_var,
         }
-
-        apply_row = tk.Frame(camera_assign_rows_frame)
-        apply_row.pack(fill=tk.X, pady=(0, 8), padx=(12, 0))
-        tk.Button(apply_row, text="Apply Settings", bg="lightyellow",
-                  command=lambda n=cam_name: _do_apply_camera_settings(n)).pack(side=tk.LEFT)
 
 
 def _do_remove_camera_override(cam_name):

@@ -265,6 +265,14 @@ def get_camera_settings(name: str) -> dict:
         "fps": fps,
         "format_request": format_request,
         "extract_lenses": extract_lenses,
+        # Per-camera on/off switch — a disabled camera stays fully
+        # assigned/configured (index, resolution, extraction settings,
+        # etc. all untouched) but is skipped entirely by every capture
+        # loop (see list_configured_cameras' `enabled_only` and its
+        # callers in main.py) until re-enabled. For a camera that's
+        # temporarily unplugged, broken, or just not needed for a
+        # given session, without losing its configuration.
+        "enabled": bool(saved.get("enabled", True)),
         "keep_original": bool(saved.get("keep_original", False)),
         "alternate_lenses": bool(saved.get("alternate_lenses", False)),
         "depth_map": bool(saved.get("depth_map", False)),
@@ -306,6 +314,15 @@ def get_camera_settings(name: str) -> dict:
         # grayscale — a readability aid only, not real captured color;
         # a depth/disparity map has one value per pixel, not three.
         "depth_colorize": bool(saved.get("depth_colorize", False)),
+        # StereoSGBM search-range tuning — see
+        # vision.camera.stereo_depth.compute_disparity's docstring.
+        # num_disparities too small for this camera's actual working
+        # distance is the most common cause of a disparity/depth map
+        # rendering as a big flat solid block instead of a real
+        # gradient (see that module's _invalid_mask docstring).
+        "stereo_num_disparities": int(saved.get("stereo_num_disparities") or 128),
+        "stereo_block_size": int(saved.get("stereo_block_size") or 7),
+        "stereo_min_disparity": int(saved.get("stereo_min_disparity") or 0),
         "width_b": saved.get("width_b") or width,
         "height_b": saved.get("height_b") or height,
         "fps_b": saved.get("fps_b", fps),
@@ -316,6 +333,7 @@ def get_camera_settings(name: str) -> dict:
 
 def set_camera_settings(name: str, width: int = None, height: int = None,
                          fps: int = None, format_request: str = None, extract_lenses: bool = None,
+                         enabled: bool = None,
                          keep_original: bool = None, alternate_lenses: bool = None,
                          depth_map: bool = None,
                          dual_capture: bool = None,
@@ -324,6 +342,8 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
                          split_mode_b: str = None, spatial_orientation_b: str = None, spatial_parts_b: int = None,
                          depth_left_channel: str = None, depth_right_channel: str = None,
                          depth_colorize: bool = None,
+                         stereo_num_disparities: int = None, stereo_block_size: int = None,
+                         stereo_min_disparity: int = None,
                          width_b: int = None, height_b: int = None,
                          fps_b: int = None, format_request_b: str = None,
                          extract_lenses_b: bool = None) -> None:
@@ -335,6 +355,13 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
     a reconnect. Pass format_request="" (empty string, not None — None
     means "leave whatever's already saved alone") to explicitly clear
     back to driver-default.
+
+    enabled: False takes this camera out of every capture loop (manual
+        snapshot, movement snapshot, etc. — see list_configured_cameras'
+        enabled_only) while leaving its assignment/index and every other
+        setting untouched, so it can be flipped back on later with
+        nothing to reconfigure. True re-enables it. None (default)
+        leaves whatever's already saved alone.
 
     channel_keep/channel_keep_b: list of piece labels ("r"/"g"/"b"/"a"/
         "ch<N>" for split_mode="channel", or "left"/"right"/"top"/
@@ -385,6 +412,8 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
         entry["format_request"] = format_request or None
     if extract_lenses is not None:
         entry["extract_lenses"] = bool(extract_lenses)
+    if enabled is not None:
+        entry["enabled"] = bool(enabled)
     if keep_original is not None:
         entry["keep_original"] = bool(keep_original)
     if alternate_lenses is not None:
@@ -415,6 +444,12 @@ def set_camera_settings(name: str, width: int = None, height: int = None,
         entry["depth_right_channel"] = depth_right_channel or None
     if depth_colorize is not None:
         entry["depth_colorize"] = bool(depth_colorize)
+    if stereo_num_disparities is not None:
+        entry["stereo_num_disparities"] = int(stereo_num_disparities)
+    if stereo_block_size is not None:
+        entry["stereo_block_size"] = int(stereo_block_size)
+    if stereo_min_disparity is not None:
+        entry["stereo_min_disparity"] = int(stereo_min_disparity)
     if width_b is not None:
         entry["width_b"] = int(width_b)
     if height_b is not None:
@@ -990,16 +1025,16 @@ def probe_camera_formats(camera_name: str) -> list:
 
 def list_native_formats(camera_name: str) -> dict:
     """
-    Asks the OS/driver directly (via `v4l2-ctl --list-formats-ext`)
-    which pixel formats/resolutions/framerates this camera's firmware
-    ACTUALLY advertises. This is the ground truth, unlike
-    probe_camera_formats()/probe_camera_modes() above, which only try a
-    fixed GUESS-list of common FOURCCs against OpenCV and report
-    whichever ones happen to come back non-blank — a real format the
-    guess-list doesn't happen to include (or a genuine per-eye color
-    mode a stereo camera exposes as its own distinct format rather than
-    packed into the channels of a combined RGB frame) would never show
-    up there, but WILL show up here, straight from the driver.
+    Asks the OS/driver directly which pixel formats/resolutions/
+    framerates this camera's firmware ACTUALLY advertises. This is the
+    ground truth, unlike probe_camera_formats()/probe_camera_modes()
+    above, which only try a fixed GUESS-list of common FOURCCs against
+    OpenCV and report whichever ones happen to come back non-blank — a
+    real format the guess-list doesn't happen to include (or a genuine
+    per-eye color mode a stereo camera exposes as its own distinct
+    format rather than packed into the channels of a combined RGB
+    frame) would never show up there, but WILL show up here, straight
+    from the driver.
 
     This is the right first thing to check when a stereo/multi-lens
     camera's only usable color mode turns out to be several unrelated
@@ -1017,25 +1052,36 @@ def list_native_formats(camera_name: str) -> dict:
     captured; extract_lenses' channel-split IS the workaround for that
     case, not a bug to fix further.
 
-    Linux/V4L2 only — this shells out to v4l2-ctl (part of the
-    `v4l-utils` package; `sudo apt install v4l-utils` if missing), which
-    doesn't exist on Windows/macOS UVC stacks. Returns a dict rather
-    than raising on any failure (wrong OS, tool missing, camera not
-    assigned, etc.) since this is a diagnostic nicety and its absence
-    shouldn't block anything else in the app:
+    Dispatches to whichever OS-specific backend actually exists:
+    Linux uses v4l2-ctl; Windows uses ffmpeg's dshow -list_options
+    (see _list_native_formats_windows). macOS has no implementation
+    yet. Returns a dict rather than raising on any failure (wrong OS,
+    tool missing, camera not assigned, etc.) since this is a
+    diagnostic nicety and its absence shouldn't block anything else in
+    the app:
 
-      OK:     {"ok": True, "device": "/dev/videoN", "raw_output": str,
-               "formats": [{"fourcc", "description", "sizes": [str,...]}, ...]}
+      OK:     {"ok": True, "device": str, "raw_output": str,
+               "formats": [{...backend-specific shape...}, ...]}
       Not OK: {"ok": False, "message": str}
     """
     import platform
+    system = platform.system()
+    if system == "Linux":
+        return _list_native_formats_linux(camera_name)
+    if system == "Windows":
+        return _list_native_formats_windows(camera_name)
+    return {"ok": False,
+            "message": f"Native format listing isn't implemented for '{system}' yet — only "
+                        f"Linux (v4l2-ctl) and Windows (ffmpeg/DirectShow) are supported."}
+
+
+def _list_native_formats_linux(camera_name: str) -> dict:
+    """Linux/V4L2 backend for list_native_formats() — shells out to
+    v4l2-ctl (part of the `v4l-utils` package; `sudo apt install
+    v4l-utils` if missing)."""
     import re
     import subprocess
 
-    if platform.system() != "Linux":
-        return {"ok": False,
-                "message": "Native format listing needs v4l2-ctl, which is Linux/V4L2-only "
-                            f"(this system reports '{platform.system()}')."}
     configured = list_configured_cameras()
     if camera_name not in configured:
         return {"ok": False, "message": f"'{camera_name}' isn't assigned to a camera index."}
@@ -1065,6 +1111,79 @@ def list_native_formats(camera_name: str) -> dict:
         if size and current is not None:
             current["sizes"].append(size.group(1))
     return {"ok": True, "device": device, "raw_output": result.stdout, "formats": formats}
+
+
+def _list_native_formats_windows(camera_name: str) -> dict:
+    """
+    Windows backend for list_native_formats() — there's no v4l2-ctl
+    equivalent on Windows, so this shells out to `ffmpeg -f dshow
+    -list_options true -i video="<device name>"` instead, which asks
+    the DirectShow driver the same kind of question v4l2-ctl asks V4L2:
+    every pixel format/resolution/framerate combination it actually
+    advertises — ground truth, not a guess, same idea as the Linux
+    path just via a different OS video API.
+
+    Needs ffmpeg installed and on PATH — NOT already a dependency of
+    this project; install separately (e.g. `winget install
+    "Gyan.FFmpeg"`, or a build from ffmpeg.org) if this reports it's
+    missing.
+
+    ffmpeg's dshow input needs the actual DEVICE NAME (e.g. "Logitech
+    BRIO"), not the bare numeric index OpenCV/this app uses everywhere
+    else — looked up via list_camera_device_names()'s best-effort
+    index->name mapping (Windows-only; see that function's own
+    docstring for its "positional pairing, not a verified mapping"
+    caveat). If that mapping has no name for this camera's index, this
+    fails with a clear message rather than guessing at one.
+    """
+    import re
+    import subprocess
+
+    configured = list_configured_cameras()
+    if camera_name not in configured:
+        return {"ok": False, "message": f"'{camera_name}' isn't assigned to a camera index."}
+    index = configured[camera_name]
+    device_names = list_camera_device_names()
+    device_name = device_names.get(index)
+    if not device_name:
+        return {"ok": False,
+                "message": f"Could not determine the Windows device name for index {index} "
+                            f"(see list_camera_device_names()'s best-effort-mapping caveat) — "
+                            f"can't query ffmpeg without a device name."}
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-f", "dshow", "-list_options", "true", "-i", f"video={device_name}"],
+            capture_output=True, text=True, timeout=15)
+    except FileNotFoundError:
+        return {"ok": False,
+                "message": "ffmpeg isn't installed/on PATH — install it (e.g. `winget install "
+                            "\"Gyan.FFmpeg\"` or from ffmpeg.org) to use this on Windows."}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": f"Timed out querying '{device_name}' via ffmpeg."}
+
+    # ffmpeg always exits non-zero for a -list_options-only invocation
+    # (it never actually opens a real stream) — the formats we want are
+    # printed to STDERR regardless of exit code, so check the output
+    # content, not the return code.
+    output = result.stderr or ""
+    if "vcodec=" not in output and "pixel_format=" not in output:
+        return {"ok": False,
+                "message": f"ffmpeg didn't report any formats for '{device_name}' — either the "
+                            f"device name lookup above picked the wrong device, or ffmpeg's "
+                            f"output format has changed. Raw output tail: {output[-400:]}"}
+
+    grouped = {}
+    for line in output.splitlines():
+        m = re.search(r"(?:vcodec|pixel_format)=(\S+)\s+min s=(\d+x\d+) fps=([\d.]+) "
+                       r"max s=(\d+x\d+) fps=([\d.]+)", line)
+        if not m:
+            continue
+        fmt, min_s, min_fps, max_s, max_fps = m.groups()
+        size_desc = (f"{min_s} @ {min_fps}fps" if min_s == max_s and min_fps == max_fps
+                     else f"{min_s}@{min_fps}fps - {max_s}@{max_fps}fps")
+        grouped.setdefault(fmt, []).append(size_desc)
+    formats = [{"fourcc": fmt, "description": fmt, "sizes": sizes} for fmt, sizes in grouped.items()]
+    return {"ok": True, "device": device_name, "raw_output": output, "formats": formats}
 
 
 def probe_camera_modes(camera_name: str, resolution_filter: tuple = None,
@@ -1235,7 +1354,9 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
                        split_mode: str = "channel", spatial_orientation: str = "horizontal",
                        spatial_parts: int = 2,
                        depth_left_channel: str = None, depth_right_channel: str = None,
-                       depth_colorize: bool = False) -> list:
+                       depth_colorize: bool = False,
+                       stereo_num_disparities: int = 128, stereo_block_size: int = 7,
+                       stereo_min_disparity: int = 0) -> list:
     """
     Shared "what do we actually save for this frame" logic for both the
     primary and alternate profiles in capture_frames_multi() below.
@@ -1284,7 +1405,15 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
         viewer) instead of plain grayscale — purely a readability aid,
         not real captured color (a depth/disparity map has one value
         per pixel, not three — see vision.camera.stereo_depth._visualize
-        for why). The two channels fed into either computation are
+        for why). stereo_num_disparities/stereo_block_size/stereo_
+        min_disparity tune the underlying StereoSGBM search — see
+        vision.camera.stereo_depth.compute_disparity's docstring; the
+        default num_disparities (128px) not covering this camera's
+        actual working-distance disparity is the most common reason a
+        disparity/depth image renders as one flat solid block instead
+        of a real gradient (see that module's _invalid_mask docstring
+        for the full explanation). The two channels fed into either
+        computation are
         chosen by depth_left_channel/depth_right_channel (by label —
         see _pick_depth_source), independent of channel_keep, so a
         channel can feed depth even if it's been dropped from the saved
@@ -1353,7 +1482,9 @@ def _apply_extraction(camera_name: str, profile_label: str, frame, extract_on: b
     if depth_map:
         try:
             disparity_vis, depth_vis = stereo_depth.compute_depth_map_and_metric(
-                camera_name, left_src, right_src, colorize=depth_colorize)
+                camera_name, left_src, right_src, colorize=depth_colorize,
+                num_disparities=stereo_num_disparities, block_size=stereo_block_size,
+                min_disparity=stereo_min_disparity)
             if disparity_vis is not None:
                 suffix = f"{profile_label}_disparity" + ("_mono_est" if is_mono else "")
                 results.append((suffix, disparity_vis))
@@ -1427,7 +1558,10 @@ def capture_frames_multi(camera_name: str) -> list:
                                  spatial_parts=settings["spatial_parts"],
                                  depth_left_channel=settings["depth_left_channel"],
                                  depth_right_channel=settings["depth_right_channel"],
-                                 depth_colorize=settings["depth_colorize"])
+                                 depth_colorize=settings["depth_colorize"],
+                                 stereo_num_disparities=settings["stereo_num_disparities"],
+                                 stereo_block_size=settings["stereo_block_size"],
+                                 stereo_min_disparity=settings["stereo_min_disparity"])
 
     if not settings["dual_capture"]:
         return results
@@ -1472,7 +1606,10 @@ def capture_frames_multi(camera_name: str) -> list:
                                   spatial_parts=settings["spatial_parts_b"],
                                   depth_left_channel=settings["depth_left_channel"],
                                   depth_right_channel=settings["depth_right_channel"],
-                                  depth_colorize=settings["depth_colorize"])
+                                  depth_colorize=settings["depth_colorize"],
+                                  stereo_num_disparities=settings["stereo_num_disparities"],
+                                  stereo_block_size=settings["stereo_block_size"],
+                                  stereo_min_disparity=settings["stereo_min_disparity"])
     return results
 
 
@@ -1542,14 +1679,27 @@ def capture_wrist_frame():
     return capture_frame("wrist")
 
 
-def list_configured_cameras() -> dict:
+def list_configured_cameras(enabled_only: bool = False) -> dict:
     """Returns the name -> index mapping for populating UI camera-selector
     dropdowns, capture_frame(), etc. Starts from vision.config.CAMERAS and
     layers any runtime assignments (assign_camera()) on top, so a camera
     reassigned from the GUI always overrides the on-disk default without
-    editing vision/config.py."""
+    editing vision/config.py.
+
+    enabled_only=True additionally drops any camera whose saved
+    settings have enabled=False (see get_camera_settings/
+    set_camera_settings) — used by every actual CAPTURE loop (manual
+    snapshot, movement snapshot, etc. in main.py) so a disabled camera
+    is skipped entirely rather than attempted and failing/wasting time.
+    Defaults to False (returns every assigned camera regardless of
+    enabled state) since GUI listings — the Camera tab's per-camera
+    settings rows, for instance — need to keep showing a disabled
+    camera so it can be re-enabled, not hide it."""
     merged = dict(CAMERAS)
     merged.update(_camera_overrides)
+    if enabled_only:
+        merged = {name: index for name, index in merged.items()
+                  if get_camera_settings(name)["enabled"]}
     return merged
 
 

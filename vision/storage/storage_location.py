@@ -127,6 +127,18 @@ def imported_images_root() -> str:
     return os.path.join(get_storage_root(), "images", "imported")
 
 
+def gemini_records_root() -> str:
+    """Where object_labeling_studio's per-object-per-material-combo
+    Gemini conversation PDFs live (gemini_records_root()/<object_id>/
+    <material>_<color>.pdf) — see object_labeling_studio/core/
+    record_store.py, the only place that writes here. Kept alongside
+    the other storage roots in this module rather than hardcoded in
+    that separate tool, so both it and this app agree on where things
+    live if the storage root is ever moved (see set_storage_root).
+    """
+    return os.path.join(get_storage_root(), "gemini_records")
+
+
 def csv_log_dir() -> str:
     """Replaces vision.storage.csv_logger's old reliance on
     vision.config.CSV_LOG_DIR for the directory (CSV_LOG_FILENAME is

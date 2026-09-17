@@ -464,6 +464,18 @@ def update_image_custom_label(image_id: str, custom_label: str) -> None:
         {"_id": image_id}, {"$set": {"custom_label": custom_label}})
 
 
+def reassign_image_object(image_id: str, new_object_id: str) -> None:
+    """Moves one image record to a different object — the underlying
+    operation behind "manually group these images into one object" in
+    object_labeling_studio's Group screen. Only touches object_id; the
+    image's own view_label/source/roboflow_uploads/custom_label are
+    left exactly as they were, since none of that describes anything
+    about WHICH object it belongs to."""
+    db = _get_db()
+    db[MONGO_IMAGES_COLLECTION].update_one(
+        {"_id": image_id}, {"$set": {"object_id": new_object_id}})
+
+
 def get_images_for_object(object_id: str) -> list:
     """Read-side query: all image documents linked to one object_id, for
     displaying thumbnails in the GUI detail panel."""
@@ -768,6 +780,53 @@ def find_samples(mongo_filter: dict, limit: int = 30) -> list:
 
 def sample_recent_data_fields(limit: int = 50) -> list:
     return object_recent_data_fields(limit=limit)
+
+
+# =========================================================================
+# GEMINI RECORDS — used by the standalone object_labeling_studio/ tool
+# (not by main.py). One document per material+color combination Gemini
+# identified for an object — see object_labeling_studio/core/
+# record_store.py, the only caller of these. Collection name is a plain
+# local constant (not in vision.config's collection list) since nothing
+# outside this tool needs to know about it.
+# =========================================================================
+MONGO_GEMINI_RECORDS_COLLECTION = "gemini_records"
+
+
+def save_gemini_record(record: dict) -> None:
+    """Inserts one pre-built record dict as-is — record_store.py owns
+    the exact shape (object_id, part, material, color, confidence,
+    notes, prompt_text, response_text, image_path, pdf_path,
+    share_code, source, created_at, "_id") since it's specific to that
+    tool's workflow; this function is just the Mongo write."""
+    db = _get_db()
+    db[MONGO_GEMINI_RECORDS_COLLECTION].insert_one(record)
+
+
+def get_gemini_record(record_id: str) -> dict | None:
+    db = _get_db()
+    return db[MONGO_GEMINI_RECORDS_COLLECTION].find_one({"_id": record_id})
+
+
+def list_gemini_records_for_object(object_id: str) -> list:
+    db = _get_db()
+    return list(db[MONGO_GEMINI_RECORDS_COLLECTION].find({"object_id": object_id}).sort("created_at", 1))
+
+
+def list_all_gemini_records(limit: int = 500) -> list:
+    db = _get_db()
+    return list(db[MONGO_GEMINI_RECORDS_COLLECTION].find({}).sort("created_at", -1).limit(limit))
+
+
+def update_gemini_record_share_code(record_id: str, share_code: str) -> None:
+    db = _get_db()
+    db[MONGO_GEMINI_RECORDS_COLLECTION].update_one(
+        {"_id": record_id}, {"$set": {"share_code": share_code}})
+
+
+def delete_gemini_record(record_id: str) -> None:
+    db = _get_db()
+    db[MONGO_GEMINI_RECORDS_COLLECTION].delete_one({"_id": record_id})
 
 
 if __name__ == "__main__":
