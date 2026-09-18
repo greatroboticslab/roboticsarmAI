@@ -4,23 +4,34 @@ resplit_dataset.py
 
 Rebuilds the train/valid/test splits from scratch at a chosen ratio.
 
-Two modes:
+Three modes:
+
+  --mode stratified (recommended for a normal train/val split of a fixed
+      object set)
+      Each object's own images are split at the target ratio individually,
+      so every object with enough images gets representation in EVERY
+      split. This is what you want for the usual "train on these objects,
+      then check accuracy on held-out photos of the same objects" setup --
+      plain random shuffling of the whole pool can (and with only a
+      handful of images per object, will) leave some low-count objects
+      with zero validation images purely by chance, making it impossible
+      to ever measure their accuracy.
 
   --mode object-disjoint (default)
       Every object (every distinct `Pdfname` id, i.e. every physical item
       that was photographed) ends up ENTIRELY in one split -- never split
       across train and valid/test. If two different objects happen to
       co-occur in the same photo, they're treated as one group and kept
-      together too. This avoids leakage from near-duplicate photos of the
-      *same physical item* appearing in both train and validation, which
-      otherwise inflates validation metrics without actually testing
-      generalization to new objects. It also lets you dial the ratio (e.g.
-      more objects into train) to widen the training set when you have
-      few images per object.
+      together too. Use this instead when you specifically want to test
+      generalization to objects the model has NEVER seen, rather than just
+      new photos of known objects -- e.g. widening the training set at the
+      cost of not being able to validate on some objects at all.
 
   --mode random
-      Classic per-image random shuffle, ignoring object identity. Images of
-      the same object can land in both train and valid/test.
+      Classic per-image random shuffle, ignoring object identity entirely.
+      Images of the same object can land in both train and valid/test, and
+      (unlike stratified) there's no guarantee every object appears in
+      every split. Included mainly for comparison.
 
 This script is non-destructive by default: it writes the new split into
 --output-dir (a fresh folder next to dataset/, never overwriting your
@@ -29,11 +40,11 @@ current train/valid/test) so you can inspect it first. Pass
 (renamed with a timestamp suffix) and replace them with the new split.
 
 Usage:
-    # preview a new 70/20/10 split, grouped so no object leaks across splits
-    python resplit_dataset.py --dataset-dir ../dataset --train-ratio 0.7 --val-ratio 0.2 --test-ratio 0.1
+    # recommended: 80/20 split where every object appears in both train and valid
+    python resplit_dataset.py --dataset-dir ../dataset --mode stratified --train-ratio 0.8 --val-ratio 0.2 --apply-in-place
 
-    # actually replace train/valid/test with the new split (old ones backed up)
-    python resplit_dataset.py --dataset-dir ../dataset --train-ratio 0.7 --val-ratio 0.2 --test-ratio 0.1 --apply-in-place
+    # preview a 70/20/10 split, grouped so no object leaks across splits
+    python resplit_dataset.py --dataset-dir ../dataset --train-ratio 0.7 --val-ratio 0.2 --test-ratio 0.1
 
     # plain random split instead, for comparison
     python resplit_dataset.py --dataset-dir ../dataset --mode random --train-ratio 0.8 --val-ratio 0.2
@@ -156,6 +167,75 @@ def assign_object_disjoint(
     return assigned
 
 
+def assign_stratified(
+    pairs: list[tuple[Path, Path]],
+    cls_to_pdf: dict[int, str | None],
+    ratios: dict[str, float],
+    rng: random.Random,
+) -> dict[str, list[tuple[Path, Path]]]:
+    """
+    Split each object's own images across splits at the target ratio, so
+    every object with enough images gets representation in every split --
+    unlike plain --mode random, which can (and with only a few images per
+    object, will) leave some objects with zero validation/test images
+    purely by chance. Multi-object photos are grouped (as in
+    object-disjoint) so a single image's classes always land in one split.
+    Background/unlabeled images are distributed the same way, as their own
+    single-image "objects".
+    """
+    components, background = build_object_groups(pairs, cls_to_pdf)
+    split_names = list(ratios.keys())
+    assigned: dict[str, list[tuple[Path, Path]]] = {split: [] for split in split_names}
+    starved: list[tuple[str, int]] = []  # (component_id, n_images) that couldn't cover every split
+
+    def split_group(imgs: list[tuple[Path, Path]]) -> dict[str, list[tuple[Path, Path]]]:
+        imgs = list(imgs)
+        rng.shuffle(imgs)
+        n = len(imgs)
+        # Largest-remainder allocation so counts sum exactly to n.
+        raw = {s: ratios[s] * n for s in split_names}
+        counts = {s: int(raw[s]) for s in split_names}
+        remainder = n - sum(counts.values())
+        # Give leftover images to the splits with the largest fractional remainder.
+        fracs = sorted(split_names, key=lambda s: raw[s] - counts[s], reverse=True)
+        for s in fracs[:remainder]:
+            counts[s] += 1
+        # If a split with positive ratio rounded to 0 but we have >= as many images
+        # as splits, borrow one from the largest split so every split gets at least 1.
+        if n >= len(split_names):
+            for s in split_names:
+                if counts[s] == 0:
+                    donor = max(split_names, key=lambda x: counts[x])
+                    if counts[donor] > 1:
+                        counts[donor] -= 1
+                        counts[s] += 1
+        out = {}
+        cursor = 0
+        for s in split_names:
+            out[s] = imgs[cursor:cursor + counts[s]]
+            cursor += counts[s]
+        return out
+
+    for comp_id, imgs in components.items():
+        pieces = split_group(imgs)
+        for s in split_names:
+            assigned[s].extend(pieces[s])
+        if len(split_names) > 1 and any(len(pieces[s]) == 0 for s in split_names if ratios[s] > 0):
+            starved.append((comp_id, len(imgs)))
+
+    if background:
+        pieces = split_group(background)
+        for s in split_names:
+            assigned[s].extend(pieces[s])
+
+    if starved:
+        print(f"[warn] {len(starved)} object(s) had too few images to appear in every split at this ratio:")
+        for comp_id, n in starved:
+            print(f"         {comp_id}: only {n} image(s) total -- consider capturing more photos of it")
+
+    return assigned
+
+
 def assign_random(
     pairs: list[tuple[Path, Path]], ratios: dict[str, float], rng: random.Random
 ) -> dict[str, list[tuple[Path, Path]]]:
@@ -234,7 +314,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset-dir", type=Path, required=True)
     ap.add_argument("--data", type=Path, default=None, help="Explicit data.yaml (default: auto-pick data.corrected.yaml/data.yaml under --dataset-dir)")
-    ap.add_argument("--mode", choices=["object-disjoint", "random"], default="object-disjoint")
+    ap.add_argument("--mode", choices=["object-disjoint", "stratified", "random"], default="object-disjoint")
     ap.add_argument("--train-ratio", type=float, default=0.8)
     ap.add_argument("--val-ratio", type=float, default=0.2)
     ap.add_argument("--test-ratio", type=float, default=0.0, help="Set > 0 to also produce a test split")
@@ -263,6 +343,8 @@ def main():
     rng = random.Random(args.seed)
     if args.mode == "object-disjoint":
         assigned = assign_object_disjoint(pairs, cls_to_pdf, ratios, rng)
+    elif args.mode == "stratified":
+        assigned = assign_stratified(pairs, cls_to_pdf, ratios, rng)
     else:
         assigned = assign_random(pairs, ratios, rng)
 

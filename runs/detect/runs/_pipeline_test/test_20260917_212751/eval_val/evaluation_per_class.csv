@@ -1,0 +1,19 @@
+class_id,class_name,instances,precision,recall,mAP50,mAP50-95
+0,Object - extruded aluminum profile -  Material metal - Pdfname IJiB5jbMhrV7,12,0.0,0.0,0.0,0.0
+2,Object ballpoint pen  - Material plastic - Color red - Pdfname Tg2wygrqE5uZ,3,0.0,0.0,0.0,0.0
+3,Object ballpoint pen - Material plastic  - Color clear - Pdfname Tg2wygrqE5uZ,9,0.0,0.0,0.0,0.0
+4,Object ballpoint pen - Material rubber  - Color red - Pdfname Tg2wygrqE5uZ,3,0.0,0.0,0.0,0.0
+5,Object bifold wallet - Material leather - Pdfname qb3CMu4EyzEc,18,0.0,0.0,0.0,0.0
+6,Object book  - Material paper  - Color red - Pdfname QP9o9Hihi4G7,9,0.0,0.0,0.0,0.0
+8,Object car key fob with keyring - Material metal  - Pdfname u4lxlaYXiY3D,3,0.0,0.0,0.0,0.0
+9,Object car key fob with keyring - Material plastic - Pdfname u4lxlaYXiY3D,9,0.0,0.0,0.0,0.0
+19,Object plastic container lid - Material plastic - Color red -  Pdfname  ZC63DBkv6oJY,6,0.0,0.0,0.0,0.0
+22,Object precision screwdriver - Material rubber - Color black and orange - Pdfname NoEr35VbQ7sR,15,0.0,0.0,0.0,0.0
+23,Object robotic gripper finger assembly  - Material metal -  Pdfname Yy6dySnH33wN,9,0.0,0.0,0.0,0.0
+24,Object robotic gripper finger assembly - Material plastic - Color blue - Pdfname Yy6dySnH33wN,9,0.0,0.0,0.0,0.0
+25,Object rubber duck -  Material rubber  -Color blue - Pdfname BWuUnwTLudUE,15,0.0,0.0,0.0,0.0
+26,Object scissors -  Material  plastic - Pdfname  tYexGlkiIXWc,18,0.0,0.0,0.0,0.0
+27,Object scissors -  Material metal - Pdfname  tYexGlkiIXWc,3,0.0,0.0,0.0,0.0
+28,Object screw packaging box - Material cardboard - Pdfname VgpKnmoKJfrS,15,0.0,0.0,0.0,0.0
+29,Object toy football - Material foam - Color blue - Pdfname VT1ffZoLOnKv,12,0.0,0.0,0.0,0.0
+33,Object wireless earbud charging case - Material plastic - Pdfname qzJIPQkli2jB,18,0.0,0.0,0.0,0.0

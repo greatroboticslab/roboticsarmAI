@@ -1,0 +1,41 @@
+======================================================================
+YOLO EVALUATION REPORT
+======================================================================
+weights: C:\Users\finns\Downloads\roboticsarmAI\runs\detect\runs\train\exp\weights\best.pt
+data:    ..\dataset\data.corrected.yaml
+split:   val
+
+Overall:
+  precision  : 0.0114
+  recall     : 0.0160
+  mAP50      : 0.0013
+  mAP50-95   : 0.0008
+
+Per-class:
+class                                                   instances  precision   recall    mAP50  mAP50-95
+--------------------------------------------------------------------------------------------------------
+Object - extruded aluminum profile -  Material metal -         12     0.0000   0.0000   0.0000    0.0000
+Object ballpoint pen  - Material plastic - Color red -          3     0.0000   0.0000   0.0000    0.0000
+Object ballpoint pen - Material plastic  - Color clear          9     0.0000   0.0000   0.0000    0.0000
+Object ballpoint pen - Material rubber  - Color red -           3     0.0000   0.0000   0.0000    0.0000
+Object bifold wallet - Material leather - Pdfname qb3C         18     0.0000   0.0000   0.0000    0.0000
+Object book  - Material paper  - Color red - Pdfname Q          9     0.0000   0.0000   0.0000    0.0000
+Object car key fob with keyring - Material metal  - Pd          3     0.0000   0.0000   0.0000    0.0000
+Object car key fob with keyring - Material plastic - P          9     0.0000   0.0000   0.0000    0.0000
+Object plastic container lid - Material plastic - Colo          6     0.0000   0.0000   0.0000    0.0000
+Object robotic gripper finger assembly  - Material met          9     0.0000   0.0000   0.0000    0.0000
+Object robotic gripper finger assembly - Material plas          9     0.0000   0.0000   0.0000    0.0000
+Object rubber duck -  Material rubber  -Color blue - P         15     0.0000   0.0000   0.0000    0.0000
+Object scissors -  Material metal - Pdfname  tYexGlkiI          3     0.0000   0.0000   0.0000    0.0000
+Object screw packaging box - Material cardboard - Pdfn         15     0.0000   0.0000   0.0000    0.0000
+Object toy football - Material foam - Color blue - Pdf         12     0.0000   0.0000   0.0000    0.0000
+Object wireless earbud charging case - Material plasti         18     0.0000   0.0000   0.0000    0.0000
+Object scissors -  Material  plastic - Pdfname  tYexGl         18     0.0055   0.2222   0.0019    0.0007
+Object precision screwdriver - Material rubber - Color         15     0.2000   0.0667   0.0217    0.0130
+
+Lowest mAP50-95 classes (worth a closer look):
+  Object - extruded aluminum profile -  Material metal - Pdfname IJiB5jbMhrV7: mAP50-95=0.0000, instances=12
+  Object ballpoint pen  - Material plastic - Color red - Pdfname Tg2wygrqE5uZ: mAP50-95=0.0000, instances=3
+  Object ballpoint pen - Material plastic  - Color clear - Pdfname Tg2wygrqE5uZ: mAP50-95=0.0000, instances=9
+  Object ballpoint pen - Material rubber  - Color red - Pdfname Tg2wygrqE5uZ: mAP50-95=0.0000, instances=3
+  Object bifold wallet - Material leather - Pdfname qb3CMu4EyzEc: mAP50-95=0.0000, instances=18

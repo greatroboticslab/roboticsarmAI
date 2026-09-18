@@ -102,10 +102,41 @@ PDF text-extraction artifact truncated it).
   `--imgsz`, `--patience` (early stopping), `--project`/`--name` (where
   runs are saved), `--resume`, `--evaluate`.
 
+  **GPU notes:** on a 6GB card like a GTX 1660 Ti, `yolov8n.pt` (default)
+  or `yolov8s.pt` both fit comfortably at `--imgsz 640 --batch 16`.
+  `yolov8m.pt` can also fit on 6GB but usually needs a smaller batch (try
+  `--batch 8`) to avoid an out-of-memory error, and with only ~250 total
+  images in this dataset a model that size is likely to overfit anyway —
+  `yolov8s.pt` is a reasonable ceiling here. Make sure a CUDA-enabled
+  build of PyTorch is installed (`python -c "import torch;
+  print(torch.cuda.is_available())"` should print `True`) — if it prints
+  `False`, reinstall PyTorch using the command for your CUDA version from
+  https://pytorch.org/get-started/locally/ before installing `ultralytics`.
+  Pass `--device 0` explicitly to make sure it uses the GPU rather than
+  auto-selecting CPU.
+
 - **`evaluate.py`** — standalone evaluation for any trained checkpoint.
   Runs ultralytics' standard detection metrics (precision, recall, mAP50,
-  mAP50-95) overall and per class, and writes both a readable report and a
-  CSV.
+  mAP50-95) overall and per class. Since every class here is really an
+  (object, material, color) combination, it also breaks results down two
+  other ways and writes all three to CSV:
+  - **Per-object** — every material/color variant of the same object
+    combined (e.g. all 3 `ballpoint pen` classes into one row), so you can
+    see "how good is detection of this object" independent of which
+    material variant it is.
+  - **Per-material** — every object sharing a material combined (e.g.
+    every `plastic` class across all objects into one row), so you can
+    see "how good is material recognition" independent of which object
+    it's on.
+  - Both are **macro-averaged** (every object/material counts equally,
+    regardless of how many images it has), so a material used by only one
+    object isn't drowned out by a material used by ten.
+  - A **weighted composite score** combines the two into a single number:
+    `object_weight * object_macro_mAP50-95 + material_weight * material_macro_mAP50-95`,
+    tunable with `--object-weight`/`--material-weight` (default 0.5/0.5
+    each). This is a custom summary on top of the standard metrics, not a
+    replacement for them — the standard overall precision/recall/mAP is
+    always reported too.
 
   ```bash
   # evaluate against the validation split (default)
@@ -114,25 +145,47 @@ PDF text-extraction artifact truncated it).
   # evaluate against a held-out test split instead
   python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset --split test
 
-  # evaluate against train too, e.g. to compare and check for overfitting
-  python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset --split train
+  # weight material recognition more heavily in the composite score
+  python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset --material-weight 0.7 --object-weight 0.3
   ```
 
-  Writes `runs/val/<name>/evaluation_report.txt` (overall + per-class
-  table, worst classes called out) and `evaluation_per_class.csv`.
+  Writes to `runs/val/<name>/`: `evaluation_report.txt` (overall metrics,
+  composite score, per-class/object/material tables, worst-performing
+  classes and materials called out, and a final summary table with every
+  metric at every aggregation level), plus `evaluation_per_class.csv`,
+  `evaluation_per_object.csv`, `evaluation_per_material.csv`, and
+  `evaluation_summary.csv`.
+
+  The bottom of the report always has a complete summary table like:
+
+  ```
+  SUMMARY -- COMPLETE RESULTS FOR EVERY METRIC
+                                          precision   recall    mAP50  mAP50-95
+  overall (instance-weighted)               0.8421   0.7900   0.8650    0.6120
+  macro avg across classes                  0.8103   0.7650   0.8390    0.5940
+  macro avg across objects                  0.8250   0.7800   0.8500    0.6050
+  macro avg across materials                0.7980   0.7500   0.8200    0.5810
+  weighted composite (object+material)      0.8115   0.7650   0.8350    0.5930
+  ```
 
 - **`resplit_dataset.py`** — rebuilds train/valid/test from scratch at a
-  ratio you choose. Two modes:
+  ratio you choose. Three modes:
+  - `--mode stratified` (recommended for a normal train/val split of a
+    fixed object set): splits each object's own images at the target
+    ratio individually, so every object with enough images ends up in
+    **every** split. Use this for the usual "train on these objects, then
+    check accuracy on held-out photos of them" setup.
   - `--mode object-disjoint` (default): every object (every `Pdfname` id)
     ends up entirely in one split — never split across train and
-    valid/test, even if two objects co-occur in the same photo (those are
-    grouped together too). This avoids validation/test scores being
-    inflated by near-duplicate photos of the *same physical item* the
-    model already saw in training, and lets you widen the training set
-    (e.g. an 80/20 or 90/10 ratio) when you only have a few images per
-    object.
+    valid/test, even if two objects co-occur in the same photo (grouped
+    together too). Use this instead when you specifically want to test
+    generalization to objects the model has never seen — it trades off
+    not being able to validate on some objects at all.
   - `--mode random`: classic per-image random shuffle, ignoring object
-    identity, for comparison.
+    identity, for comparison. Unlike stratified, it doesn't guarantee
+    every object appears in every split — with only a few images for some
+    objects, a plain random cut can (and did, in testing) leave some of
+    them with zero validation images purely by chance.
 
   Non-destructive by default — writes to `dataset/resplit_preview/`
   (or `--output-dir`) without touching your current train/valid/test.
@@ -142,11 +195,11 @@ PDF text-extraction artifact truncated it).
   so a mid-run failure can't leave you with data half-written or lost).
 
   ```bash
+  # recommended: 80/20 split where every object appears in both train and valid
+  python resplit_dataset.py --dataset-dir ../../dataset --mode stratified --train-ratio 0.8 --val-ratio 0.2 --apply-in-place
+
   # preview a 70/20/10 split with no object leakage across splits
   python resplit_dataset.py --dataset-dir ../../dataset --train-ratio 0.7 --val-ratio 0.2 --test-ratio 0.1
-
-  # inspect dataset/resplit_preview/, then actually use it:
-  python resplit_dataset.py --dataset-dir ../../dataset --train-ratio 0.7 --val-ratio 0.2 --test-ratio 0.1 --apply-in-place
   ```
 
   Its report calls out the achieved vs. target ratio per split, how many

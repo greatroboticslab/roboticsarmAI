@@ -57,6 +57,27 @@ def class_id_to_pdf_id_map(names: list[str]) -> dict[int, str | None]:
     return {idx: extract_pdf_id_from_name(name) for idx, name in enumerate(names)}
 
 
+OBJECT_RE = re.compile(r"Object\s+(.*?)\s*-\s*Material", re.IGNORECASE)
+MATERIAL_RE = re.compile(r"Material\s+([^-]+?)\s*(?:-\s*Color|-\s*Pdfname)", re.IGNORECASE)
+COLOR_RE = re.compile(r"Color\s+([^-]+?)\s*-\s*Pdfname", re.IGNORECASE)
+
+
+def parse_class_name(name: str) -> dict:
+    """Pull the object/material/color/pdf_id components back out of one of our
+    'Object X - Material Y - Color Z - Pdfname W' class name strings. Any
+    field that can't be parsed comes back as an empty string."""
+    def _search(rx: re.Pattern) -> str:
+        m = rx.search(name)
+        return m.group(1).strip() if m else ""
+
+    return {
+        "object": _search(OBJECT_RE),
+        "material": _search(MATERIAL_RE),
+        "color": _search(COLOR_RE),
+        "pdf_id": extract_pdf_id_from_name(name) or "",
+    }
+
+
 def find_split_dirs(dataset_dir: Path) -> dict[str, Path]:
     """Return {split_name: split_dir} for whichever of train/valid/test actually exist."""
     found = {}
