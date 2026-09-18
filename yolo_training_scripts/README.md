@@ -154,12 +154,34 @@ PDF text-extraction artifact truncated it).
   flags (or confirms the absence of) any object appearing in more than one
   split.
 
+- **`test_pipeline.py`** — a smoke test for the whole train → evaluate
+  pipeline. Runs a throwaway 1-epoch training job and then `evaluate.py`
+  against it, and reports PASS/FAIL on each step. It's not a measure of
+  model quality (1 epoch tells you nothing about accuracy) — it's there to
+  catch a broken `data.yaml`, a bad image, an invalid class id, or an
+  `evaluate.py`/ultralytics-version incompatibility in ~1-2 minutes, before
+  you find out about it after a multi-hour real training run. This exact
+  script is what caught a real bug during development: this ultralytics
+  version nests the actual save directory as `runs/detect/<project>/<name>`
+  instead of `<project>/<name>`, which silently broke a naive prediction of
+  where `best.pt` would land — `train_yolo.py` and `evaluate.py` now always
+  ask ultralytics for the real path instead of guessing it.
+
+  ```bash
+  python test_pipeline.py --dataset-dir ../../dataset
+  # longer/GPU smoke test:
+  python test_pipeline.py --dataset-dir ../../dataset --epochs 3 --imgsz 640 --device 0
+  ```
+
 ## Typical workflow
 
 ```bash
 cd scripts/yolo_training
 python build_dataset.py --dataset-dir ../../dataset
 #  -> review dataset/dataset_build_report.txt
+
+# optional: quick sanity check before committing to a real run
+python test_pipeline.py --dataset-dir ../../dataset
 
 # optional: widen the training set with a leakage-free resplit
 python resplit_dataset.py --dataset-dir ../../dataset --train-ratio 0.8 --val-ratio 0.2 --apply-in-place

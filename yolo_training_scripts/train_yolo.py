@@ -75,9 +75,11 @@ def main():
     if args.device is not None:
         train_kwargs["device"] = args.device
 
-    model.train(**train_kwargs)
-    best_weights = Path(args.project) / args.name / "weights" / "best.pt"
+    train_results = model.train(**train_kwargs)
+    save_dir = Path(getattr(train_results, "save_dir", Path(args.project) / args.name))
+    best_weights = save_dir / "weights" / "best.pt"
     print("\nTraining complete.")
+    print(f"Run directory: {save_dir}")
     print(f"Best weights: {best_weights}")
 
     if args.evaluate:

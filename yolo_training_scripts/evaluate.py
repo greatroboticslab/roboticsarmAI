@@ -101,7 +101,7 @@ def run_evaluation(
             "mAP50-95": float(ap_per_class[row_i]) if row_i < len(ap_per_class) else float("nan"),
         })
 
-    out_dir = Path(project) / name
+    out_dir = Path(getattr(metrics, "save_dir", Path(project) / name))
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_report(out_dir, weights, data_yaml, split, overall, per_class_rows)
     return {"overall": overall, "per_class": per_class_rows, "output_dir": str(out_dir)}
