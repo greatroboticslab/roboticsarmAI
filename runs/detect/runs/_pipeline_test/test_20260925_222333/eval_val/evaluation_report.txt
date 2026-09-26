@@ -1,0 +1,134 @@
+======================================================================
+YOLO EVALUATION REPORT
+======================================================================
+weights: C:\Users\finns\Downloads\roboticsarmAI\runs\detect\runs\_pipeline_test\test_20260925_222333\weights\best.pt
+data:    ..\dataset\data.corrected.yaml
+split:   val
+
+Overall (standard YOLO detection metrics, instance-weighted across all classes):
+  precision  : 0.4660
+  recall     : 0.0798
+  mAP50      : 0.0349
+  mAP50-95   : 0.0116
+
+Weighted composite score: 0.0156
+  = 0.50 * object_macro_mAP50-95 (0.0160) + 0.50 * material_macro_mAP50-95 (0.0152)
+  (macro-averaged: every object/material counts equally regardless of instance count. Tune with --object-weight/--material-weight. This is a custom summary, not a standard YOLO metric.)
+
+Per-class (every object+material+color class):
+class                                                   instances  precision   recall    mAP50  mAP50-95
+--------------------------------------------------------------------------------------------------------
+Object ballpoint pen - Material plastic  - Color clear          3     1.0000   0.0000   0.0000    0.0000
+Object ballpoint pen - Material rubber  - Color red -           7     0.0000   0.0000   0.0000    0.0000
+Object cardboard shipping box-  Material plastic  - Co          2     1.0000   0.0000   0.0000    0.0000
+Object claw hammer -Material metal - Pdfname 2LKzx9zgC          7     1.0000   0.0000   0.0000    0.0000
+Object insulated water bottle  - Material metal - Colo          1     1.0000   0.0000   0.0000    0.0000
+Object precision screwdriver - Material Metal - Pdfnam          6     1.0000   0.0000   0.0000    0.0000
+Object retractable gel pen - Material metal - Pdfname           1     1.0000   0.0000   0.0000    0.0000
+Object retractable gel pen - Material plastic- Pdfname          7     1.0000   0.0000   0.0000    0.0000
+Object retractable gel pen - Material rubber - Pdfname          7     1.0000   0.0000   0.0000    0.0000
+Object robotic gripper finger assembly  - Material met          5     1.0000   0.0000   0.0000    0.0000
+Object scissors -  Material  plastic - Pdfname  tYexGl         10     1.0000   0.0000   0.0000    0.0000
+Object ballpoint pen  - Material plastic - Color red -          4     1.0000   0.0000   0.0017    0.0007
+Object plastic first aid kit - Material plastic -  Col          5     1.0000   0.0000   0.0075    0.0021
+Object robotic gripper finger assembly - Material plas          9     0.0000   0.0000   0.0055    0.0023
+Object scissors -  Material metal - Pdfname  tYexGlkiI          5     0.0000   0.0000   0.0065    0.0025
+Object car key fob with keyring - Material metal  - Pd          1     1.0000   0.0000   0.0284    0.0028
+Object desktop tape dispenser - Material plastic   - P         10     0.0000   0.0000   0.0170    0.0036
+Object wire spool  -Material plastic -  Color oranges           4     0.0000   0.0000   0.0065    0.0036
+Object wire spool - Material  rubber - Color oranges -          7     1.0000   0.0000   0.0104    0.0038
+Object precision screwdriver - Material rubber - Color          9     0.0000   0.0000   0.0089    0.0038
+Object car key fob with keyring - Material plastic - P         12     0.0000   0.0000   0.0126    0.0039
+Object screw packaging box - Material cardboard - Pdfn         12     1.0000   0.0000   0.0050    0.0040
+Object desktop tape dispenser - Material  plastic tape          3     1.0000   0.0000   0.0104    0.0042
+Object book  - Material paper  - Color red - Pdfname Q         12     0.0000   0.0000   0.0163    0.0053
+Object rubber duck -  Material rubber  -Color blue - P         14     0.0398   0.1429   0.0283    0.0062
+Object bifold wallet - Material leather - Pdfname qb3C         13     0.0397   0.0769   0.0276    0.0064
+Object claw hammer -Material  rubber - Pdfname 2LKzx9z          6     0.0000   0.0000   0.0208    0.0070
+Object plastic first aid kit - Material plastic  -Colo          5     1.0000   0.0000   0.0243    0.0071
+Object toy football - Material foam - Color blue - Pdf         14     0.0000   0.0000   0.0351    0.0095
+Object white rectangular foam block - Material Foam  -          9     0.0000   0.0000   0.0312    0.0109
+Object graphing calculator slide case - Material plast         10     0.0279   0.1000   0.0446    0.0111
+Object - extruded aluminum profile -  Material metal -         13     0.0755   0.0769   0.0823    0.0233
+Object cardboard shipping box - Material composite -           10     0.0365   0.2000   0.0687    0.0290
+Object wireless earbud charging case - Material plasti         11     0.0699   0.6364   0.1065    0.0318
+Object plastic container lid - Material plastic - Colo         11     0.0000   0.0000   0.0887    0.0363
+Object microfiber cleaning cloth  - Material fabric  -          9     0.2105   0.3333   0.2395    0.0542
+Object breadboard - Material plastic - Color white - P          9     0.1343   0.5556   0.1868    0.0813
+Object Amazon recyclable paper mailer -  Material pape         11     0.0745   0.9091   0.2067    0.0823
+
+Per-object summary (material/color variants of the same object combined, macro-averaged):
+object                                        classes instances  precision   recall    mAP50  mAP50-95
+------------------------------------------------------------------------------------------------------
+insulated water bottle                              1         1     1.0000   0.0000   0.0000    0.0000
+retractable gel pen                                 3        15     1.0000   0.0000   0.0000    0.0000
+ballpoint pen                                       3        14     0.6667   0.0000   0.0006    0.0002
+robotic gripper finger assembly                     2        14     0.5000   0.0000   0.0027    0.0011
+scissors                                            2        15     0.5000   0.0000   0.0033    0.0012
+precision screwdriver                               2        15     0.5000   0.0000   0.0045    0.0019
+car key fob with keyring                            2        13     0.5000   0.0000   0.0205    0.0034
+claw hammer                                         2        13     0.5000   0.0000   0.0104    0.0035
+wire spool                                          2        11     0.5000   0.0000   0.0084    0.0037
+desktop tape dispenser                              2        13     0.5000   0.0000   0.0137    0.0039
+screw packaging box                                 1        12     1.0000   0.0000   0.0050    0.0040
+plastic first aid kit                               2        10     1.0000   0.0000   0.0159    0.0046
+book                                                1        12     0.0000   0.0000   0.0163    0.0053
+rubber duck                                         1        14     0.0398   0.1429   0.0283    0.0062
+bifold wallet                                       1        13     0.0397   0.0769   0.0276    0.0064
+toy football                                        1        14     0.0000   0.0000   0.0351    0.0095
+white rectangular foam block                        1         9     0.0000   0.0000   0.0312    0.0109
+graphing calculator slide case                      1        10     0.0279   0.1000   0.0446    0.0111
+cardboard shipping box                              2        12     0.5183   0.1000   0.0343    0.0145
+- extruded aluminum profile                         1        13     0.0755   0.0769   0.0823    0.0233
+wireless earbud charging case                       1        11     0.0699   0.6364   0.1065    0.0318
+plastic container lid                               1        11     0.0000   0.0000   0.0887    0.0363
+microfiber cleaning cloth                           1         9     0.2105   0.3333   0.2395    0.0542
+breadboard                                          1         9     0.1343   0.5556   0.1868    0.0813
+Amazon recyclable paper mailer                      1        11     0.0745   0.9091   0.2067    0.0823
+
+Per-material summary (all objects sharing a material combined, macro-averaged):
+material                  classes instances  precision   recall    mAP50  mAP50-95
+----------------------------------------------------------------------------------
+Metal                           1         6     1.0000   0.0000   0.0000    0.0000
+rubber                          6        50     0.3400   0.0238   0.0114    0.0035
+cardboard                       1        12     1.0000   0.0000   0.0050    0.0040
+metal                           7        33     0.7251   0.0110   0.0168    0.0041
+plastic tape                    1         3     1.0000   0.0000   0.0104    0.0042
+leather                         1        13     0.0397   0.0769   0.0276    0.0064
+foam                            1        14     0.0000   0.0000   0.0351    0.0095
+Foam                            1         9     0.0000   0.0000   0.0312    0.0109
+plastic                        15       112     0.4821   0.0861   0.0334    0.0123
+composite                       1        10     0.0365   0.2000   0.0687    0.0290
+paper                           2        23     0.0373   0.4545   0.1115    0.0438
+fabric                          1         9     0.2105   0.3333   0.2395    0.0542
+
+Lowest mAP50-95 classes (worth a closer look):
+  Object ballpoint pen - Material plastic  - Color clear - Pdfname Tg2wygrqE5uZ: mAP50-95=0.0000, instances=3
+  Object ballpoint pen - Material rubber  - Color red - Pdfname Tg2wygrqE5uZ: mAP50-95=0.0000, instances=7
+  Object cardboard shipping box-  Material plastic  - Color  blue -Pdfname OHMlPZx8zUzd: mAP50-95=0.0000, instances=2
+  Object claw hammer -Material metal - Pdfname 2LKzx9zgCNVB: mAP50-95=0.0000, instances=7
+  Object insulated water bottle  - Material metal - Color navy blue - Pdfname Uop6evwTVgMl: mAP50-95=0.0000, instances=1
+
+Lowest mAP50-95 materials (worth a closer look):
+  Metal: mAP50-95=0.0000, classes=1, instances=6
+  rubber: mAP50-95=0.0035, classes=6, instances=50
+  cardboard: mAP50-95=0.0040, classes=1, instances=12
+  metal: mAP50-95=0.0041, classes=7, instances=33
+  plastic tape: mAP50-95=0.0042, classes=1, instances=3
+
+======================================================================
+SUMMARY -- COMPLETE RESULTS FOR EVERY METRIC
+======================================================================
+                                        precision   recall    mAP50  mAP50-95
+-----------------------------------------------------------------------------
+overall (instance-weighted)                0.4660   0.0798   0.0349    0.0116
+macro avg across classes                   0.4660   0.0798   0.0349    0.0116
+macro avg across objects                   0.3743   0.1172   0.0485    0.0160
+macro avg across materials                 0.4059   0.0988   0.0492    0.0152
+weighted composite (object+material)       0.3901   0.1080   0.0489    0.0156
+
+  'overall (instance-weighted)'          -- standard YOLO metrics, larger classes count more
+  'macro avg across classes'             -- every object+material+color class counts equally
+  'macro avg across objects'             -- every distinct object counts equally, materials combined
+  'macro avg across materials'           -- every distinct material counts equally, objects combined
+  'weighted composite (object+material)' -- object/material macro averages blended per --object-weight/--material-weight

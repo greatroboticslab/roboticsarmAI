@@ -1,0 +1,8 @@
+======================================================================
+RESPLIT SUMMARY
+======================================================================
+[train] images=1167 (80.0%, target 80.0%) label_instances=1173 distinct_objects=25
+    objects: ['2LKzx9zgCNVB', '6lew56E5S7Ez', '8pMd29OsIRjD', 'BWuUnwTLudUE', 'IJiB5jbMhrV7', 'LpbAVoaL01XV', 'NoEr35VbQ7sR', 'OHMlPZx8zUzd', 'QP9o9Hihi4G7', 'Tg2wygrqE5uZ', 'UT1NgGrFNbGM', 'Uop6evwTVgMl', 'VT1ffZoLOnKv', 'VgpKnmoKJfrS', 'Yy6dySnH33wN', 'ZC63DBkv6oJY', 'ZSbzRHMUOqAP', 'ZryFz3DBSiO8', 'as1D2765rACT', 'asdasdaswe', 'drQGvVi456iM', 'qb3CMu4EyzEc', 'qzJIPQkli2jB', 'tYexGlkiIXWc', 'u4lxlaYXiY3D']
+[valid] images=291 (20.0%, target 20.0%) label_instances=294 distinct_objects=25
+    objects: ['2LKzx9zgCNVB', '6lew56E5S7Ez', '8pMd29OsIRjD', 'BWuUnwTLudUE', 'IJiB5jbMhrV7', 'LpbAVoaL01XV', 'NoEr35VbQ7sR', 'OHMlPZx8zUzd', 'QP9o9Hihi4G7', 'Tg2wygrqE5uZ', 'UT1NgGrFNbGM', 'Uop6evwTVgMl', 'VT1ffZoLOnKv', 'VgpKnmoKJfrS', 'Yy6dySnH33wN', 'ZC63DBkv6oJY', 'ZSbzRHMUOqAP', 'ZryFz3DBSiO8', 'as1D2765rACT', 'asdasdaswe', 'drQGvVi456iM', 'qb3CMu4EyzEc', 'qzJIPQkli2jB', 'tYexGlkiIXWc', 'u4lxlaYXiY3D']
+[NOTE] objects present in BOTH train and valid: ['2LKzx9zgCNVB', '6lew56E5S7Ez', '8pMd29OsIRjD', 'BWuUnwTLudUE', 'IJiB5jbMhrV7', 'LpbAVoaL01XV', 'NoEr35VbQ7sR', 'OHMlPZx8zUzd', 'QP9o9Hihi4G7', 'Tg2wygrqE5uZ', 'UT1NgGrFNbGM', 'Uop6evwTVgMl', 'VT1ffZoLOnKv', 'VgpKnmoKJfrS', 'Yy6dySnH33wN', 'ZC63DBkv6oJY', 'ZSbzRHMUOqAP', 'ZryFz3DBSiO8', 'as1D2765rACT', 'asdasdaswe', 'drQGvVi456iM', 'qb3CMu4EyzEc', 'qzJIPQkli2jB', 'tYexGlkiIXWc', 'u4lxlaYXiY3D']

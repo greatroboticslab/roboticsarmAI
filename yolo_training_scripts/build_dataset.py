@@ -213,7 +213,21 @@ def build_corrected_yaml(dataset_dir: Path, apply_renames: bool = False, strict:
     for pid in sorted(missing_pdfs):
         report_lines.append(f"[MISSING PDF] classes reference Pdfname {pid} but no {pid}.pdf found in pdf_for_labels/")
     for pid in sorted(orphan_pdfs):
-        report_lines.append(f"[ORPHAN PDF] {pid}.pdf exists but no class in data.yaml references it")
+        report_lines.append(f"[ORPHAN PDF] {pid}.pdf exists but no class in data.yaml references it yet.")
+        try:
+            label = parse_pdf_label(pdf_files[pid])
+            suggested_names = canonical_class_names(label)
+            report_lines.append(
+                f"    It parses as object={label.object_name!r} with {len(suggested_names)} material(s) "
+                f"{'(used most-recent turn; ' + str(label.num_turns_found) + ' total response(s) in PDF)' if label.num_turns_found != 1 else ''}"
+            )
+            report_lines.append("    ACTION NEEDED: this PDF alone doesn't add a class -- add these line(s) to data.yaml's")
+            report_lines.append("    `names` list, bump `nc` by the same amount, and make sure your bounding-box label")
+            report_lines.append("    .txt files use the matching new class index(es) (0-indexed, same order as `names`):")
+            for n in suggested_names:
+                report_lines.append(f"      - {n!r}")
+        except Exception as e:
+            report_lines.append(f"    [warn] couldn't parse this PDF to suggest class names: {e}")
 
     for pdf_id in sorted(referenced_pdf_ids & available_pdf_ids):
         old_indices = groups[pdf_id]

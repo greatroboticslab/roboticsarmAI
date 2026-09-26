@@ -115,6 +115,29 @@ PDF text-extraction artifact truncated it).
   Pass `--device 0` explicitly to make sure it uses the GPU rather than
   auto-selecting CPU.
 
+  **Training feels too slow (e.g. an hour+ for a small dataset)?**
+  `yolov8n.pt` is already the smallest stock model — there's nothing
+  smaller in the family to switch to. If it's still slow, the cause is
+  almost always one of these, roughly in order of how much it usually
+  matters:
+  1. **It's silently running on CPU.** By far the most common cause —
+     CPU training is typically 10-50x slower than GPU even for the
+     smallest model. `train_yolo.py` now checks this and prints a warning
+     if `torch.cuda.is_available()` is `False`. Fix as described above,
+     then pass `--device 0` explicitly so it can't fall back to CPU.
+  2. **No image caching**, so every epoch re-reads and re-decodes every
+     image from disk. Add `--cache ram` (fastest; needs enough RAM to
+     hold the dataset — this dataset is tiny, so this is basically free)
+     or `--cache disk` if RAM is tight.
+  3. **Too many dataloader workers on Windows** — the default
+     `--workers 8` spawns multiprocessing workers, which has more
+     overhead on Windows than Linux and can slow down small datasets.
+     Try `--workers 0` or `--workers 4`.
+
+  ```bash
+  python train_yolo.py --dataset-dir ../../dataset --device 0 --cache ram --workers 4
+  ```
+
 - **`evaluate.py`** — standalone evaluation for any trained checkpoint.
   Runs ultralytics' standard detection metrics (precision, recall, mAP50,
   mAP50-95) overall and per class. Since every class here is really an
@@ -137,6 +160,20 @@ PDF text-extraction artifact truncated it).
     each). This is a custom summary on top of the standard metrics, not a
     replacement for them — the standard overall precision/recall/mAP is
     always reported too.
+  - **Per-category** (opt-in via `--category-map`) — gives credit for
+    getting the general category right even if the model mixes up the
+    exact object within it (e.g. detecting a gel pen as a ballpoint pen
+    still correctly found "a pen"). This is a genuinely different kind of
+    metric from the others: it's built from the confusion matrix (what got
+    predicted as what), not from mAP, since mAP scores each class in
+    isolation and structurally can't express "close enough, right
+    category." You define the groupings yourself in a small YAML file —
+    see `dataset/object_categories.yaml` for the format and a filled-in
+    example using this dataset's actual objects (e.g. grouping
+    `ballpoint pen` and, once you add it, `gel pen` under `pen`). If that
+    file exists, it's used automatically; point `--category-map` at a
+    different file to override. Reports precision/recall/F1 (not mAP) per
+    category, plus TP/FP/FN counts, and writes `evaluation_per_category.csv`.
 
   ```bash
   # evaluate against the validation split (default)
@@ -147,14 +184,18 @@ PDF text-extraction artifact truncated it).
 
   # weight material recognition more heavily in the composite score
   python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset --material-weight 0.7 --object-weight 0.3
+
+  # also report category-level accuracy (auto-used if dataset/object_categories.yaml exists)
+  python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../../dataset --category-map ../../dataset/object_categories.yaml
   ```
 
   Writes to `runs/val/<name>/`: `evaluation_report.txt` (overall metrics,
-  composite score, per-class/object/material tables, worst-performing
-  classes and materials called out, and a final summary table with every
-  metric at every aggregation level), plus `evaluation_per_class.csv`,
-  `evaluation_per_object.csv`, `evaluation_per_material.csv`, and
-  `evaluation_summary.csv`.
+  composite score, per-class/object/material/category tables,
+  worst-performing classes and materials called out, and a final summary
+  table with every metric at every aggregation level), plus
+  `evaluation_per_class.csv`, `evaluation_per_object.csv`,
+  `evaluation_per_material.csv`, `evaluation_per_category.csv` (when a
+  category map is used), and `evaluation_summary.csv`.
 
   The bottom of the report always has a complete summary table like:
 
@@ -225,6 +266,25 @@ PDF text-extraction artifact truncated it).
   # longer/GPU smoke test:
   python test_pipeline.py --dataset-dir ../../dataset --epochs 3 --imgsz 640 --device 0
   ```
+
+## Adding a brand new object
+
+1. Photograph the new object (30-40 images, varied rotation/placement/lighting is the target) and get bounding-box labels for them in the usual YOLO `.txt` format.
+2. Run the object through the same Gemini labeling process as the others (correcting it in the conversation if the first guess is wrong -- the bottom-up PDF parsing always uses the most recent answer, so an early misfire like guessing "ballpoint pen" before you correct it to "gel pen" is automatically ignored) and save the transcript as a new PDF under `dataset/pdf_for_labels/<new_id>.pdf`.
+3. Run `build_dataset.py`. A PDF with no matching class yet is flagged `[ORPHAN PDF]`, and the report now tells you exactly what to do about it -- it parses the PDF's current answer and prints ready-to-paste `data.yaml` name line(s):
+   ```
+   [ORPHAN PDF] newcam001.pdf exists but no class in data.yaml references it yet.
+       It parses as object='gel pen' with 1 material(s)
+       ACTION NEEDED: this PDF alone doesn't add a class -- add these line(s) to data.yaml's
+       `names` list, bump `nc` by the same amount, and make sure your bounding-box label
+       .txt files use the matching new class index(es) (0-indexed, same order as `names`):
+         - 'Object gel pen - Material plastic - Color black - Pdfname newcam001'
+   ```
+4. Add that line to `data.yaml`'s `names` list, bump `nc` by however many lines you added, and make sure the new images' label `.txt` files use the matching class index (0-indexed position in `names`).
+5. Drop the new images/labels into any split folder (`train` is fine) and run `resplit_dataset.py --mode stratified` to redistribute everything, including the new object, across train/val properly.
+6. Re-run `build_dataset.py` to confirm the object now shows up as `unchanged` (or a harmless proposed rename) instead of `[ORPHAN PDF]`, then train as usual.
+
+Since matching is keyed on the PDF's unique filename, a new object is never confused with an existing one just because it looks similar (e.g. gel pen vs. ballpoint pen) -- that only matters for how well the *model* tells them apart visually, which more/varied training images for both is what helps with.
 
 ## Typical workflow
 

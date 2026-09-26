@@ -8,15 +8,25 @@ dataset (val, test, or even train, e.g. to sanity-check for overfitting).
 
 Since every class here is really an (object, material, color) combination
 (e.g. "Object ballpoint pen - Material plastic - Color red"), a plain
-per-class table doesn't directly answer two questions people usually care
-about:
+per-class table doesn't directly answer questions people usually care about:
   - How well does the model find THIS OBJECT, regardless of which material
-    variant it is?
+    variant it is? (per-object summary)
   - How well does the model recognize THIS MATERIAL, regardless of which
-    object it's on?
-So this script also aggregates the per-class numbers into a per-object
-summary and a per-material summary, and combines the two into a single
-weighted composite score you can tune with --object-weight/--material-weight.
+    object it's on? (per-material summary)
+  - How well does the model get the general CATEGORY right, even if it
+    mixes up two similar objects within that category (e.g. calling a gel
+    pen a ballpoint pen is still useful -- it correctly found "a pen")?
+    (per-category summary, see --category-map below)
+The first two are macro-averaged mAP-based summaries; the composite score
+combines them and is tunable with --object-weight/--material-weight.
+
+The category summary is a genuinely different kind of metric: it's built
+from the confusion matrix (what got predicted as what), not from mAP, so it
+can give credit for "right category, wrong exact object" -- something a
+per-class mAP table structurally can't express, since each class is scored
+independently of what any other class predicted. It requires you to define
+which objects belong to which category (this can't be reliably guessed from
+object names alone) via a small YAML/JSON mapping file -- see --category-map.
 
 Like train_yolo.py, this prefers dataset/data.corrected.yaml over the raw
 dataset/data.yaml unless you pass --data explicitly.
@@ -30,6 +40,9 @@ Usage:
 
     # weight material recognition more heavily in the composite score
     python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../dataset --material-weight 0.7 --object-weight 0.3
+
+    # also report category-level accuracy (e.g. "pen" covering both ballpoint and gel pen)
+    python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../dataset --category-map ../dataset/object_categories.yaml
 """
 
 from __future__ import annotations
@@ -45,6 +58,76 @@ from yolo_common import resolve_data_yaml, load_data_yaml, parse_class_name
 METRIC_KEYS = ("precision", "recall", "mAP50", "mAP50-95")
 
 
+def load_category_map(path: Path | None) -> dict[str, str]:
+    """
+    Load an object-name -> category-name mapping from a small YAML/JSON file, e.g.:
+        ballpoint pen: pen
+        gel pen: pen
+        precision screwdriver: screwdriver
+        flathead screwdriver: screwdriver
+    Any object not listed simply isn't grouped with anything (see build_category_index).
+    Returns {} if path is None or the file doesn't exist.
+    """
+    if path is None or not Path(path).exists():
+        return {}
+    import yaml
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return {str(k).strip(): str(v).strip() for k, v in data.items()}
+
+
+def build_category_index(names: dict[int, str], category_map: dict[str, str]) -> dict[int, str]:
+    """Map each class id -> its category name. Objects not in category_map fall back to
+    their own object name as a singleton category, so this is always safe to call even
+    with an empty/partial mapping -- it just won't group anything extra."""
+    index = {}
+    for cls_id, name in names.items():
+        obj = parse_class_name(name)["object"] or name
+        index[cls_id] = category_map.get(obj, obj)
+    return index
+
+
+def compute_category_confusion(matrix, category_index: dict[int, str], nc: int) -> list[dict]:
+    """
+    Aggregate ultralytics' confusion matrix (matrix[predicted, true], with index `nc`
+    reserved for "background"/no-detection) into per-category precision/recall/F1.
+    A prediction counts as a category true positive whenever the predicted class and
+    the true class map to the same category, even if they're different exact classes --
+    that's the whole point: "right general category, wrong exact object" still counts.
+    """
+    categories = sorted(set(category_index.values()))
+    rows = []
+    for cat in categories:
+        cat_class_ids = {cid for cid, c in category_index.items() if c == cat}
+        tp = fp = fn = 0
+        for i in range(nc + 1):  # predicted axis, including background (nc)
+            i_in_cat = i in cat_class_ids
+            for j in range(nc + 1):  # true axis, including background (nc)
+                if i == nc and j == nc:
+                    continue  # background-vs-background isn't a real event
+                j_in_cat = j in cat_class_ids
+                count = matrix[i, j]
+                if count == 0:
+                    continue
+                if i_in_cat and j_in_cat:
+                    tp += count
+                elif i_in_cat and not j_in_cat:
+                    fp += count
+                elif not i_in_cat and j_in_cat:
+                    fn += count
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        rows.append({
+            "category": cat,
+            "n_classes": len(cat_class_ids),
+            "instances": int(tp + fn),
+            "tp": int(tp), "fp": int(fp), "fn": int(fn),
+            "precision": precision, "recall": recall, "f1": f1,
+        })
+    return rows
+
+
 def run_evaluation(
     weights: Path,
     data_yaml: Path,
@@ -58,6 +141,7 @@ def run_evaluation(
     name: str = "exp",
     object_weight: float = 0.5,
     material_weight: float = 0.5,
+    category_map_path: Path | None = None,
 ) -> dict:
     """Run model.val(), aggregate per-object and per-material summaries, and write a report.
     Returns a dict with overall metrics, per-class/object/material breakdowns, and the composite score."""
@@ -126,6 +210,19 @@ def run_evaluation(
     per_object_rows = _aggregate(per_class_rows, "object")
     per_material_rows = _aggregate(per_class_rows, "material")
 
+    # Category summary: confusion-matrix based (see module docstring), only computed
+    # when a mapping is supplied -- without one, there's nothing extra to group by.
+    per_category_rows: list[dict] = []
+    category_map = load_category_map(category_map_path)
+    if category_map:
+        cm = getattr(metrics, "confusion_matrix", None)
+        if cm is not None and hasattr(cm, "matrix"):
+            nc = len(names)
+            category_index = build_category_index(names, category_map)
+            per_category_rows = compute_category_confusion(cm.matrix, category_index, nc)
+        else:
+            print("[warn] --category-map was given but this ultralytics version didn't return a confusion matrix; skipping category summary.")
+
     total_w = object_weight + material_weight
     object_weight_n = object_weight / total_w if total_w else 0.5
     material_weight_n = material_weight / total_w if total_w else 0.5
@@ -155,12 +252,13 @@ def run_evaluation(
 
     out_dir = Path(getattr(metrics, "save_dir", Path(project) / name))
     out_dir.mkdir(parents=True, exist_ok=True)
-    _write_report(out_dir, weights, data_yaml, split, overall, per_class_rows, per_object_rows, per_material_rows, composite, summary)
+    _write_report(out_dir, weights, data_yaml, split, overall, per_class_rows, per_object_rows, per_material_rows, composite, summary, per_category_rows)
     return {
         "overall": overall,
         "per_class": per_class_rows,
         "per_object": per_object_rows,
         "per_material": per_material_rows,
+        "per_category": per_category_rows,
         "composite": composite,
         "summary": summary,
         "output_dir": str(out_dir),
@@ -215,11 +313,13 @@ def _write_report(
     out_dir: Path, weights: Path, data_yaml: Path, split: str,
     overall: dict, per_class_rows: list[dict], per_object_rows: list[dict],
     per_material_rows: list[dict], composite: dict, summary: dict,
+    per_category_rows: list[dict],
 ):
     txt_path = out_dir / "evaluation_report.txt"
     csv_path = out_dir / "evaluation_per_class.csv"
     object_csv_path = out_dir / "evaluation_per_object.csv"
     material_csv_path = out_dir / "evaluation_per_material.csv"
+    category_csv_path = out_dir / "evaluation_per_category.csv"
 
     lines = [
         "=" * 70,
@@ -259,6 +359,21 @@ def _write_report(
     lines.append("")
     lines.append("Per-material summary (all objects sharing a material combined, macro-averaged):")
     lines.extend(_format_table(per_material_rows, "material", "material", 25))
+
+    if per_category_rows:
+        lines.append("")
+        lines.append("Per-category summary (confusion-matrix based, NOT mAP -- a detection still counts")
+        lines.append("as correct if it gets the general category right, even if it mixes up the exact")
+        lines.append("object within that category, e.g. calling a gel pen a ballpoint pen still counts):")
+        cat_header = f"{'category':<30}{'classes':>8}{'instances':>10}{'TP':>6}{'FP':>6}{'FN':>6}{'precision':>11}{'recall':>9}{'F1':>8}"
+        lines.append(cat_header)
+        lines.append("-" * len(cat_header))
+        for row in sorted(per_category_rows, key=lambda r: r["f1"]):
+            lines.append(
+                f"{row['category'][:29]:<30}{row['n_classes']:>8}{row['instances']:>10}"
+                f"{row['tp']:>6}{row['fp']:>6}{row['fn']:>6}"
+                f"{row['precision']:>11.4f}{row['recall']:>9.4f}{row['f1']:>8.4f}"
+            )
 
     lowest_classes = sorted(per_class_rows, key=lambda r: r["mAP50-95"])[:5]
     if lowest_classes:
@@ -313,6 +428,13 @@ def _write_report(
         for row in per_material_rows:
             writer.writerow(row)
 
+    if per_category_rows:
+        with open(category_csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["category", "n_classes", "instances", "tp", "fp", "fn", "precision", "recall", "f1"])
+            writer.writeheader()
+            for row in per_category_rows:
+                writer.writerow(row)
+
     summary_csv_path = out_dir / "evaluation_summary.csv"
     with open(summary_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["level", "precision", "recall", "mAP50", "mAP50-95"])
@@ -325,6 +447,8 @@ def _write_report(
     print(f"Per-class CSV: {csv_path}")
     print(f"Per-object CSV: {object_csv_path}")
     print(f"Per-material CSV: {material_csv_path}")
+    if per_category_rows:
+        print(f"Per-category CSV: {category_csv_path}")
     print(f"Summary CSV: {summary_csv_path}")
 
 
@@ -343,6 +467,13 @@ def main():
     ap.add_argument("--name", default="exp", help="Run name (subfolder under --project)")
     ap.add_argument("--object-weight", type=float, default=0.5, help="Weight given to object-level (macro) mAP50-95 in the composite score (default: 0.5)")
     ap.add_argument("--material-weight", type=float, default=0.5, help="Weight given to material-level (macro) mAP50-95 in the composite score (default: 0.5)")
+    ap.add_argument(
+        "--category-map", type=Path, default=None,
+        help="YAML/JSON file mapping object name -> category name (e.g. 'ballpoint pen: pen', "
+             "'gel pen: pen') to additionally report confusion-matrix-based category accuracy, "
+             "which gives credit for getting the general category right even if the exact object "
+             "is wrong. Default: auto-use <dataset-dir>/object_categories.yaml if it exists.",
+    )
     args = ap.parse_args()
 
     if not args.weights.exists():
@@ -352,6 +483,13 @@ def main():
 
     if args.split == "test" and args.dataset_dir is not None and not (args.dataset_dir / "test" / "images").exists():
         raise SystemExit(f"--split test was requested but {args.dataset_dir / 'test'} doesn't exist.")
+
+    category_map_path = args.category_map
+    if category_map_path is None and args.dataset_dir is not None:
+        default_map = args.dataset_dir / "object_categories.yaml"
+        if default_map.exists():
+            print(f"[info] using category map: {default_map}")
+            category_map_path = default_map
 
     run_evaluation(
         weights=args.weights,
@@ -366,6 +504,7 @@ def main():
         name=args.name,
         object_weight=args.object_weight,
         material_weight=args.material_weight,
+        category_map_path=category_map_path,
     )
 
 

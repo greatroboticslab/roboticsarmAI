@@ -1,7 +1,7 @@
 train: ../train/images
 val: ../valid/images
 test: ../test/images
-nc: 34
+nc: 38
 names:
 - Object - extruded aluminum profile -  Material metal - Pdfname IJiB5jbMhrV7
 - Object Amazon recyclable paper mailer -  Material paper  - Color brown - Pdfname
@@ -27,8 +27,12 @@ names:
 - Object plastic first aid kit - Material plastic  -Color blue  -Pdfname 6lew56E5S7Ez
 - Object plastic first aid kit - Material plastic -  Color blue and white - Pdfname
   6lew56E5S7Ez
+- Object precision screwdriver - Material Metal - Pdfname NoEr35VbQ7sR
 - Object precision screwdriver - Material rubber - Color black and orange - Pdfname
   NoEr35VbQ7sR
+- Object retractable gel pen - Material metal - Pdfname  asdasdaswe
+- Object retractable gel pen - Material plastic- Pdfname  asdasdaswe
+- Object retractable gel pen - Material rubber - Pdfname  asdasdaswe
 - Object robotic gripper finger assembly  - Material metal -  Pdfname Yy6dySnH33wN
 - Object robotic gripper finger assembly - Material plastic - Color blue - Pdfname
   Yy6dySnH33wN
@@ -44,6 +48,6 @@ names:
 roboflow:
   workspace: mtsu-2h73y
   project: laser-assisted-computer-vision
-  version: dataset
+  version: 1
   license: CC BY 4.0
-  url: https://universe.roboflow.com/mtsu-2h73y/laser-assisted-computer-vision/dataset/dataset
+  url: https://universe.roboflow.com/mtsu-2h73y/laser-assisted-computer-vision/dataset/1

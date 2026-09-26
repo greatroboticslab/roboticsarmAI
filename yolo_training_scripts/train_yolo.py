@@ -18,6 +18,9 @@ Usage:
     # train, then immediately run validation-set evaluation on the best checkpoint
     python train_yolo.py --dataset-dir ../dataset --epochs 100 --evaluate
 
+    # slow training? make sure it's actually using the GPU, and cache images in RAM
+    python train_yolo.py --dataset-dir ../dataset --device 0 --cache ram --workers 4
+
     # override everything explicitly
     python train_yolo.py --data ../dataset/data.yaml --model yolov8s.pt --epochs 150 --imgsz 640 --batch 16
 """
@@ -40,7 +43,13 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--device", default=None, help="e.g. 0, 0,1, cpu, mps. Default: let ultralytics auto-select")
-    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--workers", type=int, default=8, help="Dataloader worker processes. On Windows, high values can add overhead on small datasets -- try 0 or 4 if training seems slow.")
+    ap.add_argument(
+        "--cache", default=None, choices=["ram", "disk"],
+        help="Cache images after the first read instead of re-decoding from disk every epoch "
+             "(ram: fastest, needs enough RAM to hold the dataset; disk: slower than ram but still "
+             "much faster than no caching). Off by default; strongly recommended if training feels slow.",
+    )
     ap.add_argument("--project", default="runs/train", help="Where to save run outputs")
     ap.add_argument("--name", default="exp", help="Run name (subfolder under --project)")
     ap.add_argument("--patience", type=int, default=50, help="Early-stopping patience (epochs with no improvement)")
@@ -58,6 +67,20 @@ def main():
         print("ultralytics is not installed. Install it with:\n    pip install ultralytics", file=sys.stderr)
         sys.exit(1)
 
+    if args.device is None or str(args.device).lower() != "cpu":
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                print(
+                    "[warn] torch.cuda.is_available() is False -- training will run on CPU, which is "
+                    "typically 10-50x slower than GPU even with the smallest model (yolov8n). If you have "
+                    "an NVIDIA GPU, this usually means PyTorch installed without CUDA support; reinstall it "
+                    "using the command for your CUDA version from https://pytorch.org/get-started/locally/ "
+                    "then re-run with --device 0."
+                )
+        except ImportError:
+            pass  # torch not importable standalone in this env; ultralytics import above already succeeded, so let it proceed
+
     data_yaml = resolve_data_yaml(args.dataset_dir, args.data)
 
     model = YOLO(args.model)
@@ -74,6 +97,8 @@ def main():
     )
     if args.device is not None:
         train_kwargs["device"] = args.device
+    if args.cache is not None:
+        train_kwargs["cache"] = args.cache
 
     train_results = model.train(**train_kwargs)
     save_dir = Path(getattr(train_results, "save_dir", Path(args.project) / args.name))
@@ -88,6 +113,13 @@ def main():
             return
         print("\nRunning post-training evaluation...")
         from evaluate import run_evaluation
+
+        category_map_path = None
+        if args.dataset_dir is not None:
+            default_map = args.dataset_dir / "object_categories.yaml"
+            if default_map.exists():
+                print(f"[info] using category map: {default_map}")
+                category_map_path = default_map
 
         splits_to_run = ["val"]
         if args.dataset_dir is not None and (args.dataset_dir / "test" / "images").exists():
@@ -104,6 +136,7 @@ def main():
                 device=args.device,
                 project=args.project,
                 name=f"{args.name}_eval_{split}",
+                category_map_path=category_map_path,
             )
 
 

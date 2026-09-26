@@ -3,7 +3,7 @@ PDF LABEL RECONCILIATION SUMMARY
 ======================================================================
 mode: dry-run / advisory only (data.corrected.yaml == data.yaml)
 pdfs unchanged (already matches PDF): 1
-pdfs with a proposed rename (count matches, text differs): 16 -> ['2LKzx9zgCNVB', 'BWuUnwTLudUE', 'IJiB5jbMhrV7', 'LpbAVoaL01XV', 'OHMlPZx8zUzd', 'QP9o9Hihi4G7', 'VgpKnmoKJfrS', 'Yy6dySnH33wN', 'ZC63DBkv6oJY', 'ZSbzRHMUOqAP', 'ZryFz3DBSiO8', 'as1D2765rACT', 'drQGvVi456iM', 'qb3CMu4EyzEc', 'qzJIPQkli2jB', 'tYexGlkiIXWc']
+pdfs with a proposed rename (count matches, text differs): 17 -> ['2LKzx9zgCNVB', 'BWuUnwTLudUE', 'IJiB5jbMhrV7', 'LpbAVoaL01XV', 'OHMlPZx8zUzd', 'QP9o9Hihi4G7', 'VgpKnmoKJfrS', 'Yy6dySnH33wN', 'ZC63DBkv6oJY', 'ZSbzRHMUOqAP', 'ZryFz3DBSiO8', 'as1D2765rACT', 'asdasdaswe', 'drQGvVi456iM', 'qb3CMu4EyzEc', 'qzJIPQkli2jB', 'tYexGlkiIXWc']
 pdfs where material count differs from data.yaml (informational only): 7 -> ['6lew56E5S7Ez', '8pMd29OsIRjD', 'NoEr35VbQ7sR', 'Tg2wygrqE5uZ', 'UT1NgGrFNbGM', 'Uop6evwTVgMl', 'u4lxlaYXiY3D']
 missing pdf files: []
 orphan pdf files: []
@@ -31,19 +31,20 @@ orphan pdf files: []
       -> 'Object desktop tape dispenser - Material plastic - Color translucent - Pdfname 8pMd29OsIRjD'
     INFO ONLY, nothing changed: this is often intentional (e.g. only the material of the part actually visible/relevant was kept as its own class, or several parts sharing a material were deliberately merged). Re-check by hand only if this looks like a genuine missed update, not just a curation choice.
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname BWuUnwTLudUE (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
-    [25] 'Object rubber duck -  Material rubber  -Color blue - Pdfname BWuUnwTLudUE'
+    [29] 'Object rubber duck -  Material rubber  -Color blue - Pdfname BWuUnwTLudUE'
         -> 'Object rubber duck - Material rubber - Color blue - Pdfname BWuUnwTLudUE'
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname IJiB5jbMhrV7 (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
     [0] 'Object - extruded aluminum profile -  Material metal - Pdfname IJiB5jbMhrV7'
         -> 'Object extruded aluminum profile - Material metal - Color silver - Pdfname IJiB5jbMhrV7'
     [warn] indices [0] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname LpbAVoaL01XV (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
-    [30] 'Object white rectangular foam block - Material Foam  - Color white - Pdfname LpbAVoaL01XV'
+    [34] 'Object white rectangular foam block - Material Foam  - Color white - Pdfname LpbAVoaL01XV'
         -> 'Object white rectangular foam block - Material plastic - Color white - Pdfname LpbAVoaL01XV'
-    [warn] indices [30] matched by color only -- material text differs from the PDF's current answer, which may be a manual material correction; verify the material is still right
-[COUNT DIFFERS FROM PDF] Pdfname NoEr35VbQ7sR: data.yaml has 1 class(es) for this object, PDF's current answer has 3 material(s) (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom).
-    data.yaml classes (indices [22], treated as authoritative):
-      [22] 'Object precision screwdriver - Material rubber - Color black and orange - Pdfname NoEr35VbQ7sR'
+    [warn] indices [34] matched by color only -- material text differs from the PDF's current answer, which may be a manual material correction; verify the material is still right
+[COUNT DIFFERS FROM PDF] Pdfname NoEr35VbQ7sR: data.yaml has 2 class(es) for this object, PDF's current answer has 3 material(s) (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom).
+    data.yaml classes (indices [22, 23], treated as authoritative):
+      [22] 'Object precision screwdriver - Material Metal - Pdfname NoEr35VbQ7sR'
+      [23] 'Object precision screwdriver - Material rubber - Color black and orange - Pdfname NoEr35VbQ7sR'
     PDF's current answer -> object='precision screwdriver'
       -> 'Object precision screwdriver - Material rubber - Color black - Pdfname NoEr35VbQ7sR'
       -> 'Object precision screwdriver - Material plastic - Color orange - Pdfname NoEr35VbQ7sR'
@@ -81,13 +82,13 @@ orphan pdf files: []
       -> 'Object insulated water bottle - Material metal - Pdfname Uop6evwTVgMl'
     INFO ONLY, nothing changed: this is often intentional (e.g. only the material of the part actually visible/relevant was kept as its own class, or several parts sharing a material were deliberately merged). Re-check by hand only if this looks like a genuine missed update, not just a curation choice.
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname VgpKnmoKJfrS (used most-recent turn; 2 total response(s) in PDF, walked 0 turn(s) up from the bottom):
-    [28] 'Object screw packaging box - Material cardboard - Pdfname VgpKnmoKJfrS'
+    [32] 'Object screw packaging box - Material cardboard - Pdfname VgpKnmoKJfrS'
         -> 'Object screw packaging box - Material paper - Pdfname VgpKnmoKJfrS'
-    [warn] could not match material or color keywords for indices [28]; aligned by position instead -- please double check the resulting names
+    [warn] could not match material or color keywords for indices [32]; aligned by position instead -- please double check the resulting names
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname Yy6dySnH33wN (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
-    [23] 'Object robotic gripper finger assembly  - Material metal -  Pdfname Yy6dySnH33wN'
+    [27] 'Object robotic gripper finger assembly  - Material metal -  Pdfname Yy6dySnH33wN'
         -> 'Object robotic gripper finger assembly - Material metal - Pdfname Yy6dySnH33wN'
-    [warn] indices [23] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
+    [warn] indices [27] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname ZC63DBkv6oJY (used most-recent turn; 2 total response(s) in PDF, walked 0 turn(s) up from the bottom):
     [19] 'Object plastic container lid - Material plastic - Color red -  Pdfname  ZC63DBkv6oJY'
         -> 'Object plastic container lid - Material plastic - Color red - Pdfname ZC63DBkv6oJY'
@@ -95,15 +96,23 @@ orphan pdf files: []
     [1] 'Object Amazon recyclable paper mailer -  Material paper  - Color brown - Pdfname ZSbzRHMUOqAP'
         -> 'Object Amazon recyclable paper padded mailer envelope - Material paper - Color brown - Pdfname ZSbzRHMUOqAP'
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname ZryFz3DBSiO8 (used most-recent turn; 3 total response(s) in PDF, walked 0 turn(s) up from the bottom):
-    [31] 'Object wire spool  -Material plastic -  Color oranges - Pdfname ZryFz3DBSiO8'
+    [35] 'Object wire spool  -Material plastic -  Color oranges - Pdfname ZryFz3DBSiO8'
         -> 'Object wire spool - Material plastic - Color orange - Pdfname ZryFz3DBSiO8'
-    [32] 'Object wire spool - Material  rubber - Color oranges -  Pdfname  ZryFz3DBSiO8'
+    [36] 'Object wire spool - Material  rubber - Color oranges -  Pdfname  ZryFz3DBSiO8'
         -> 'Object wire spool - Material rubber - Pdfname ZryFz3DBSiO8'
-    [warn] indices [32] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
+    [warn] indices [36] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname as1D2765rACT (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
     [16] 'Object graphing calculator slide case - Material plastic - Pdfname as1D2765rACT'
         -> 'Object graphing calculator slide case - Material plastic - Color black - Pdfname as1D2765rACT'
     [warn] indices [16] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
+[PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname asdasdaswe (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
+    [24] 'Object retractable gel pen - Material metal - Pdfname  asdasdaswe'
+        -> 'Object retractable gel pen - Material metal - Pdfname asdasdaswe'
+    [25] 'Object retractable gel pen - Material plastic- Pdfname  asdasdaswe'
+        -> 'Object retractable gel pen - Material plastic - Pdfname asdasdaswe'
+    [26] 'Object retractable gel pen - Material rubber - Pdfname  asdasdaswe'
+        -> 'Object retractable gel pen - Material rubber - Pdfname asdasdaswe'
+    [warn] indices [24, 25, 26] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname drQGvVi456iM (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
     [18] 'Object microfiber cleaning cloth  - Material fabric  - Color black - Pdfname drQGvVi456iM'
         -> 'Object microfiber cleaning cloth - Material fabric - Color black - Pdfname drQGvVi456iM'
@@ -112,15 +121,15 @@ orphan pdf files: []
         -> 'Object bifold wallet - Material leather - Color brown - Pdfname qb3CMu4EyzEc'
     [warn] indices [5] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname qzJIPQkli2jB (used most-recent turn; 2 total response(s) in PDF, walked 0 turn(s) up from the bottom):
-    [33] 'Object wireless earbud charging case - Material plastic - Pdfname qzJIPQkli2jB'
+    [37] 'Object wireless earbud charging case - Material plastic - Pdfname qzJIPQkli2jB'
         -> 'Object wireless earbud charging case - Material plastic - Color white - Pdfname qzJIPQkli2jB'
-    [warn] indices [33] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
+    [warn] indices [37] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
 [PROPOSED RENAME] (not written -- pass --apply-renames to apply) Pdfname tYexGlkiIXWc (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom):
-    [26] 'Object scissors -  Material  plastic - Pdfname  tYexGlkiIXWc'
+    [30] 'Object scissors -  Material  plastic - Pdfname  tYexGlkiIXWc'
         -> 'Object scissors - Material plastic - Pdfname tYexGlkiIXWc'
-    [27] 'Object scissors -  Material metal - Pdfname  tYexGlkiIXWc'
+    [31] 'Object scissors -  Material metal - Pdfname  tYexGlkiIXWc'
         -> 'Object scissors - Material metal - Pdfname tYexGlkiIXWc'
-    [warn] indices [26, 27] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
+    [warn] indices [30, 31] matched by material only -- color text differs from the PDF's current answer, which may be a manual color correction; verify the color is still right
 [COUNT DIFFERS FROM PDF] Pdfname u4lxlaYXiY3D: data.yaml has 2 class(es) for this object, PDF's current answer has 3 material(s) (used most-recent turn; 1 total response(s) in PDF, walked 0 turn(s) up from the bottom).
     data.yaml classes (indices [8, 9], treated as authoritative):
       [8] 'Object car key fob with keyring - Material metal  - Pdfname u4lxlaYXiY3D'
@@ -134,8 +143,8 @@ orphan pdf files: []
 ======================================================================
 IMAGE / LABEL INTEGRITY AUDIT
 ======================================================================
-[train] images=62 labels=62
+[train] images=1165 labels=1165
   OK -- no issues found
-[valid] images=186 labels=186
+[valid] images=293 labels=293
   OK -- no issues found
 [test] split directory not found -- skipped

@@ -1,0 +1,38 @@
+# object_categories.yaml
+#
+# Maps an object name (as it appears after "Object " in your data.yaml class
+# names) to a broader category name, for evaluate.py's --category-map.
+#
+# This is what lets the per-category summary give credit for getting the
+# general category right even when the model mixes up the exact object --
+# e.g. detecting a gel pen as a ballpoint pen still correctly found "a pen".
+# It's read by evaluate.py automatically if this file is saved as
+# dataset/object_categories.yaml, or point --category-map at any other path.
+#
+# Format: one "object name: category name" line per object you want grouped.
+# Any object NOT listed here just falls back to using its own name as its
+# own singleton category -- so it's always safe to leave objects out, and
+# you only need to add lines for objects you actually want grouped together.
+#
+# Edit the groupings below to match your real objects -- these are just a
+# starting point based on what's currently in this dataset. In particular,
+# add your new "gel pen" object here once you've added it (see the pen
+# example below) so it gets grouped with the existing ballpoint pen.
+
+# --- pens: different exact type, same general category ---
+ballpoint pen: pen
+# gel pen: pen                      # uncomment once you've added the gel pen object
+
+# --- shipping/packaging: different exact type, same general category ---
+cardboard shipping box: packaging
+screw packaging box: packaging
+Amazon recyclable paper mailer: packaging
+
+# Everything else (bifold wallet, book, breadboard, car key fob with keyring,
+# claw hammer, desktop tape dispenser, graphing calculator slide case,
+# insulated water bottle, microfiber cleaning cloth, plastic container lid,
+# plastic first aid kit, precision screwdriver, robotic gripper finger
+# assembly, rubber duck, scissors, toy football, white rectangular foam
+# block, wire spool, wireless earbud charging case, extruded aluminum
+# profile) isn't grouped with anything above, so each just remains its own
+# category -- add lines above for any of these you'd like grouped instead.
