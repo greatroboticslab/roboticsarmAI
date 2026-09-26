@@ -7546,9 +7546,9 @@ def _rebuild_camera_assign_rows():
             new_state = not get_camera_settings(n)["enabled"]
             set_camera_settings(n, enabled=new_state)
             camera_assign_status.config(
-                text=f"'{n}' {'enabled' if new_state else 'disabled — skipped by every capture, '
+                text=f"""'{n}' {'enabled' if new_state else 'disabled — skipped by every capture, '
                                                             'live feed, and startup warm-up until '
-                                                            're-enabled'}.",
+                                                            're-enabled'}.""",
                 fg="green" if new_state else "orange")
             _rebuild_camera_assign_rows()
 
