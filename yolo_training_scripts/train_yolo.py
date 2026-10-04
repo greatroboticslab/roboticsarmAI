@@ -50,6 +50,12 @@ def main():
              "(ram: fastest, needs enough RAM to hold the dataset; disk: slower than ram but still "
              "much faster than no caching). Off by default; strongly recommended if training feels slow.",
     )
+    ap.add_argument(
+        "--no-amp", action="store_true",
+        help="Disable mixed-precision (fp16) training. Use this if training crashes with a cuDNN/CUBLAS "
+             "error (e.g. CUDNN_STATUS_EXECUTION_FAILED_CUBLAS), which is common on GTX 16-series cards. "
+             "Slower and uses more memory, but stable.",
+    )
     aug = ap.add_argument_group(
         "augmentation (applied on-the-fly during training; unset flags keep ultralytics' defaults)"
     )
@@ -117,6 +123,8 @@ def main():
         train_kwargs["device"] = args.device
     if args.cache is not None:
         train_kwargs["cache"] = args.cache
+    if args.no_amp:
+        train_kwargs["amp"] = False
 
     aug_overrides = {
         "hsv_h": args.hsv_h, "hsv_s": args.hsv_s, "hsv_v": args.hsv_v,
