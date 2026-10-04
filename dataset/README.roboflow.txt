@@ -1,8 +1,8 @@
 
-laser assisted computer vision - v1 2026-09-25 10:08pm
+laser assisted computer vision - v2 2026-10-04 2:43pm
 ==============================
 
-This dataset was exported via roboflow.com on September 26, 2026 at 3:09 AM GMT
+This dataset was exported via roboflow.com on October 4, 2026 at 7:47 PM GMT
 
 Roboflow is an end-to-end computer vision platform that helps you
 * collaborate with your team on computer vision projects
@@ -17,7 +17,7 @@ visit https://github.com/roboflow/notebooks
 
 To find over 100k other datasets and pre-trained models, visit https://universe.roboflow.com
 
-The dataset includes 1210 images.
+The dataset includes 1443 images.
 Laser-assisted-computer-vision are annotated in YOLOv8 format.
 
 The following pre-processing was applied to each image:

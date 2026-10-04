@@ -17,8 +17,12 @@ per-class table doesn't directly answer questions people usually care about:
     mixes up two similar objects within that category (e.g. calling a gel
     pen a ballpoint pen is still useful -- it correctly found "a pen")?
     (per-category summary, see --category-map below)
-The first two are macro-averaged mAP-based summaries; the composite score
-combines them and is tunable with --object-weight/--material-weight.
+  - How well does the model recognize THIS COLOR, regardless of object or
+    material? (per-color summary)
+These are macro-averaged mAP-based summaries; the composite score combines
+the three with a custom priority: OBJECT matters most, MATERIAL next, and
+COLOR least (defaults 0.60 / 0.30 / 0.10), tunable with
+--object-weight / --material-weight / --color-weight.
 
 The category summary is a genuinely different kind of metric: it's built
 from the confusion matrix (what got predicted as what), not from mAP, so it
@@ -38,8 +42,8 @@ Usage:
     # evaluate against the held-out test split instead
     python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../dataset --split test
 
-    # weight material recognition more heavily in the composite score
-    python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../dataset --material-weight 0.7 --object-weight 0.3
+    # custom composite weighting (object > material > color); weights are normalized to sum to 1
+    python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../dataset --object-weight 0.6 --material-weight 0.3 --color-weight 0.1
 
     # also report category-level accuracy (e.g. "pen" covering both ballpoint and gel pen)
     python evaluate.py --weights runs/train/exp/weights/best.pt --dataset-dir ../dataset --category-map ../dataset/object_categories.yaml
@@ -56,6 +60,29 @@ from pathlib import Path
 from yolo_common import resolve_data_yaml, load_data_yaml, parse_class_name
 
 METRIC_KEYS = ("precision", "recall", "mAP50", "mAP50-95")
+
+# Default composite weighting: object is the most important thing to get right,
+# then material, then color (deliberately the least weighted of the three).
+DEFAULT_OBJECT_WEIGHT = 0.6
+DEFAULT_MATERIAL_WEIGHT = 0.3
+DEFAULT_COLOR_WEIGHT = 0.1
+
+
+def normalize_weights(object_weight: float, material_weight: float, color_weight: float) -> tuple[float, float, float]:
+    """Scale the three weights so they sum to 1. Negative weights are rejected; all-zero
+    falls back to the defaults. Warns (but doesn't block) if the weights aren't ordered
+    object >= material >= color, since that's the intended priority."""
+    if min(object_weight, material_weight, color_weight) < 0:
+        raise ValueError("object/material/color weights must be non-negative")
+    total = object_weight + material_weight + color_weight
+    if total <= 0:
+        object_weight, material_weight, color_weight = DEFAULT_OBJECT_WEIGHT, DEFAULT_MATERIAL_WEIGHT, DEFAULT_COLOR_WEIGHT
+        total = 1.0
+    o, m, c = object_weight / total, material_weight / total, color_weight / total
+    if not (o >= m >= c):
+        print(f"[warn] weights are not ordered object >= material >= color "
+              f"({o:.2f}/{m:.2f}/{c:.2f}); using them as given.")
+    return o, m, c
 
 
 def load_category_map(path: Path | None) -> dict[str, str]:
@@ -141,11 +168,12 @@ def run_evaluation(
     iou: float = 0.6,
     project: str = "runs/val",
     name: str = "exp",
-    object_weight: float = 0.5,
-    material_weight: float = 0.5,
+    object_weight: float = DEFAULT_OBJECT_WEIGHT,
+    material_weight: float = DEFAULT_MATERIAL_WEIGHT,
+    color_weight: float = DEFAULT_COLOR_WEIGHT,
     category_map_path: Path | None = None,
 ) -> dict:
-    """Run model.val(), aggregate per-object and per-material summaries, and write a report.
+    """Run model.val(), aggregate per-object, per-material and per-color summaries, and write a report.
     Returns a dict with overall metrics, per-class/object/material breakdowns, and the composite score."""
     try:
         from ultralytics import YOLO
@@ -201,7 +229,7 @@ def run_evaluation(
             "class_name": class_name,
             "object": components["object"] or class_name,
             "material": components["material"] or "(unspecified)",
-            "color": components["color"],
+            "color": components["color"] or "(unspecified)",
             "instances": int(nt_per_class[cls_idx]) if nt_per_class is not None else 0,
             "precision": float(p_per_class[row_i]) if row_i < len(p_per_class) else float("nan"),
             "recall": float(r_per_class[row_i]) if row_i < len(r_per_class) else float("nan"),
@@ -211,6 +239,7 @@ def run_evaluation(
 
     per_object_rows = _aggregate(per_class_rows, "object")
     per_material_rows = _aggregate(per_class_rows, "material")
+    per_color_rows = _aggregate(per_class_rows, "color")
 
     # Category summary: confusion-matrix based (see module docstring), only computed
     # when a mapping is supplied -- without one, there's nothing extra to group by.
@@ -225,22 +254,25 @@ def run_evaluation(
         else:
             print("[warn] --category-map was given but this ultralytics version didn't return a confusion matrix; skipping category summary.")
 
-    total_w = object_weight + material_weight
-    object_weight_n = object_weight / total_w if total_w else 0.5
-    material_weight_n = material_weight / total_w if total_w else 0.5
+    object_weight_n, material_weight_n, color_weight_n = normalize_weights(object_weight, material_weight, color_weight)
 
     macro_class_avg = _macro_mean_all(per_class_rows)
     macro_object_avg = _macro_mean_all(per_object_rows)
     macro_material_avg = _macro_mean_all(per_material_rows)
+    macro_color_avg = _macro_mean_all(per_color_rows)
     composite_per_metric = {
-        m: object_weight_n * macro_object_avg[m] + material_weight_n * macro_material_avg[m]
+        m: object_weight_n * macro_object_avg[m]
+        + material_weight_n * macro_material_avg[m]
+        + color_weight_n * macro_color_avg[m]
         for m in METRIC_KEYS
     }
     composite = {
         "object_weight": object_weight_n,
         "material_weight": material_weight_n,
+        "color_weight": color_weight_n,
         "object_macro_mAP50-95": macro_object_avg["mAP50-95"],
         "material_macro_mAP50-95": macro_material_avg["mAP50-95"],
+        "color_macro_mAP50-95": macro_color_avg["mAP50-95"],
         "weighted_composite_score": composite_per_metric["mAP50-95"],
         "per_metric": composite_per_metric,
     }
@@ -249,17 +281,19 @@ def run_evaluation(
         "macro avg across classes": macro_class_avg,
         "macro avg across objects": macro_object_avg,
         "macro avg across materials": macro_material_avg,
-        "weighted composite (object+material)": composite_per_metric,
+        "macro avg across colors": macro_color_avg,
+        "weighted composite (object+material+color)": composite_per_metric,
     }
 
     out_dir = Path(getattr(metrics, "save_dir", Path(project) / name))
     out_dir.mkdir(parents=True, exist_ok=True)
-    _write_report(out_dir, weights, data_yaml, split, overall, per_class_rows, per_object_rows, per_material_rows, composite, summary, per_category_rows)
+    _write_report(out_dir, weights, data_yaml, split, overall, per_class_rows, per_object_rows, per_material_rows, per_color_rows, composite, summary, per_category_rows)
     return {
         "overall": overall,
         "per_class": per_class_rows,
         "per_object": per_object_rows,
         "per_material": per_material_rows,
+        "per_color": per_color_rows,
         "per_category": per_category_rows,
         "composite": composite,
         "summary": summary,
@@ -331,13 +365,14 @@ def _format_table(rows: list[dict], key: str, key_label: str, key_width: int) ->
 def _write_report(
     out_dir: Path, weights: Path, data_yaml: Path, split: str,
     overall: dict, per_class_rows: list[dict], per_object_rows: list[dict],
-    per_material_rows: list[dict], composite: dict, summary: dict,
+    per_material_rows: list[dict], per_color_rows: list[dict], composite: dict, summary: dict,
     per_category_rows: list[dict],
 ):
     txt_path = out_dir / "evaluation_report.txt"
     csv_path = out_dir / "evaluation_per_class.csv"
     object_csv_path = out_dir / "evaluation_per_object.csv"
     material_csv_path = out_dir / "evaluation_per_material.csv"
+    color_csv_path = out_dir / "evaluation_per_color.csv"
     category_csv_path = out_dir / "evaluation_per_category.csv"
 
     lines = [
@@ -356,9 +391,11 @@ def _write_report(
         "",
         f"Weighted composite score: {composite['weighted_composite_score']:.4f}",
         f"  = {composite['object_weight']:.2f} * object_macro_mAP50-95 ({composite['object_macro_mAP50-95']:.4f})"
-        f" + {composite['material_weight']:.2f} * material_macro_mAP50-95 ({composite['material_macro_mAP50-95']:.4f})",
-        "  (macro-averaged: every object/material counts equally regardless of instance count."
-        " Tune with --object-weight/--material-weight. This is a custom summary, not a standard YOLO metric.)",
+        f" + {composite['material_weight']:.2f} * material_macro_mAP50-95 ({composite['material_macro_mAP50-95']:.4f})"
+        f" + {composite['color_weight']:.2f} * color_macro_mAP50-95 ({composite['color_macro_mAP50-95']:.4f})",
+        "  (priority: object > material > color. Macro-averaged: every object/material/color counts equally"
+        " regardless of instance count. Tune with --object-weight/--material-weight/--color-weight."
+        " This is a custom summary, not a standard YOLO metric.)",
         "",
         "Per-class (every object+material+color class):",
     ]
@@ -378,6 +415,10 @@ def _write_report(
     lines.append("")
     lines.append("Per-material summary (all objects sharing a material combined, macro-averaged):")
     lines.extend(_format_table(per_material_rows, "material", "material", 25))
+
+    lines.append("")
+    lines.append("Per-color summary (all objects/materials sharing a color combined, macro-averaged):")
+    lines.extend(_format_table(per_color_rows, "color", "color", 25))
 
     if per_category_rows:
         lines.append("")
@@ -413,19 +454,20 @@ def _write_report(
     lines.append("=" * 70)
     lines.append("SUMMARY -- COMPLETE RESULTS FOR EVERY METRIC")
     lines.append("=" * 70)
-    summary_header = f"{'':<38}{'precision':>11}{'recall':>9}{'mAP50':>9}{'mAP50-95':>10}"
+    summary_header = f"{'':<46}{'precision':>11}{'recall':>9}{'mAP50':>9}{'mAP50-95':>10}"
     lines.append(summary_header)
     lines.append("-" * len(summary_header))
     for label, vals in summary.items():
         lines.append(
-            f"{label:<38}{vals['precision']:>11.4f}{vals['recall']:>9.4f}{vals['mAP50']:>9.4f}{vals['mAP50-95']:>10.4f}"
+            f"{label:<46}{vals['precision']:>11.4f}{vals['recall']:>9.4f}{vals['mAP50']:>9.4f}{vals['mAP50-95']:>10.4f}"
         )
     lines.append("")
     lines.append("  'overall (instance-weighted)'          -- standard YOLO metrics, larger classes count more")
     lines.append("  'macro avg across classes'             -- every object+material+color class counts equally")
     lines.append("  'macro avg across objects'             -- every distinct object counts equally, materials combined")
     lines.append("  'macro avg across materials'           -- every distinct material counts equally, objects combined")
-    lines.append("  'weighted composite (object+material)' -- object/material macro averages blended per --object-weight/--material-weight")
+    lines.append("  'macro avg across colors'              -- every distinct color counts equally, objects/materials combined")
+    lines.append("  'weighted composite (object+material+color)' -- object/material/color macro averages blended per --object-weight/--material-weight/--color-weight")
 
     txt_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -447,6 +489,12 @@ def _write_report(
         for row in per_material_rows:
             writer.writerow(row)
 
+    with open(color_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["color", "n_classes", "instances", "precision", "recall", "mAP50", "mAP50-95"])
+        writer.writeheader()
+        for row in per_color_rows:
+            writer.writerow(row)
+
     if per_category_rows:
         with open(category_csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["category", "n_classes", "instances", "tp", "fp", "fn", "precision", "recall", "f1"])
@@ -466,6 +514,7 @@ def _write_report(
     print(f"Per-class CSV: {csv_path}")
     print(f"Per-object CSV: {object_csv_path}")
     print(f"Per-material CSV: {material_csv_path}")
+    print(f"Per-color CSV: {color_csv_path}")
     if per_category_rows:
         print(f"Per-category CSV: {category_csv_path}")
     print(f"Summary CSV: {summary_csv_path}")
@@ -487,8 +536,9 @@ def main():
     ap.add_argument("--iou", type=float, default=0.6, help="NMS IoU threshold used during evaluation")
     ap.add_argument("--project", default="runs/val", help="Where to save evaluation outputs")
     ap.add_argument("--name", default="exp", help="Run name (subfolder under --project)")
-    ap.add_argument("--object-weight", type=float, default=0.5, help="Weight given to object-level (macro) mAP50-95 in the composite score (default: 0.5)")
-    ap.add_argument("--material-weight", type=float, default=0.5, help="Weight given to material-level (macro) mAP50-95 in the composite score (default: 0.5)")
+    ap.add_argument("--object-weight", type=float, default=DEFAULT_OBJECT_WEIGHT, help=f"Weight of object-level (macro) mAP50-95 in the composite score -- the most important (default: {DEFAULT_OBJECT_WEIGHT})")
+    ap.add_argument("--material-weight", type=float, default=DEFAULT_MATERIAL_WEIGHT, help=f"Weight of material-level (macro) mAP50-95 in the composite score (default: {DEFAULT_MATERIAL_WEIGHT})")
+    ap.add_argument("--color-weight", type=float, default=DEFAULT_COLOR_WEIGHT, help=f"Weight of color-level (macro) mAP50-95 in the composite score -- the least important (default: {DEFAULT_COLOR_WEIGHT}). Weights are normalized to sum to 1.")
     ap.add_argument(
         "--category-map", type=Path, default=None,
         help="YAML/JSON file mapping object name -> category name (e.g. 'ballpoint pen: pen', "
@@ -530,6 +580,7 @@ def main():
         name=args.name,
         object_weight=args.object_weight,
         material_weight=args.material_weight,
+        color_weight=args.color_weight,
         category_map_path=category_map_path,
     )
 

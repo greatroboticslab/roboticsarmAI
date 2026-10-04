@@ -1,4 +1,5 @@
 import socket
+import time
 import logging as log
 from typing import Optional
 from .util import DobotSocketConnection, Simulator, clamp
@@ -244,7 +245,7 @@ class Movement(DobotSocketConnection):
         Essential when you need to guarantee the robot has reached its target
         before firing a claw, reading a sensor, or queuing the next move.
         """
-        opt_error, _ = self.send_command("Sync()")
+        opt_error, _ = self.send_command("Sync()", timeout=120.0)
         return opt_error
 
 
@@ -352,6 +353,78 @@ class Dashboard(DobotSocketConnection):
         opt_error, ret_val = self.send_command("GetErrorID()")
         log.info("Error IDs: %s", ret_val)
         return opt_error
+
+    def get_error_ids(self) -> str:
+        """GetErrorID() — the raw active-alarm list reported by the controller
+        (e.g. "[[],[],[]]" when there are none), or "" if it couldn't be read."""
+        opt_error, ret_val = self.send_command("GetErrorID()")
+        return "" if opt_error else ret_val
+
+    def ensure_enabled(self, timeout: float = 20.0, poll: float = 0.25, say=print):
+        """
+        Drive the robot into the ENABLE state (green light) and VERIFY it.
+
+        The old start-up handshake fired ClearError/Continue/EnableRobot and
+        never looked at any of their replies, so a rejected enable went
+        unnoticed: the light stayed dark blue (disabled) and every later
+        motion command was refused with -1 ("command received but could not
+        be executed" — the controller refuses motion while disabled/alarmed).
+
+        This reads RobotMode() and reacts to what the controller actually says:
+            DISABLED   -> EnableRobot() (falls back to the explicit-load form)
+            ERROR      -> report the alarm IDs, ClearError(), try again
+            PAUSE      -> Continue()
+            INIT/BRAKE -> just wait, the controller is still starting up
+            BACKDRIVE  -> drag mode: cannot enable, tell the user
+        Returns (ok: bool, message: str). Safe to call repeatedly: when the
+        robot is already enabled it is a single fast RobotMode() query.
+        """
+        deadline = time.time() + timeout
+        clears = 0
+        enable_tries = 0
+        last_note = "no response from controller"
+        while True:
+            mode = self.robot_mode()
+            if mode in (RobotMode.ENABLE, RobotMode.RUNNING, RobotMode.JOG):
+                return True, f"robot enabled (mode {int(mode)})"
+
+            if isinstance(mode, DobotError):
+                last_note = f"could not read RobotMode ({int(mode)})"
+                # Unknown state — a plain enable attempt is still the best move.
+                err = self.enable()
+                if err:
+                    last_note += f", EnableRobot() -> {int(err)}"
+            elif mode == RobotMode.ERROR:
+                ids = self.get_error_ids()
+                last_note = f"controller is in ERROR state, alarms: {ids or 'unreadable'}"
+                say(f"[ARM] {last_note} — clearing")
+                clears += 1
+                self.clear_error()
+                time.sleep(0.5)
+                if clears >= 4:
+                    return False, (last_note + ". ClearError() did not remove it — check "
+                                   "the E-stop button, collisions, or limits in DobotStudio Pro.")
+            elif mode == RobotMode.PAUSE:
+                self.continue_motion()
+                last_note = "robot was paused — sent Continue()"
+            elif mode == RobotMode.BACKDRIVE:
+                return False, ("robot is in drag/backdrive mode and cannot be enabled — "
+                               "release the drag button on the arm.")
+            elif mode == RobotMode.DISABLED:
+                enable_tries += 1
+                # Alternate between the plain call and the explicit-load form some
+                # firmware versions insist on.
+                err = self.enable() if enable_tries % 2 else self.enable_with_load(0.0, 0.0, 0.0, 0.0)
+                last_note = "robot disabled" + (f", EnableRobot() -> {int(err)}" if err else ", enable sent")
+                if err:
+                    self.clear_error()
+                time.sleep(0.5)
+            else:
+                last_note = f"robot still starting (mode {int(mode)})"
+
+            if time.time() >= deadline:
+                return False, f"timed out waiting for ENABLE: {last_note}"
+            time.sleep(poll)
 
     def get_angle(self):
         """GetAngle() — returns joint positions as a list of floats, or DobotError."""

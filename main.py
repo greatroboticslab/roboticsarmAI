@@ -397,11 +397,12 @@ class RobotManager:
 # Global variables for state tracking
 robot = None
 ROBOT_CONNECTED = False
+ROBOT_ENABLE_ERROR = None   # why the arm isn't enabled, if the start-up enable failed
 
 
 
 def initialize_robot(ip="192.168.1.6"):
-    global robot, ROBOT_CONNECTED
+    global robot, ROBOT_CONNECTED, ROBOT_ENABLE_ERROR
 
     try:
         from dobot_util import Dobot
@@ -411,20 +412,23 @@ def initialize_robot(ip="192.168.1.6"):
         robot = Dobot(ip, logging=True)
         
         # 2. Bootup Handshake (Critical for Physical Robot)
-        print("here2")
-        robot.dashboard.clear_error()       # Clear existing alarms/faults
-        sleep(0.3)
-        
-        robot.dashboard.continue_motion()   # Clear any active pause states
-        sleep(0.3)
-        
-        print("Here3")
-        robot.dashboard.enable()            # Power on the joints/motors
-        sleep(3.0)                          # Give the motors time to fully engage
-        
+        # BUGFIX: this used to fire ClearError/Continue/EnableRobot and never
+        # look at any reply, so a rejected enable went unnoticed - the top
+        # light stayed dark blue (disabled) and every move came back -1.
+        # ensure_enabled() reads RobotMode() and only returns once the arm is
+        # really in the ENABLE state (green light), clearing alarms on the way.
+        ok, msg = robot.dashboard.ensure_enabled(timeout=25.0)
+        if ok:
+            ROBOT_ENABLE_ERROR = None
+            print(f"Robot connected and enabled successfully! ({msg})")
+        else:
+            # Sockets are up, so keep the connection (the user can fix the cause,
+            # e.g. release E-stop, and the next move retries the enable), but
+            # say plainly why the light is not green instead of pretending.
+            ROBOT_ENABLE_ERROR = msg
+            print(f"[ARM WARNING] Connected but NOT enabled: {msg}")
         ROBOT_CONNECTED = True
-        print("Robot connected and enabled successfully!")
-        
+
         # Start the background telemetry data-stream thread
         threading.Thread(target=feedback_loop, args=(robot,), daemon=True).start()
         
@@ -658,7 +662,22 @@ def _dispatch_joint_move(joints: list, reason: str = "arm move"):
     any other future cross-cutting move behavior only needs to change
     this one function instead of every call site individually."""
     trigger_arm_move_autocapture(reason)
-    return robot.movement.joint_to_joint_move(joints)
+    err = robot.movement.joint_to_joint_move(joints)
+    if err is None:
+        return None
+    # The controller refused the move (usually -1 = robot not enabled, or an
+    # uncleared alarm). Re-run the verified enable, then retry exactly once.
+    print(f"[ARM] move refused ({int(err)}) during '{reason}' - re-enabling and retrying")
+    ok, msg = robot.dashboard.ensure_enabled(timeout=15.0)
+    if not ok:
+        return f"{int(err)}: robot is not enabled - {msg}"
+    err = robot.movement.joint_to_joint_move(joints)
+    if err is not None:
+        mode = robot.dashboard.robot_mode()
+        return (f"{int(err)}: controller rejected the move even though the robot is enabled "
+                f"(mode {int(mode)}, alarms {robot.dashboard.get_error_ids() or 'none'}). "
+                f"Target joints {joints} may be out of range.")
+    return None
 
 
 def safe_move_to_point(x, y, z=200, r=0):

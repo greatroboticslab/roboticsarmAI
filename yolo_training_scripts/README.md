@@ -166,13 +166,16 @@ PDF text-extraction artifact truncated it).
     every `plastic` class across all objects into one row), so you can
     see "how good is material recognition" independent of which object
     it's on.
-  - Both are **macro-averaged** (every object/material counts equally,
+  - **Per-color** — every object/material sharing a color combined.
+  - All three are **macro-averaged** (every object/material/color counts equally,
     regardless of how many images it has), so a material used by only one
     object isn't drowned out by a material used by ten.
-  - A **weighted composite score** combines the two into a single number:
-    `object_weight * object_macro_mAP50-95 + material_weight * material_macro_mAP50-95`,
-    tunable with `--object-weight`/`--material-weight` (default 0.5/0.5
-    each). This is a custom summary on top of the standard metrics, not a
+  - A **weighted composite score** combines the three into a single number,
+    prioritised object > material > color:
+    `object_weight * object_macro_mAP50-95 + material_weight * material_macro_mAP50-95 + color_weight * color_macro_mAP50-95`,
+    tunable with `--object-weight`/`--material-weight`/`--color-weight`
+    (defaults 0.6 / 0.3 / 0.1, normalized to sum to 1; color is deliberately
+    the least-weighted term). This is a custom summary on top of the standard metrics, not a
     replacement for them — the standard overall precision/recall/mAP is
     always reported too.
   - **Per-category** (opt-in via `--category-map`) — gives credit for

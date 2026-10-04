@@ -86,7 +86,7 @@ class DobotSocketConnection:
 
         log.debug("Connection established on port %s", port)
 
-    def send_command(self, cmd: str) -> Tuple[Optional[DobotError], str]:
+    def send_command(self, cmd: str, timeout: Optional[float] = None) -> Tuple[Optional[DobotError], str]:
         """
         Send *cmd* over the socket and return (error, return_value).
 
@@ -102,9 +102,19 @@ class DobotSocketConnection:
         """
         with self._send_lock:
             raw_cmd = cmd.encode("utf-8")
-            self.socket.sendall(raw_cmd)
-            log.debug('Sent command: "%s"', cmd)
-            return self._await_reply()
+            if timeout is not None:
+                # e.g. Sync() legitimately takes longer than the default 10s
+                # socket timeout on a long move; without this the reply is
+                # abandoned half-read and (a) reported as -1 and (b) left in
+                # the buffer to be mis-read as the NEXT command's reply.
+                self.socket.settimeout(timeout)
+            try:
+                self.socket.sendall(raw_cmd)
+                log.debug('Sent command: "%s"', cmd)
+                return self._await_reply()
+            finally:
+                if timeout is not None:
+                    self.socket.settimeout(10.0)
 
     def _await_reply(self) -> Tuple[Optional[DobotError], str]:
         """
