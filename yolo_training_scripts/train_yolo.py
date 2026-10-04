@@ -50,6 +50,24 @@ def main():
              "(ram: fastest, needs enough RAM to hold the dataset; disk: slower than ram but still "
              "much faster than no caching). Off by default; strongly recommended if training feels slow.",
     )
+    aug = ap.add_argument_group(
+        "augmentation (applied on-the-fly during training; unset flags keep ultralytics' defaults)"
+    )
+    aug.add_argument(
+        "--no-color-aug", action="store_true",
+        help="Turn off all color/brightness augmentation (hsv_h, hsv_s, hsv_v = 0). Use this if color, "
+             "brightness or laser glow/diffraction patterns are part of what distinguishes your classes.",
+    )
+    aug.add_argument("--hsv-h", type=float, default=None, help="Hue jitter (ultralytics default 0.015)")
+    aug.add_argument("--hsv-s", type=float, default=None, help="Saturation jitter (ultralytics default 0.7)")
+    aug.add_argument("--hsv-v", type=float, default=None, help="Brightness jitter (ultralytics default 0.4)")
+    aug.add_argument("--degrees", type=float, default=None, help="Random rotation range in degrees, +/- (default 0)")
+    aug.add_argument("--translate", type=float, default=None, help="Random shift as a fraction of image size (default 0.1)")
+    aug.add_argument("--scale", type=float, default=None, help="Random zoom range (default 0.5)")
+    aug.add_argument("--shear", type=float, default=None, help="Random shear in degrees (default 0)")
+    aug.add_argument("--fliplr", type=float, default=None, help="Probability of a left-right flip (default 0.5). Set 0 if your laser/camera geometry is fixed.")
+    aug.add_argument("--flipud", type=float, default=None, help="Probability of an up-down flip (default 0)")
+    aug.add_argument("--mosaic", type=float, default=None, help="Probability of mosaic (4-image stitching) augmentation (default 1.0)")
     ap.add_argument("--project", default="runs/train", help="Where to save run outputs")
     ap.add_argument("--name", default="exp", help="Run name (subfolder under --project)")
     ap.add_argument("--patience", type=int, default=50, help="Early-stopping patience (epochs with no improvement)")
@@ -99,6 +117,19 @@ def main():
         train_kwargs["device"] = args.device
     if args.cache is not None:
         train_kwargs["cache"] = args.cache
+
+    aug_overrides = {
+        "hsv_h": args.hsv_h, "hsv_s": args.hsv_s, "hsv_v": args.hsv_v,
+        "degrees": args.degrees, "translate": args.translate, "scale": args.scale,
+        "shear": args.shear, "fliplr": args.fliplr, "flipud": args.flipud, "mosaic": args.mosaic,
+    }
+    if args.no_color_aug:
+        for k in ("hsv_h", "hsv_s", "hsv_v"):
+            aug_overrides[k] = 0.0  # explicit --hsv-* flags are overridden by --no-color-aug
+    aug_overrides = {k: v for k, v in aug_overrides.items() if v is not None}
+    if aug_overrides:
+        train_kwargs.update(aug_overrides)
+        print(f"[info] augmentation overrides: {aug_overrides}")
 
     train_results = model.train(**train_kwargs)
     save_dir = Path(getattr(train_results, "save_dir", Path(args.project) / args.name))

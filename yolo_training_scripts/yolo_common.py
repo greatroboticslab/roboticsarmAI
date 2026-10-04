@@ -116,3 +116,27 @@ def read_label_class_ids(label_path: Path) -> list[int]:
         except (ValueError, IndexError):
             continue
     return ids
+
+
+def read_label_boxes(label_path: Path, img_w: int, img_h: int) -> list[tuple[int, float, float, float, float]]:
+    """Return [(class_id, x1, y1, x2, y2), ...] in pixel coordinates for a YOLO label file
+    (empty list if missing/background). Malformed lines are skipped."""
+    if not label_path.exists():
+        return []
+    boxes = []
+    for line in label_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 5:
+            continue
+        try:
+            cls_id = int(parts[0])
+            xc, yc, bw, bh = (float(v) for v in parts[1:])
+        except ValueError:
+            continue
+        x1, y1 = (xc - bw / 2) * img_w, (yc - bh / 2) * img_h
+        x2, y2 = (xc + bw / 2) * img_w, (yc + bh / 2) * img_h
+        boxes.append((cls_id, x1, y1, x2, y2))
+    return boxes

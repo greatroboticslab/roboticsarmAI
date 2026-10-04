@@ -79,11 +79,13 @@ def load_category_map(path: Path | None) -> dict[str, str]:
 def build_category_index(names: dict[int, str], category_map: dict[str, str]) -> dict[int, str]:
     """Map each class id -> its category name. Objects not in category_map fall back to
     their own object name as a singleton category, so this is always safe to call even
-    with an empty/partial mapping -- it just won't group anything extra."""
+    with an empty/partial mapping -- it just won't group anything extra. Lookup is
+    case/whitespace-insensitive (see _normalize_group_key), same reasoning as _aggregate."""
+    normalized_map = {_normalize_group_key(k): v for k, v in category_map.items()}
     index = {}
     for cls_id, name in names.items():
         obj = parse_class_name(name)["object"] or name
-        index[cls_id] = category_map.get(obj, obj)
+        index[cls_id] = normalized_map.get(_normalize_group_key(obj), obj)
     return index
 
 
@@ -265,6 +267,12 @@ def run_evaluation(
     }
 
 
+def _normalize_group_key(value: str) -> str:
+    """Case/whitespace-insensitive grouping key -- e.g. 'Metal' and 'metal' (a data.yaml
+    typo, not a real distinction) should end up in the same group, not two."""
+    return " ".join(value.split()).lower()
+
+
 def _aggregate(rows: list[dict], key: str) -> list[dict]:
     """
     Macro-average the per-class rows by `key` (object or material): every
@@ -273,15 +281,26 @@ def _aggregate(rows: list[dict], key: str) -> list[dict]:
     read on material recognition instead of being dominated by whichever
     object happens to have the most photos. Total instance count is still
     reported alongside for context.
+
+    Grouping is case/whitespace-insensitive (see _normalize_group_key) so a
+    stray capitalization difference in data.yaml (e.g. "Material Metal" on
+    one class vs "Material metal" on every other) doesn't silently split
+    what should be one material/object into two separate, smaller-sample
+    rows. The displayed label uses whichever original casing appeared
+    first, so genuine typos still show up for you to notice and clean up
+    in data.yaml even though the stats are now combined correctly.
     """
     groups: dict[str, list[dict]] = defaultdict(list)
+    display_label: dict[str, str] = {}
     for r in rows:
-        groups[r[key]].append(r)
+        norm = _normalize_group_key(r[key])
+        groups[norm].append(r)
+        display_label.setdefault(norm, r[key])
 
     out = []
-    for group_val, group_rows in groups.items():
+    for norm_key, group_rows in groups.items():
         n = len(group_rows)
-        agg = {key: group_val, "n_classes": n, "instances": sum(r["instances"] for r in group_rows)}
+        agg = {key: display_label[norm_key], "n_classes": n, "instances": sum(r["instances"] for r in group_rows)}
         for m in METRIC_KEYS:
             agg[m] = sum(r[m] for r in group_rows) / n
         out.append(agg)
@@ -457,7 +476,10 @@ def main():
     ap.add_argument("--weights", type=Path, required=True, help="Path to a trained .pt checkpoint")
     ap.add_argument("--dataset-dir", type=Path, default=None, help="Path to the dataset/ folder (used to auto-pick data.corrected.yaml)")
     ap.add_argument("--data", type=Path, default=None, help="Explicit path to a data.yaml, overrides --dataset-dir auto-detection")
-    ap.add_argument("--split", default="val", choices=["train", "val", "test"], help="Which split to evaluate against (default: val)")
+    ap.add_argument(
+        "--split", default="valid", choices=["train", "valid", "test"],
+        help="Which split to evaluate against (default: valid, matching your dataset/valid/ folder name)",
+    )
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--device", default=None, help="e.g. 0, 0,1, cpu, mps. Default: let ultralytics auto-select")
@@ -484,6 +506,10 @@ def main():
     if args.split == "test" and args.dataset_dir is not None and not (args.dataset_dir / "test" / "images").exists():
         raise SystemExit(f"--split test was requested but {args.dataset_dir / 'test'} doesn't exist.")
 
+    # ultralytics' model.val() expects "val" (not "valid") internally -- translate here so the
+    # CLI/user-facing name matches every other script and your actual dataset/valid/ folder.
+    ultralytics_split = "val" if args.split == "valid" else args.split
+
     category_map_path = args.category_map
     if category_map_path is None and args.dataset_dir is not None:
         default_map = args.dataset_dir / "object_categories.yaml"
@@ -494,7 +520,7 @@ def main():
     run_evaluation(
         weights=args.weights,
         data_yaml=data_yaml,
-        split=args.split,
+        split=ultralytics_split,
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,

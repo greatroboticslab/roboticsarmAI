@@ -115,6 +115,21 @@ PDF text-extraction artifact truncated it).
   Pass `--device 0` explicitly to make sure it uses the GPU rather than
   auto-selecting CPU.
 
+  **Augmentation controls.** Ultralytics augments images on the fly during
+  training. By default that includes color jitter (hue/saturation/brightness),
+  random left-right flips, and mosaic stitching. If color, brightness or laser
+  glow/diffraction patterns are part of what distinguishes your classes,
+  turn the color part off and lean on geometric augmentation instead:
+
+  ```bash
+  python train_yolo.py --dataset-dir ../../dataset --no-color-aug --degrees 10 --translate 0.15 --fliplr 0
+  ```
+
+  Other flags: `--hsv-h/--hsv-s/--hsv-v`, `--degrees`, `--translate`, `--scale`,
+  `--shear`, `--fliplr`, `--flipud`, `--mosaic`. Unset flags keep ultralytics'
+  defaults. Run the default and the modified version under different `--name`
+  values and compare their `evaluation_report.txt` to see which actually helps.
+
   **Training feels too slow (e.g. an hour+ for a small dataset)?**
   `yolov8n.pt` is already the smallest stock model — there's nothing
   smaller in the family to switch to. If it's still slow, the cause is
@@ -267,6 +282,189 @@ PDF text-extraction artifact truncated it).
   python test_pipeline.py --dataset-dir ../../dataset --epochs 3 --imgsz 640 --device 0
   ```
 
+- **`visualize_annotations.py`** — renders a clean, presentation-ready
+  version of a split's images with ground-truth boxes drawn on: a distinct
+  color per class, a short readable label (`ballpoint pen (plastic, red)`,
+  not the full raw `Object ... - Material ... - Pdfname ...` string),
+  rounded boxes with a white contrast border so they read against any
+  background. For sharing with someone who just wants to see what's in the
+  dataset, not for debugging exact pixel placement.
+
+  ```bash
+  # annotate every image in the validation split
+  python visualize_annotations.py --dataset-dir ../../dataset --split valid
+
+  # a representative sample of 12, plus a contact sheet and a browsable gallery
+  python visualize_annotations.py --dataset-dir ../../dataset --split valid --limit 12 --grid --html-gallery
+  ```
+
+  Writes annotated images to `dataset/annotated_preview/<split>/` (or
+  `--output-dir`), plus `_contact_sheet.jpg` (with `--grid`) and
+  `index.html` (with `--html-gallery`). If it can't find a TrueType font on
+  your system it'll warn and fall back to a blocky bitmap font — pass
+  `--font path\to\font.ttf` (e.g. a font from `C:\Windows\Fonts`) to fix that.
+
+- **`compare_predictions.py`** — picks ONE representative image per
+  distinct object and renders it twice, into two separate folders, so the
+  human labels and the model's actual behavior are directly comparable
+  side by side:
+  - `ground_truth/` — the human-labeled ("control") boxes
+  - `model_predictions/` — what your trained model actually detects on
+    that same image (needs `--weights`; this runs real inference, it's not
+    just a re-styling of the ground truth)
+
+  Both folders use matching filenames (named after the object, e.g.
+  `rubber_duck.jpg`) so they're easy to open side by side. Rarest objects
+  get first pick of an unused image, so a common object's photos don't
+  crowd out a rare one's only appearance.
+
+  ```bash
+  python compare_predictions.py --weights runs/detect/runs/train/exp/weights/best.pt --dataset-dir ../../dataset
+
+  # if predictions look empty, the model may just be under-confident -- lower the threshold
+  python compare_predictions.py --weights .../best.pt --dataset-dir ../../dataset --conf 0.1
+  ```
+
+  Writes to `dataset/gt_vs_pred_preview/` (or `--output-dir`). Tested
+  end-to-end against the real dataset with a real (if only lightly
+  trained) checkpoint — the mechanics (selection, matched filenames,
+  rendering) all confirmed working; with a properly trained model the
+  `model_predictions/` folder should show real boxes instead of empty
+  images.
+
+- **`find_prediction_errors.py`** — runs your model against a whole split,
+  matches every prediction to the ground truth by IoU, and exports ONLY
+  the images where something went wrong (correct detections are skipped
+  entirely). Each exported image shows the true box in **green** and the
+  predicted box(es) in **red** overlaid on the same photo, so the true
+  value is right there next to what the model actually said. Three error
+  types:
+  - `MISSED` — a real object with no matching prediction at all
+  - `WRONGCLASS` — a prediction overlaps a real object but names the wrong
+    class (e.g. predicted "gel pen" where the true label is "ballpoint pen")
+  - `FALSEPOS` — a prediction with no matching real object nearby at all
+
+  ```bash
+  python find_prediction_errors.py --weights runs/detect/runs/train/exp/weights/best.pt --dataset-dir ../../dataset
+
+  # loosen matching / confidence if you're not sure what threshold is right
+  python find_prediction_errors.py --weights .../best.pt --dataset-dir ../../dataset --conf 0.1 --iou-match 0.3
+  ```
+
+  Writes annotated images + `errors_report.csv` + `errors_report.txt` to
+  `dataset/prediction_errors/` (or `--output-dir`), and automatically zips
+  the whole folder to `prediction_errors.zip` right next to it — ready to
+  share without an extra step. The IoU-matching logic (the part that
+  decides MISSED vs WRONGCLASS vs FALSEPOS) was unit-tested against known
+  synthetic boxes covering all three cases, confirming correct behavior;
+  end-to-end rendering was verified against the real dataset with a real
+  checkpoint.
+
+- **`compare_model_errors.py`** — answers "did this change actually help?"
+  by running TWO checkpoints (e.g. a baseline vs. a `--no-color-aug`
+  retrain) against the same split and classifying every image into:
+  - `fixed_by_b/` — model A got it wrong, model B got it right
+  - `regressed_by_b/` — model A got it right, model B got it wrong (worth
+    checking even when B looks better overall — a net improvement can
+    still hide a new problem)
+  - `still_wrong/` — both models got it wrong
+
+  Each image overlays all three: ground truth in **green**, model A's
+  prediction in **amber**, model B's prediction in **red**, so you see
+  exactly what changed on one photo instead of comparing two folders by eye.
+
+  ```bash
+  python compare_model_errors.py \
+      --weights-a runs/detect/runs/train/baseline/weights/best.pt \
+      --weights-b runs/detect/runs/train/noColorAug/weights/best.pt \
+      --label-a baseline --label-b no_color_aug \
+      --dataset-dir ../../dataset --split valid
+  ```
+
+  Writes to `dataset/model_comparison/` (or `--output-dir`) plus
+  `comparison_report.csv`/`.txt` with a net fixed-vs-regressed count, and
+  zips the whole thing automatically. Tested end-to-end against the real
+  dataset with two real (if only lightly trained) checkpoints — one
+  baseline, one with `--no-color-aug --degrees 10 --translate 0.15
+  --fliplr 0` — confirming the classification and three-color rendering
+  both work correctly.
+
+- **`run_full_error_report.py`** — the one-command version of the above:
+  runs `find_prediction_errors.py` for BOTH checkpoints and
+  `compare_model_errors.py` for the two of them together, across BOTH the
+  train and valid splits (and test, if you have one), and zips everything
+  into a single file. Each checkpoint is loaded once and reused across
+  every split, not reloaded per split. Omit `--weights-b` to just get both
+  splits for one model, no comparison.
+
+  ```bash
+  python run_full_error_report.py \
+      --weights-a runs/detect/runs/train/exp-4/weights/best.pt --label-a baseline \
+      --weights-b runs/detect/runs/train/noColorAug/weights/best.pt --label-b no_color_aug \
+      --dataset-dir ../../dataset
+  ```
+
+  Writes `dataset/full_error_report/` containing
+  `baseline_errors/{train,valid}/`, `no_color_aug_errors/{train,valid}/`,
+  and `baseline_vs_no_color_aug/{train,valid}/` (each with its own
+  report), plus a top-level `SUMMARY.txt`, all zipped to
+  `full_error_report.zip`. `find_prediction_errors.py` and
+  `compare_model_errors.py` had their core logic factored out into
+  reusable functions to support this without duplicating code; both were
+  regression-tested standalone afterward to confirm nothing broke, and the
+  full orchestrator was verified end-to-end against the real dataset with
+  two real checkpoints across both splits.
+
+- **`export_weights.py`** — exports a trained checkpoint to a deployment
+  format once you're happy with it (train → evaluate → export). ONNX by
+  default, since it's the most portable choice for running inference
+  outside Python/ultralytics; also supports TorchScript, TensorRT
+  (`engine`), OpenVINO, CoreML, TFLite, and others ultralytics supports.
+
+  ```bash
+  # plain ONNX export
+  python export_weights.py --weights runs/detect/runs/train/exp/weights/best.pt
+
+  # simplified, dynamic-batch, FP16 ONNX -- smaller/faster, matches your training imgsz
+  python export_weights.py --weights .../best.pt --imgsz 640 --dynamic --simplify --quantize 16
+
+  # INT8 needs representative calibration images -- point it at your dataset
+  python export_weights.py --weights .../best.pt --quantize 8 --dataset-dir ../../dataset
+  ```
+
+  Tested end-to-end: plain ONNX export works, and `--quantize 16` roughly
+  halves the file size as expected (11.6 MB → 6.1 MB in testing here).
+
+- **`upload_to_roboflow.py`** — uploads this local dataset (images + YOLO
+  labels) to an existing Roboflow project, e.g. to train using Roboflow's
+  own hosted training instead of (or in addition to) `train_yolo.py`
+  locally. Copies just the standard `train/valid/test` + `data.yaml` pieces
+  into a clean staging folder first (leaving out `pdf_for_labels/`, backup
+  folders, and reports that would confuse Roboflow's uploader). Requires
+  `pip install roboflow` and a Roboflow API key (from your account
+  settings) set as the `ROBOFLOW_API_KEY` environment variable or passed
+  with `--api-key`.
+
+  Non-destructive by default — previews what would be staged/uploaded
+  (image counts, class list) without calling the Roboflow API. Pass
+  `--upload` once you've checked the preview.
+
+  ```bash
+  # preview only -- stages a clean copy, prints counts/classes, uploads nothing
+  python upload_to_roboflow.py --dataset-dir ../../dataset --project your-project-slug
+
+  # try a small batch first (recommended before uploading everything)
+  python upload_to_roboflow.py --dataset-dir ../../dataset --project your-project-slug --limit 5 --upload
+
+  # upload everything
+  python upload_to_roboflow.py --dataset-dir ../../dataset --project your-project-slug --upload
+  ```
+
+  This only adds images+annotations to the project's raw pool. To actually
+  train on Roboflow afterward, "Generate" a new Version in the Roboflow web
+  UI (pick your split/preprocessing/augmentation settings there) and hit
+  Train.
+
 ## Adding a brand new object
 
 1. Photograph the new object (30-40 images, varied rotation/placement/lighting is the target) and get bounding-box labels for them in the usual YOLO `.txt` format.
@@ -301,10 +499,21 @@ python resplit_dataset.py --dataset-dir ../../dataset --train-ratio 0.8 --val-ra
 
 python train_yolo.py --dataset-dir ../../dataset --model yolov8n.pt --epochs 100 --evaluate
 #  -> review runs/val/exp_eval_val/evaluation_report.txt
+
+# optional: clean annotated images for a report/presentation
+python visualize_annotations.py --dataset-dir ../../dataset --split valid --limit 12 --grid --html-gallery
+
+# optional: export the trained model for deployment
+python export_weights.py --weights runs/detect/runs/train/exp/weights/best.pt
+
+# optional: push the dataset to Roboflow too (preview first, then --upload)
+python upload_to_roboflow.py --dataset-dir ../../dataset --project your-project-slug
 ```
 
 ## Dependencies
 
 ```
-pip install pdfplumber pyyaml ultralytics
+pip install pdfplumber pyyaml ultralytics pillow
+# only if you'll use upload_to_roboflow.py:
+pip install roboflow
 ```
