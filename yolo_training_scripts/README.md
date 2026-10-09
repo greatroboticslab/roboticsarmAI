@@ -153,6 +153,46 @@ PDF text-extraction artifact truncated it).
   python train_yolo.py --dataset-dir ../../dataset --device 0 --cache ram --workers 4
   ```
 
+- **`train_rfdetr.py`** — trains and evaluates Roboflow's **RF-DETR**, a
+  vision-transformer (DINOv2 backbone) detector, on the same `dataset/` the
+  YOLO scripts use. Same inputs (`data.corrected.yaml` if present, else
+  `data.yaml`; same `train/valid/test` YOLO label folders), nothing in
+  `dataset/` is modified — it stages a copy under `<run>/dataset_staged`
+  because RF-DETR wants a folder with a file literally named `data.yaml`.
+
+  ```bash
+  pip install "rfdetr[train]"
+
+  # train + evaluate (val split, plus test if the dataset has one)
+  python train_rfdetr.py --dataset-dir ../../dataset --model small --epochs 50 --device cuda
+
+  # GTX 1660 Ti / 16-series: full fp32 avoids fp16 errors; lower --batch if out of memory
+  python train_rfdetr.py --dataset-dir ../../dataset --model small --device cuda --no-amp --batch 4
+
+  # evaluate an existing checkpoint only
+  python train_rfdetr.py --dataset-dir ../../dataset --eval-only --weights runs/rfdetr/exp/checkpoint_best_total.pth
+  ```
+
+  Models: `--model nano|small|medium|base|large` (default `small`; with ~250
+  images, `nano`/`small` are the sensible choices). Effective batch size is
+  `--batch` x `--grad-accum` (default 4 x 4 = 16). Early stopping via
+  `--patience` (default 15, 0 disables). Pretrained COCO weights download
+  automatically on first run (needs internet); `--from-scratch` skips them
+  but is almost always far worse on a dataset this small.
+
+  Evaluation writes to `runs/rfdetr/<name>/eval_<split>/`:
+  - RF-DETR's own COCO metrics (mAP50, mAP50-95, ...) at the top of
+    `evaluation_report_<split>.txt`.
+  - The same per-class / per-object / per-material / per-color (and
+    per-category, via `object_categories.yaml`) breakdown as `evaluate.py`,
+    plus the object > material > color weighted composite — **but as
+    precision / recall / F1 at `--conf 0.3` and IoU 0.5, not mAP**, because
+    they're computed from the model's actual predictions. Don't compare these
+    F1 numbers directly with `evaluate.py`'s mAP columns; compare RF-DETR
+    runs to each other (change `--conf` to see the precision/recall trade-off).
+  - CSVs: `evaluation_per_{class,object,material,color,category}.csv`,
+    `evaluation_summary.csv`.
+
 - **`evaluate.py`** — standalone evaluation for any trained checkpoint.
   Runs ultralytics' standard detection metrics (precision, recall, mAP50,
   mAP50-95) overall and per class. Since every class here is really an

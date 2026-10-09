@@ -163,8 +163,8 @@ orphan pdf files: ['asdfeafgta', 'fdfasdjhadae', 'jhjasdfwat']
 ======================================================================
 IMAGE / LABEL INTEGRITY AUDIT
 ======================================================================
-[train] images=1089 labels=1089
+[train] images=1152 labels=1152
   OK -- no issues found
-[valid] images=354 labels=354
+[valid] images=291 labels=291
   OK -- no issues found
 [test] split directory not found -- skipped
