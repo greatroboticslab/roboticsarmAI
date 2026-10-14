@@ -419,6 +419,7 @@ Every object was found with the exact right class, and there are no extra boxes.
 | ![Correct 1](results/correct/example_1.jpg) | ![Correct 2](results/correct/example_2.jpg) |
 
 *What happened:* _fill in after the run_
+both predictied the object correctly but 2 was more accurate then training label due to overhang that label had
 
 ### Wrong object
 
@@ -429,7 +430,8 @@ A box sits on a real object but names a different object (a pen called a hammer)
 | ![Wrong object 1](results/wrong_object/example_1.jpg) | ![Wrong object 2](results/wrong_object/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. it saw the metal / oranage bit of a screwdriver and guessed  the plastic part of scissors for some reason
+2. guessed pen for the metal bit of a scissors 
 ### Wrong object, same category
 
 Wrong object, but both belong to the same category in `object_categories.yaml` (gel pen vs ballpoint pen). A milder kind of wrong object. *Wrong class.*
@@ -451,7 +453,8 @@ Right object and right color, wrong material (plastic vs rubber). *Wrong class.*
 *What happened:* _fill in after the run_
 
 ### Wrong color
-
+1. should be right
+2 predicted rubber for one of the predictions that was plastic
 Right object and right material, wrong color. *Wrong class.*
 
 | example 1 | example 2 |
@@ -459,6 +462,7 @@ Right object and right material, wrong color. *Wrong class.*
 | ![Wrong color 1](results/wrong_color/example_1.jpg) | ![Wrong color 2](results/wrong_color/example_2.jpg) |
 
 *What happened:* _fill in after the run_
+
 
 ### Wrong material and color
 
@@ -471,7 +475,8 @@ Right object, but both material and color are wrong. *Wrong class.*
 *What happened:* _fill in after the run_
 
 ### Wrong class, same attributes
-
+1. guessed the object right but got the place it was shining at wrong the box body instead of the tape
+2.  guessed metal when the object was hitting the plastic part of the frame for the claw
 A different class id whose object, material and color are all identical (two `Pdfname` ids that describe the same thing). Usually a labeling-data issue, not a model issue. *Wrong class.*
 
 | example 1 | example 2 |
@@ -487,7 +492,8 @@ A real object with no usable box on it at all. *False negative.*
 | example 1 | example 2 |
 |---|---|
 | ![Missed: nothing found 1](results/missed_no_detection/example_1.jpg) | ![Missed: nothing found 2](results/missed_no_detection/example_2.jpg) |
-
+1. just didn't make a prediction
+2.  was shining on the tape but no prediction
 *What happened:* _fill in after the run_
 
 ### Missed: score too low
@@ -499,7 +505,7 @@ The model did find it, with the right class in the right place, but its score wa
 | ![Missed: score too low 1](results/missed_low_confidence/example_1.jpg) | ![Missed: score too low 2](results/missed_low_confidence/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1.  and 2 no prediction for either
 ### Poor localization
 
 Right class, but the box overlaps the real object too little (IoU between 0.1 and 0.5). *False negative.*
@@ -509,7 +515,8 @@ Right class, but the box overlaps the real object too little (IoU between 0.1 an
 | ![Poor localization 1](results/poor_localization/example_1.jpg) | ![Poor localization 2](results/poor_localization/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. prediction was closer to accurate and more tight around laser
+2. same here
 ### False positive: background
 
 A box where there is no real object. *False positive.*
@@ -519,7 +526,8 @@ A box where there is no real object. *False positive.*
 | ![False positive: background 1](results/false_positive_background/example_1.jpg) | ![False positive: background 2](results/false_positive_background/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. predicted twice here, one around the true label and another wider one
+2. made a lot of predictions for the metal bar
 ### False positive: duplicate
 
 A second box on an object that was already found. *False positive.*
@@ -529,4 +537,5 @@ A second box on an object that was already found. *False positive.*
 | ![False positive: duplicate 1](results/false_positive_duplicate/example_1.jpg) | ![False positive: duplicate 2](results/false_positive_duplicate/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1, lots of prediction for the top of the wire spool
+2. multiple predictions overlapping 

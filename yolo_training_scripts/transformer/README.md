@@ -170,6 +170,7 @@ Every object was found with the exact right class, and there are no extra boxes.
 | ![Correct 1](results/correct/example_1.jpg) | ![Correct 2](results/correct/example_2.jpg) |
 
 *What happened:* _fill in after the run_
+Both of these predicted the object and then matched the box for each of them mostly accuratly based around where the laser was landing 
 
 ### Wrong object
 
@@ -180,7 +181,8 @@ A box sits on a real object but names a different object (a pen called a hammer)
 | ![Wrong object 1](results/wrong_object/example_1.jpg) | ![Wrong object 2](results/wrong_object/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+For the first wrong object it must have confused the rubber grip of the screwdriver and oranage for the rubber ducky that was blue.
+Second it got the correct object but didn't match the object bounding box as much, and just generally the grey white images doesn't contain as much data
 ### Wrong object, same category
 
 Wrong object, but both belong to the same category in `object_categories.yaml` (gel pen vs ballpoint pen). A milder kind of wrong object. *Wrong class.*
@@ -191,6 +193,7 @@ Wrong object, but both belong to the same category in `object_categories.yaml` (
 
 *What happened:* _fill in after the run_
 
+
 ### Wrong material
 
 Right object and right color, wrong material (plastic vs rubber). *Wrong class.*
@@ -200,7 +203,8 @@ Right object and right color, wrong material (plastic vs rubber). *Wrong class.*
 | ![Wrong material 1](results/wrong_material/example_1.jpg) | ![Wrong material 2](results/wrong_material/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. It predicted the correct result and material but it bounding box prediction for the laser was wrong because The bounding boxes weren't the best, but it could also be two overlapping predictions 
+2. It predicted the wrong material aka rubber instead of the plastic that was being hit by laser
 ### Wrong color
 
 Right object and right material, wrong color. *Wrong class.*
@@ -220,7 +224,8 @@ Right object, but both material and color are wrong. *Wrong class.*
 | ![Wrong material and color 1](results/wrong_material_and_color/example_1.jpg) | ![Wrong material and color 2](results/wrong_material_and_color/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. It predicted given laser and overall object that it likely guessed the object as the box, instead of the laser where it was hitting on the packing tape
+2.  it saw the claw object but beause of how it was being hit guessed wrong and because of potentially some confusion with unique positioning may have confused the white plasic part and the metal from this angel
 ### Wrong class, same attributes
 
 A different class id whose object, material and color are all identical (two `Pdfname` ids that describe the same thing). Usually a labeling-data issue, not a model issue. *Wrong class.*
@@ -240,7 +245,8 @@ A real object with no usable box on it at all. *False negative.*
 | ![Missed: nothing found 1](results/missed_no_detection/example_1.jpg) | ![Missed: nothing found 2](results/missed_no_detection/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. it found it but it was too small a guess
+2. it gussed the class wrong and too big
 ### Missed: score too low
 
 The model did find it, with the right class in the right place, but its score was under the cut-off (`--conf`, default 0.3). Lowering `--conf` would have caught it. *False negative.*
@@ -250,7 +256,8 @@ The model did find it, with the right class in the right place, but its score wa
 | ![Missed: score too low 1](results/missed_low_confidence/example_1.jpg) | ![Missed: score too low 2](results/missed_low_confidence/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. the prediction guessed where the book hit the cover but now on the side as it went down
+2. gussed both around the whole thing and indivually when it was around each two laser hits
 ### Poor localization
 
 Right class, but the box overlaps the real object too little (IoU between 0.1 and 0.5). *False negative.*
@@ -260,7 +267,8 @@ Right class, but the box overlaps the real object too little (IoU between 0.1 an
 | ![Poor localization 1](results/poor_localization/example_1.jpg) | ![Poor localization 2](results/poor_localization/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. prediction covered some of the laser hit but truth was also overly wide
+2. true labels were close but the box it put was wider
 ### False positive: background
 
 A box where there is no real object. *False positive.*
@@ -270,7 +278,8 @@ A box where there is no real object. *False positive.*
 | ![False positive: background 1](results/false_positive_background/example_1.jpg) | ![False positive: background 2](results/false_positive_background/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1. made some predictions up + shifted
+2. expanded to hit a secondary laser that the labeling tru emissed
 ### False positive: duplicate
 
 A second box on an object that was already found. *False positive.*
@@ -280,4 +289,5 @@ A second box on an object that was already found. *False positive.*
 | ![False positive: duplicate 1](results/false_positive_duplicate/example_1.jpg) | ![False positive: duplicate 2](results/false_positive_duplicate/example_2.jpg) |
 
 *What happened:* _fill in after the run_
-
+1,  guessed the wrong object type
+  2 guessed the wrong object type
