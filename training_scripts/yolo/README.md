@@ -1,5 +1,7 @@
 # yolo/ -- YOLO (ultralytics) training, evaluation and error sorting
 
+[← training_scripts](../README.md) · [← back to the main README](../../README.md)
+
 Trains a YOLO detector on `dataset/`, evaluates it, and sorts every validation
 image into *correct* or into the kind of mistake it made. Dataset preparation
 (PDF labels, resplitting) lives in [`../common/`](../common/README.md); the
@@ -10,6 +12,8 @@ pip install ultralytics
 python train_yolo.py --dataset-dir ../../dataset --model yolov8s.pt --epochs 100 --device 0 --cache ram --evaluate
 python sort_yolo_errors.py --dataset-dir ../../dataset --weights runs/detect/runs/train/exp/weights/best.pt
 ```
+
+Run these from `training_scripts/yolo/`. For GPU training install a CUDA build of PyTorch first and check `python -c "import torch; print(torch.cuda.is_available())"` prints `True`.
 
 ## How the evaluation works
 
@@ -366,9 +370,37 @@ python sort_yolo_errors.py --dataset-dir ../../dataset --weights runs/detect/run
   UI (pick your split/preprocessing/augmentation settings there) and hit
   Train.
 
+## Where the weights are stored
+
+Created by training, **not committed to git**. In `training_scripts/yolo/runs/detect/runs/train/<name>/` (ultralytics nests `--project runs/train` under `runs/detect/`; `train_yolo.py` prints the real path at the end):
+
+- `weights/best.pt` - best epoch; use this for evaluation, sorting, export and inference
+- `weights/last.pt` - last epoch (what `--resume` continues from)
+- `results.png`, `results.csv` - training curves and per-epoch metrics
+- `error_sort_valid/` - written by `sort_yolo_errors.py`
+- `best.onnx` etc. - next to the weights after `export_weights.py`
+
+Evaluation output goes to `runs/val/<name>/`. Back up the `weights/` folder to a shared drive or GitHub Release rather than committing it.
+
+## Run the trained model on one image
+
+```python
+from ultralytics import YOLO
+
+model = YOLO("runs/detect/runs/train/exp/weights/best.pt")
+res = model.predict("some_photo.jpg", conf=0.3, imgsz=640, device=0)[0]
+res.show()                                   # or res.save("out.jpg")
+print(res.boxes.cls, res.boxes.conf, res.boxes.xyxy)   # cls indexes `names` in dataset/data.corrected.yaml
+```
+
 ## Results (fill in after your runs)
 
 Weights: `______________`   Dataset split: `valid`   conf `0.3`   IoU `0.5`
+
+_No YOLO evaluation output is stored in the repo yet; run `evaluate.py` and `sort_yolo_errors.py` and fill this table in._
+
+> **Read the scores with this caveat:** `dataset_stats` found that 188 of 340 validation images (55%) have a near-duplicate in train (56 look identical), because each object was photographed in a rotating shoot. Validation scores are therefore probably higher than on genuinely new photos. See [`../../dataset_stats`](../../dataset_stats/README.md) and `../../stats_after_split/`; `resplit_dataset.py --mode object-disjoint` tests unseen objects.
+
 
 | metric | value |
 |---|---|
@@ -450,11 +482,12 @@ Right object and right color, wrong material (plastic vs rubber). *Wrong class.*
 |---|---|
 | ![Wrong material 1](results/wrong_material/example_1.jpg) | ![Wrong material 2](results/wrong_material/example_2.jpg) |
 
-*What happened:* _fill in after the run_
+*What happened:*
+1. should be right
+2. predicted rubber for one of the predictions that was plastic
 
 ### Wrong color
-1. should be right
-2 predicted rubber for one of the predictions that was plastic
+
 Right object and right material, wrong color. *Wrong class.*
 
 | example 1 | example 2 |
@@ -472,11 +505,12 @@ Right object, but both material and color are wrong. *Wrong class.*
 |---|---|
 | ![Wrong material and color 1](results/wrong_material_and_color/example_1.jpg) | ![Wrong material and color 2](results/wrong_material_and_color/example_2.jpg) |
 
-*What happened:* _fill in after the run_
+*What happened:*
+1. guessed the object right but got the place it was shining at wrong: the box body instead of the tape
+2. guessed metal when the object was hitting the plastic part of the frame for the claw
 
 ### Wrong class, same attributes
-1. guessed the object right but got the place it was shining at wrong the box body instead of the tape
-2.  guessed metal when the object was hitting the plastic part of the frame for the claw
+
 A different class id whose object, material and color are all identical (two `Pdfname` ids that describe the same thing). Usually a labeling-data issue, not a model issue. *Wrong class.*
 
 | example 1 | example 2 |
@@ -492,9 +526,9 @@ A real object with no usable box on it at all. *False negative.*
 | example 1 | example 2 |
 |---|---|
 | ![Missed: nothing found 1](results/missed_no_detection/example_1.jpg) | ![Missed: nothing found 2](results/missed_no_detection/example_2.jpg) |
+*What happened:*
 1. just didn't make a prediction
-2.  was shining on the tape but no prediction
-*What happened:* _fill in after the run_
+2. was shining on the tape but no prediction
 
 ### Missed: score too low
 

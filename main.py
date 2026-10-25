@@ -1,5 +1,6 @@
 import math
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 import time
 import os
@@ -2026,6 +2027,39 @@ tk.Label(frame, text="Valid Points (FIFO)").pack(pady=(10,0))
 points_listbox = tk.Listbox(frame, width=30, height=25)
 points_listbox.pack(fill=tk.BOTH, expand=1)
 
+def _renumber_points_listbox():
+    """Rewrites the leading "N:" on every queue row so numbering always
+    matches the real FIFO position. BUGFIX: rows were numbered once, at
+    insert time, using len(valid_points) - and never renumbered after
+    remove_first_point() popped the front. So after sending/removing a
+    point the next added point reused a number that was already on screen
+    (e.g. two rows both labelled "3:"), which looked like duplicated
+    tracking points."""
+    for i in range(points_listbox.size()):
+        text = points_listbox.get(i)
+        head, sep, rest = text.partition(": ")
+        if sep and head.strip().isdigit():
+            new_text = f"{i + 1}: {rest}"
+            if new_text != text:
+                points_listbox.delete(i)
+                points_listbox.insert(i, new_text)
+
+
+# Two queued points closer than this (mm, in plot coordinates) with the same
+# Z / claw / J4 are treated as the same point.
+DUPLICATE_POINT_TOLERANCE_MM = 1.0
+
+
+def _is_duplicate_point(x, y, z, claw, j4) -> bool:
+    """True if an equivalent point is already sitting in the queue."""
+    for (qx, qy, qz, qclaw, qj4) in valid_points:
+        if (abs(qx - x) <= DUPLICATE_POINT_TOLERANCE_MM
+                and abs(qy - y) <= DUPLICATE_POINT_TOLERANCE_MM
+                and abs(qz - z) < 1e-6 and qclaw == claw and qj4 == j4):
+            return True
+    return False
+
+
 # Function to add manual point
 def add_manual_point():
     try:
@@ -2051,6 +2085,9 @@ def add_manual_point():
         
         # Check if point is in valid region
         if is_inside(x_val, y_val):
+            if _is_duplicate_point(x_val, y_val, z_val, claw_state, j4_val):
+                print(f"Duplicate point ignored: ({x_val:.2f}, {y_val:.2f}, z={z_val:.1f}) is already queued")
+                return
             # Add valid point with its z-value, claw state, and J4 (None = hold current J4 when sent)
             valid_points.append((x_val, y_val, z_val, claw_state, j4_val))
             scatter = ax.scatter(x_val, y_val, color='blue', s=50, marker='s')  # Blue square for manual points
@@ -2086,6 +2123,7 @@ def remove_first_point():
         scatter.remove()
         # Remove from listbox
         points_listbox.delete(0)
+        _renumber_points_listbox()
         canvas.draw()
 
 def add_dobot_instructions():
@@ -2153,6 +2191,13 @@ def add_dobot_instructions():
                         err = robot.movement.sync()
                         if err:
                             print(f"[SYNC WARNING]: {err}")
+
+                    # 2b. Resync the tracked manual position to where the arm
+                    #     ACTUALLY stopped (live telemetry), not just the
+                    #     commanded target, so the next move/jog starts from
+                    #     the real pose. Brief wait lets a fresh packet land.
+                    sleep(0.06)
+                    sync_manual_position_from_feedback()
 
                     # 3. Fire claw after confirmed arrival
                     set_claw_dual_output(claw_state)
@@ -6552,6 +6597,12 @@ def get_point_settings(px, py):
     tk.Button(btn_frame, text="Add Point", command=add_point_clicked, bg="lightgreen", width=10).pack(side=tk.LEFT, padx=5)
     tk.Button(btn_frame, text="Cancel", command=cancel_clicked, bg="lightcoral", width=10).pack(side=tk.LEFT, padx=5)
     
+    # BUGFIX: closing the dialog with the window's X used to destroy it without
+    # ever setting `submitted`, leaving root.wait_variable() blocked forever in a
+    # nested event loop - later plot clicks then stacked up inside it and came
+    # out as duplicate/ghost points. Treat the X exactly like Cancel.
+    dialog.protocol("WM_DELETE_WINDOW", cancel_clicked)
+
     # CRITICAL: This pauses the main script until 'submitted' is set to True
     # Without this, the function returns result={'z':None} immediately.
     root.wait_variable(submitted)
@@ -6559,23 +6610,42 @@ def get_point_settings(px, py):
     return result
 
 # Event handler for clicking on the plot
-def onclick(event):
+_point_dialog_open = False   # re-entrancy guard for onclick (see below)
 
-    # --- ADD THIS CHECK AT THE VERY TOP ---
-    global is_jogging
+
+def onclick(event):
+    global is_jogging, _point_dialog_open
+
     if is_jogging:
         print("Click ignored: Robot is currently jogging.")
-        return 
-    # --------------------------------------
+        return
 
+    # BUGFIX (duplicate points): matplotlib fires button_press_event for
+    # every mouse button, for the second press of a double-click, and for
+    # presses that land while the Point Settings dialog is still opening
+    # (its modal wait runs a nested event loop, so a fast second click got
+    # handled too and opened a second dialog -> a second, near-identical
+    # point). Only a single, plain left-click inside the plot axes, with no
+    # dialog already open, may add a point.
+    if event.inaxes is not ax or event.button != 1 or getattr(event, "dblclick", False):
+        return
+    if _point_dialog_open:
+        return
     if event.xdata is None or event.ydata is None:
         return
-    px, py = event.xdata, event.ydata
+    px, py = round(float(event.xdata), 2), round(float(event.ydata), 2)
     if is_inside(px, py):
-        # Get point settings (z-value, claw state, and J4)
-        settings = get_point_settings(px, py)
-        
+        _point_dialog_open = True
+        try:
+            # Get point settings (z-value, claw state, and J4)
+            settings = get_point_settings(px, py)
+        finally:
+            _point_dialog_open = False
+
         if settings['z'] is not None:  # User didn't cancel
+            if _is_duplicate_point(px, py, settings['z'], settings['claw'], settings['j4']):
+                print(f"Duplicate point ignored: ({px:.2f}, {py:.2f}) is already queued")
+                return
             # Add valid point with its z-value, claw state, and J4 (None = hold current J4 when sent)
             valid_points.append((px, py, settings['z'], settings['claw'], settings['j4']))
             scatter = ax.scatter(px, py, color='green', s=50)
@@ -6834,6 +6904,37 @@ def _default_manual_snapshot_label() -> str:
     return f"manual_capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 
+_excel_refresh_state = {"running": False, "pending": False}
+_excel_refresh_guard = threading.Lock()
+
+
+def _schedule_excel_refresh() -> None:
+    """Refreshes today's Excel report in the background, never blocking a
+    photo. If a rebuild is already running, just marks one more as pending
+    (so 10 quick photos cost at most 2 rebuilds, not 10)."""
+    with _excel_refresh_guard:
+        if _excel_refresh_state["running"]:
+            _excel_refresh_state["pending"] = True
+            return
+        _excel_refresh_state["running"] = True
+
+    def run():
+        while True:
+            try:
+                excel_export.build_report(
+                    session_id=session_manager.get_or_create_today_session())
+            except Exception as e:
+                print(f"[CAPTURE_PIPELINE] Excel refresh failed: {e}")
+            with _excel_refresh_guard:
+                if _excel_refresh_state["pending"]:
+                    _excel_refresh_state["pending"] = False
+                    continue
+                _excel_refresh_state["running"] = False
+                return
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def run_manual_snapshot(sample_label: str, status_label_widget: tk.Label,
                          on_done=None) -> None:
     """
@@ -6868,88 +6969,74 @@ def run_manual_snapshot(sample_label: str, status_label_widget: tk.Label,
 
     def worker():
         sample_id = new_sample_id()
-        saved_pairs = []   # list of (camera_name, image_path) — a camera
-                            # contributes TWO entries here if its "dual
-                            # capture" toggle is on (see capture_frames_multi)
+        saved_pairs = []   # list of (camera_name, image_path, suffix) — a camera
+                            # contributes SEVERAL entries here if its "dual
+                            # capture"/lens-extraction toggles are on
         cam_errors = {}    # camera name -> error message
 
-        for cam in camera_names:
-            try:
-                for view_index, (suffix, frame) in enumerate(capture_frames_multi(cam)):
-                    path = save_image(frame, sample_id, cam, view_index, view_label=suffix)
-                    saved_pairs.append((cam, path, suffix))
-            except Exception as e:
-                cam_errors[cam] = str(e)
+        # SPEED: every camera is grabbed AND written to disk in parallel
+        # (they used to be done one after another, so N cameras took N times
+        # as long). Each camera has its own lock in vision.camera.capture, so
+        # this is safe; results are re-assembled in camera order.
+        def grab_one(cam):
+            pairs = []
+            for view_index, (suffix, frame) in enumerate(capture_frames_multi(cam)):
+                path = save_image(frame, sample_id, cam, view_index, view_label=suffix)
+                pairs.append((cam, path, suffix))
+            return pairs
+
+        with ThreadPoolExecutor(max_workers=max(1, len(camera_names))) as pool:
+            futures = [(cam, pool.submit(grab_one, cam)) for cam in camera_names]
+            for cam, fut in futures:
+                try:
+                    saved_pairs.extend(fut.result())
+                except Exception as e:
+                    cam_errors[cam] = str(e)
 
         # Routed through capture_pipeline.record_capture() — the SAME
-        # function the automatic pipeline (vision_service ->
-        # logger_service) uses — so a manual GUI capture and an
-        # automatic one are recorded identically: Mongo `objects`/
-        # `images` docs, catalog match/link, CSV + JSON append, Excel
-        # refresh. See vision/storage/capture_pipeline.py. Passed as a
-        # list of (source, path) pairs, not a dict, since dual-capture
-        # can mean the SAME camera name appears twice — see
-        # record_capture()'s docstring on why that needs the list form.
-        arm_position = current_arm_position()  # snapshot NOW — right as the photos were taken,
-                                                # not wherever the arm ends up later. None (-> null)
-                                                # if the robot isn't connected/no feedback yet.
+        # function the automatic pipeline uses — so a manual GUI capture and
+        # an automatic one are recorded identically (Mongo objects/images,
+        # catalog link, CSV + JSON append). See vision/storage/capture_pipeline.py.
+        arm_position = current_arm_position()  # snapshot NOW, right as the photos were taken
         mongo_ok = False
-        object_id = sample_id  # kept as the local var name used below/upload code
-        pipeline_warnings = []
+        object_id = sample_id
         if saved_pairs:
             try:
+                # SPEED: export_excel=False — rebuilding the whole Excel report
+                # after EVERY photo was the slowest step by far. It is now
+                # refreshed once in the background (coalesced, so rapid-fire
+                # shots trigger at most one extra rebuild) - see
+                # _schedule_excel_refresh().
                 object_id, pipeline_warnings = record_capture(
                     name=sample_label,
                     image_paths_by_source=saved_pairs,
                     position=arm_position,
+                    export_excel=False,
                 )
                 mongo_ok = True
                 for w in pipeline_warnings:
                     print(f"[CAPTURE_PIPELINE] {w}")
             except Exception as e:
                 print(f"[MONGO] Could not log capture locally: {e}")
+            _schedule_excel_refresh()
 
-        uploaded = 0
-        if SERVER_URL and saved_pairs:
-            try:
-                submit_response = requests.post(
-                    f"{SERVER_URL}/collection/submission",
-                    json={"category": sample_label, "date": str(date.today()),
-                          "data": {"label": sample_label,
-                                   "predicted_label": sample_label,
-                                   "num_images": len(saved_pairs)},
-                          "sample_id": sample_id},
-                    timeout=5,
-                )
-                submit_response.raise_for_status()
-                remote_sample_id = submit_response.json()["sample_id"]
-                for cam, path, _suffix in saved_pairs:
-                    try:
-                        with open(path, "rb") as image_file:
-                            upload_response = requests.post(
-                                f"{SERVER_URL}/collection/images/upload",
-                                files={"file": image_file},
-                                data={"sample_id": remote_sample_id, "category": sample_label},
-                                timeout=10,
-                            )
-                        upload_response.raise_for_status()
-                        uploaded += 1
-                    except Exception as e:
-                        print(f"[UPLOAD] Could not upload '{cam}' image: {e}")
-            except Exception as e:
-                print(f"[UPLOAD] Could not create submission on server ({SERVER_URL}): {e}")
-
-        def report():
+        def report(upload_text):
             parts = [f"Saved {len(saved_pairs)} image(s) from "
                      f"{len(camera_names) - len(cam_errors)}/{len(camera_names)} camera(s) as '{sample_label}'"]
             if cam_errors:
                 parts.append("Errors: " + ", ".join(
                     f"{c} ({m})" for c, m in cam_errors.items()))
             parts.append("MongoDB: OK" if mongo_ok else "MongoDB: failed")
-            parts.append(f"Upload: {uploaded}/{len(saved_pairs)}" if saved_pairs
-                         else "Upload: skipped")
-            color = "green" if (mongo_ok or uploaded) else "orange"
-            status_label_widget.config(text=" | ".join(parts), fg=color)
+            parts.append(upload_text)
+            return " | ".join(parts)
+
+        def show_saved():
+            # SPEED: the status line and the "ready for the next photo" state
+            # no longer wait for the network upload.
+            pending = f"Upload: sending {len(saved_pairs)}..." if (SERVER_URL and saved_pairs) \
+                else ("Upload: skipped" if not saved_pairs else "Upload: no server")
+            status_label_widget.config(
+                text=report(pending), fg="green" if mongo_ok else "orange")
             try:
                 refresh_objects_list()
                 refresh_images_list()
@@ -6961,7 +7048,49 @@ def run_manual_snapshot(sample_label: str, status_label_widget: tk.Label,
                     on_done()
                 except Exception as e:
                     print(f"[MANUAL SNAPSHOT] on_done callback failed: {e}")
-        root.after(0, report)
+        root.after(0, show_saved)
+
+        # Upload in the background, images in parallel over one keep-alive
+        # session, so a slow/unreachable server can never hold up the next shot.
+        if SERVER_URL and saved_pairs:
+            uploaded = 0
+            try:
+                with requests.Session() as http:
+                    submit_response = http.post(
+                        f"{SERVER_URL}/collection/submission",
+                        json={"category": sample_label, "date": str(date.today()),
+                              "data": {"label": sample_label,
+                                       "predicted_label": sample_label,
+                                       "num_images": len(saved_pairs)},
+                              "sample_id": sample_id},
+                        timeout=5,
+                    )
+                    submit_response.raise_for_status()
+                    remote_sample_id = submit_response.json()["sample_id"]
+
+                    def upload_one(item):
+                        cam, path, _suffix = item
+                        try:
+                            with open(path, "rb") as image_file:
+                                r = http.post(
+                                    f"{SERVER_URL}/collection/images/upload",
+                                    files={"file": image_file},
+                                    data={"sample_id": remote_sample_id, "category": sample_label},
+                                    timeout=10,
+                                )
+                            r.raise_for_status()
+                            return True
+                        except Exception as e:
+                            print(f"[UPLOAD] Could not upload '{cam}' image: {e}")
+                            return False
+
+                    with ThreadPoolExecutor(max_workers=4) as up_pool:
+                        uploaded = sum(1 for ok in up_pool.map(upload_one, saved_pairs) if ok)
+            except Exception as e:
+                print(f"[UPLOAD] Could not create submission on server ({SERVER_URL}): {e}")
+            final_text = report(f"Upload: {uploaded}/{len(saved_pairs)}")
+            root.after(0, lambda: status_label_widget.config(
+                text=final_text, fg="green" if (mongo_ok or uploaded) else "orange"))
 
     threading.Thread(target=worker, daemon=True).start()
 

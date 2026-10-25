@@ -1,8 +1,35 @@
-# Robotic Arm Controller
+# Robotic Arm Controller + Object-Detection Training
 
-A Python application that controls a robotic arm by inputting **Cartesian coordinates (X, Y, Z)**.
+A Python application that controls a Dobot robotic arm by inputting **Cartesian coordinates (X, Y, Z)**, plus the full pipeline used to **train and evaluate the object detectors** (YOLO and the RF-DETR vision transformer) that identify what the arm's laser is pointing at.
 
 **Future version**: will allow control through **individual joint angles**, enabling movement by controller and later by AI.
+
+## Contents
+1. [What's in this repo](#whats-in-this-repo)
+2. [Features](#features)
+3. [Setup and Installation (arm app)](#setup-and-installation)
+4. [Using the GUI](#using-the-gui-while-mainpy-is-running) / [GUI tabs](#gui-tabs-overview) / [Network connection](#network-connection-ethernet-2)
+5. [Integration with 4DAI Server](#integration-with-4dai-server)
+6. [**Training the detectors (YOLO + transformer)**](#training-the-detectors-yolo-vs-rf-detr-transformer)
+7. [Where the weights are stored](#where-the-weights-are-stored)
+8. [Running a trained model](#running-a-trained-model)
+9. [Video walkthroughs](#video-walkthrough-arm-demo) (arm demo, then the [training video spot](#video-walkthrough-training-transformers-yolo-and-weights))
+
+## What's in this repo
+
+| path | what it is |
+|---|---|
+| `main.py`, `Interface.py`, `dobot_util/` | The arm control GUI and the Dobot library |
+| `vision/` | Config, MQTT messaging, storage (Mongo/CSV/Excel/Roboflow), laser + camera services |
+| `laser_control/`, `ESP32_Laser_Control/` | Python client and PlatformIO firmware for the ESP32 laser controller |
+| `server-4dai/` | The 4DAI FastAPI + Streamlit server that takes the photos |
+| `scripts/object_labeling_studio.py` | Standalone tool to finish labeling captures and push boxes to Roboflow |
+| `dataset/` | YOLO-format dataset config (`data.yaml`, `data.corrected.yaml`), label PDFs and build reports. The `train/`, `valid/`, `test/` image + label folders must sit here to train (see below) |
+| `dataset_stats/`, `stats_after_split/` | Dataset audit script and its latest report/charts |
+| `training_scripts/yolo/` | Train / evaluate / sort errors for **YOLO** (ultralytics) |
+| `training_scripts/transformer/` | Train / evaluate / sort errors for **RF-DETR** (vision transformer) |
+| `training_scripts/common/` | Dataset prep, shared error-sorting rules, example collector, model comparison |
+| `KNOWN_ISSUES.md` | Open bugs on the capture flow |
 
 ## Features
 - Move the robotic arm by specifying X, Y, Z coordinates
@@ -10,6 +37,8 @@ A Python application that controls a robotic arm by inputting **Cartesian coordi
 - Maintain a FIFO list of coordinates to be executed by the arm
 
 ## Setup and Installation
+This installs the **arm app** (`main.py`). Training dependencies are separate - see [Training the detectors](#training-the-detectors-yolo-vs-rf-detr-transformer).
+
 Follow these steps to set up the project and install all required dependencies.
 
 1. **Clone the repository**
@@ -180,7 +209,6 @@ Troubleshooting tips:
 - Ensure any OS firewall is disabled or configured to allow the GUI application to communicate on the local network.
 - If you cannot reach the robot, try pinging the robot IP from a terminal to confirm connectivity.
 
-If you'd like, I can extract exact connection fields and button names from `Interface.py` and update the README to show the exact GUI steps (I won't modify `Interface.py` itself unless you ask).
 
 ## Integration with 4DAI Server
 
@@ -251,6 +279,269 @@ photo automatically in the browser and save it under
 See [`server-4dai/README.md`](server-4dai/README.md) for the full server
 setup and troubleshooting details.
 
-## Video Walkthrough
+## Training the detectors: YOLO vs RF-DETR (transformer)
+
+Two detectors are trained on the **same dataset** (47 classes, ~1,700 images: 1,365 train / 340 valid) and scored with the **same rules**, so results are directly comparable.
+
+| | **YOLO** | **RF-DETR (the transformer)** |
+|---|---|---|
+| Library | `ultralytics` | `rfdetr` (Roboflow) |
+| Architecture | CNN, single-stage | Vision transformer (DINOv2 backbone), DETR-style |
+| Folder | `training_scripts/yolo/` | `training_scripts/transformer/` |
+| Train script | `train_yolo.py` | `train_rfdetr.py` |
+| Error-sort script | `sort_yolo_errors.py` | `sort_rfdetr_errors.py` |
+
+Each dataset class name is really three labels glued together (`Object X - Material Y - Color Z - Pdfname W`), so evaluation is reported at four levels: **exact class**, **object**, **material**, **color**, plus a weighted composite (`0.6 x object + 0.3 x material + 0.1 x color`). Full explanation and diagrams: [`training_scripts/README.md`](training_scripts/README.md).
+
+> All commands below are written for PowerShell/cmd or bash (forward slashes work in both on Windows). Run each block from the folder named in its first comment.
+
+### 0. One-time setup
+
+```bash
+# from the repo root, with your venv active
+pip install pdfplumber pyyaml pillow matplotlib      # dataset tools, plots, diagrams
+pip install ultralytics                              # YOLO
+pip install "rfdetr[train]"                          # transformer (RF-DETR)
+pip install roboflow                                 # only for yolo/upload_to_roboflow.py
+```
+
+For GPU training install a **CUDA build of PyTorch first** (<https://pytorch.org/get-started/locally/>) and confirm it:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available())"   # must print True
+```
+
+**Dataset layout expected** (YOLO format, at `dataset/`):
+
+```
+dataset/
+  data.yaml  data.corrected.yaml      <- class names (47 classes); scripts prefer data.corrected.yaml
+  train/{images,labels}  valid/{images,labels}  test/{images,labels}   <- test is optional
+```
+
+The image folders are not committed with the code - drop your `train/ valid/ test/` folders into `dataset/` (e.g. from Roboflow's YOLOv8 export) before training. Nothing in `dataset/` is ever modified by the training scripts.
+
+### 1. Prepare and audit the dataset
+
+```bash
+# training_scripts/common/  - read-only check of labels vs the label PDFs, writes dataset/dataset_build_report.txt
+cd training_scripts/common
+python build_dataset.py --dataset-dir ../../dataset
+
+# optional: rebuild splits so every object appears in both train and valid (80/20)
+python resplit_dataset.py --dataset-dir ../../dataset --mode stratified --train-ratio 0.8 --val-ratio 0.2 --apply-in-place
+
+# optional: draw the labels on the images to eyeball them
+python visualize_annotations.py --help
+
+# dataset audit (counts per class/object/material/color, duplicates, box sizes, train/valid leakage)
+cd ../../dataset_stats
+python dataset_stats.py --dataset-dir ../dataset --out dataset_stats_out
+```
+
+Read `dataset/dataset_build_report.txt` before training. More options: [`training_scripts/common/README.md`](training_scripts/common/README.md) and [`dataset_stats/README.md`](dataset_stats/README.md).
+
+### 2. Train the transformer (RF-DETR)
+
+```bash
+cd training_scripts/transformer
+
+# Standard run: pretrained COCO weights, small model, 100 epochs, early stopping
+python train_rfdetr.py --dataset-dir ../../dataset --model small --epochs 100 --patience 15 --device cuda --no-amp --name pretrained
+
+# Low-memory run (the one used for the current results: 6 GB GTX 1660 Ti)
+python train_rfdetr.py --dataset-dir ../../dataset --model nano --epochs 100 --batch 2 --grad-accum 8 --resolution 512 --device cuda --no-amp --workers 0 --patience 20 --name nano_lowmem
+
+# Control experiment: no pretrained weights (needs more epochs / patience)
+python train_rfdetr.py --dataset-dir ../../dataset --model small --epochs 250 --patience 40 --device cuda --no-amp --from-scratch --name scratch
+
+# Evaluate an existing checkpoint only (no training)
+python train_rfdetr.py --dataset-dir ../../dataset --eval-only --weights runs/rfdetr/nano_lowmem/checkpoint_best_total.pth
+```
+
+| flag | meaning |
+|---|---|
+| `--model nano\|small\|medium\|base\|large` | Model size. With this small a dataset `nano`/`small` are the sensible picks |
+| `--batch` x `--grad-accum` | Effective batch size (default 4 x 4 = 16). Lower `--batch`, raise `--grad-accum` if you run out of GPU memory |
+| `--resolution` | Input size; smaller = less memory (512 used for the low-memory run) |
+| `--no-amp` | Full fp32. Use on GTX 16-series cards to avoid fp16/cuDNN errors |
+| `--workers 0` | Use if training hangs on Windows |
+| `--patience N` | Early stopping (0 disables) |
+| `--from-scratch` | Skip pretrained COCO weights (almost always much worse on a dataset this small) |
+| `--name` | Run folder name under `runs/rfdetr/` |
+
+Pretrained COCO weights download automatically on first run (needs internet). Re-running a command with the same `--name` starts over; there is no resume option yet. Roughly 6 min/epoch for `small` on a GTX 1660 Ti.
+
+**After training** (still in `training_scripts/transformer/`):
+
+```bash
+# Sort every validation image into correct/ and failure/<type>/ (green = truth, red = model)
+python sort_rfdetr_errors.py --dataset-dir ../../dataset --weights runs/rfdetr/nano_lowmem
+python sort_rfdetr_errors.py --dataset-dir ../../dataset --weights runs/rfdetr/nano_lowmem --split test --conf 0.2
+
+# Loss / mAP curves (add several run folders to overlay them, e.g. pretrained vs scratch)
+python plot_rfdetr_loss.py runs/rfdetr/nano_lowmem
+python plot_rfdetr_loss.py runs/rfdetr/pretrained runs/rfdetr/scratch
+
+# Copy 2 example images per error type into results/ for the README gallery
+python ../common/collect_examples.py --sorted-dir runs/rfdetr/nano_lowmem/error_sort_valid --out-dir results
+```
+
+Details and the example gallery: [`training_scripts/transformer/README.md`](training_scripts/transformer/README.md).
+
+### 3. Train YOLO
+
+```bash
+cd training_scripts/yolo
+
+# Standard run (yolov8s fits a 6 GB card at imgsz 640, batch 16) and evaluate straight away
+python train_yolo.py --dataset-dir ../../dataset --model yolov8s.pt --epochs 100 --device 0 --cache ram --evaluate
+
+# Faster/smaller baseline
+python train_yolo.py --dataset-dir ../../dataset --model yolov8n.pt --epochs 100 --imgsz 640 --batch 16 --device 0 --cache ram --workers 4
+
+# Turn off colour jitter (laser colour / glow carries information), use geometric augmentation instead
+python train_yolo.py --dataset-dir ../../dataset --device 0 --cache ram --no-color-aug --degrees 10 --translate 0.15 --fliplr 0 --name noColorAug
+
+# Continue an interrupted run
+python train_yolo.py --dataset-dir ../../dataset --resume
+```
+
+| flag | meaning |
+|---|---|
+| `--model` | `yolov8n.pt` (default) / `yolov8s.pt` / `yolov8m.pt` (needs `--batch 8` on 6 GB, likely overfits here) |
+| `--device 0` | Force the GPU so it can't silently fall back to (10-50x slower) CPU |
+| `--cache ram` | Cache decoded images in RAM; the dataset is tiny so this is basically free |
+| `--workers` | Try `0` or `4` on Windows if training feels slow |
+| `--no-color-aug`, `--hsv-*`, `--degrees`, `--translate`, `--scale`, `--shear`, `--fliplr`, `--flipud`, `--mosaic` | Augmentation controls |
+| `--project` / `--name` | Where the run is saved (default `runs/train/<name>`) |
+| `--evaluate` | Run `evaluate.py` on the best checkpoint when training ends |
+
+**After training** (still in `training_scripts/yolo/`):
+
+```bash
+# Metrics: precision / recall / mAP50 / mAP50-95 per class, object, material, color (+ weighted composite)
+python evaluate.py --weights runs/detect/runs/train/exp/weights/best.pt --dataset-dir ../../dataset
+python evaluate.py --weights runs/detect/runs/train/exp/weights/best.pt --dataset-dir ../../dataset --split test
+
+# Sort every validation image into correct/ and failure/<type>/ (same rules as RF-DETR)
+python sort_yolo_errors.py --dataset-dir ../../dataset --weights runs/detect/runs/train/exp/weights/best.pt
+
+# One image per object: ground truth vs model predictions side by side
+python compare_predictions.py --weights runs/detect/runs/train/exp/weights/best.pt --dataset-dir ../../dataset
+
+# Compare two YOLO checkpoints (fixed / regressed / still wrong), or run the whole report in one go
+python compare_model_errors.py --weights-a .../baseline/weights/best.pt --weights-b .../noColorAug/weights/best.pt --label-a baseline --label-b no_color_aug --dataset-dir ../../dataset
+python run_full_error_report.py --weights-a .../baseline/weights/best.pt --label-a baseline --weights-b .../noColorAug/weights/best.pt --label-b no_color_aug --dataset-dir ../../dataset
+
+# Quick 1-epoch smoke test of the whole train -> evaluate pipeline (~2 min), before a long run
+python test_pipeline.py --dataset-dir ../../dataset
+
+# Export for deployment (ONNX by default; also TensorRT, OpenVINO, CoreML, TFLite...)
+python export_weights.py --weights runs/detect/runs/train/exp/weights/best.pt --imgsz 640 --simplify --quantize 16
+
+# Optional: push the dataset to Roboflow (preview first, then --upload)
+python upload_to_roboflow.py --dataset-dir ../../dataset --project your-project-slug
+```
+
+Training curves: copy ultralytics' `results.png` from the run folder to `yolo/results/training_curves.png`. Details and the YOLO example gallery: [`training_scripts/yolo/README.md`](training_scripts/yolo/README.md).
+
+### 4. Compare YOLO vs the transformer
+
+Run both sorters with the **same `--split`, `--conf` and `--iou`**, then:
+
+```bash
+cd training_scripts
+python common/compare_models.py --yolo-dir yolo/runs/detect/runs/train/exp/error_sort_valid --transformer-dir transformer/runs/rfdetr/nano_lowmem/error_sort_valid --out-dir comparison
+```
+
+This writes `comparison/comparison.png`, `comparison.txt` and `comparison.csv`. `compare_models.py` warns if the two runs used different thresholds.
+
+### Latest results snapshot (RF-DETR nano, `nano_lowmem`, validation split)
+
+| metric | value |
+|---|---|
+| COCO mAP50 | 0.944 |
+| COCO mAP50-95 | 0.454 |
+| precision / recall / F1 (COCO evaluator) | 0.946 / 0.883 / 0.902 |
+| exact-class precision / recall / F1 (conf 0.3, IoU 0.5) | 0.873 / 0.921 / 0.896 |
+| weighted composite F1 (object/material/color) | 0.925 |
+| true positives / false positives / false negatives | 315 / 46 / 27 (of 342 labelled objects) |
+
+Source: `training_scripts/transformer/runs/rfdetr/nano_lowmem/eval_val/evaluation_report_val.txt`. The P/R/F1 numbers are not directly comparable with YOLO's mAP columns; use the error-sorting comparison above for a like-for-like view.
+
+## Where the weights are stored
+
+Weights are created by the training scripts and are **not committed to git** (they are large). After a run they live here, relative to the script's folder:
+
+| model | file | location after training |
+|---|---|---|
+| **RF-DETR (transformer)** | best checkpoint | `training_scripts/transformer/runs/rfdetr/<name>/checkpoint_best_total.pth` |
+| | other checkpoints | `checkpoint_best_ema.pth`, `checkpoint_best_regular.pth` in the same folder |
+| | run config + metrics | `training_config.json`, `metrics.csv`, `loss_curves.png`, `eval_val/` in the same folder |
+| | staged dataset copy | `<run>/dataset_staged/` (safe to delete) |
+| **YOLO** | best weights | `training_scripts/yolo/runs/detect/runs/train/<name>/weights/best.pt` |
+| | last epoch | `.../weights/last.pt` |
+| | curves + metrics | `.../results.png`, `.../results.csv` |
+| | exported model | next to the weights (e.g. `best.onnx`) after `export_weights.py` |
+
+Current run on disk: `runs/rfdetr/nano_lowmem/` (config, metrics, curves and evaluation only; the `.pth` checkpoint stays on the training machine).
+
+> The `runs/detect/runs/train/...` nesting is how the installed ultralytics version lays out `--project runs/train`. If yours differs, `train_yolo.py` prints the real save path at the end of training.
+
+**Sharing / backing up weights:** copy the whole `runs/rfdetr/<name>/` folder (or just the `.pth`) and `weights/best.pt` to a shared drive or a GitHub Release. Don't commit them to the repo. <!-- TODO: add link to where the final weights are hosted -->
+
+## Running a trained model
+
+**Evaluate / sort a whole split** (what the scripts above do) is the easiest way to run either model end to end. To run a single image yourself:
+
+```python
+# YOLO
+from ultralytics import YOLO
+model = YOLO("training_scripts/yolo/runs/detect/runs/train/exp/weights/best.pt")
+results = model.predict("some_photo.jpg", conf=0.3, imgsz=640, device=0)
+results[0].show()
+
+# RF-DETR (transformer) -- pick the same size you trained: RFDETRNano / RFDETRSmall / ...
+from rfdetr import RFDETR
+from PIL import Image
+model = RFDETR.from_checkpoint("training_scripts/transformer/runs/rfdetr/nano_lowmem/checkpoint_best_total.pth")
+detections = model.predict(Image.open("some_photo.jpg"), threshold=0.3)
+print(detections.class_id, detections.confidence, detections.xyxy)   # class ids index data.corrected.yaml names
+```
+
+Class ids map to the names in `dataset/data.corrected.yaml` (index 0 = first entry under `names:`).
+
+> **Note:** the arm app's `vision/model/classifier.py` is still a stub (`identify()` returns a label, confidence and attributes). Wiring a trained checkpoint behind that function is what connects these detectors to the arm's capture pipeline.
+
+
+## Video Walkthrough: Arm Demo
 
 [![Watch the demo](https://img.youtube.com/vi/GgRfbci3YlA/0.jpg)](https://youtu.be/GgRfbci3YlA)
+
+---
+
+## Video Walkthrough: Training, Transformers, YOLO and Weights
+
+> 🎬 **VIDEO PLACEHOLDER - to be filmed and added.**
+> Replace this block with the link once the video is uploaded.
+
+<!-- When the video is uploaded, replace VIDEO_ID below and delete the "coming soon" line:
+[![Watch the training walkthrough](https://img.youtube.com/vi/VIDEO_ID/0.jpg)](https://youtu.be/VIDEO_ID)
+-->
+
+**Video: _coming soon_**  (link: `TODO`)
+
+**What the video will cover** (check off as filmed):
+
+- [ ] Project tour: arm app, `vision/`, `training_scripts/`, `dataset/`
+- [ ] The dataset: classes (`Object - Material - Color - Pdfname`), train/valid split, `dataset_stats`
+- [ ] **Training the transformer (RF-DETR):** the `train_rfdetr.py` command, model sizes, low-memory flags, watching the loss curves
+- [ ] **Training YOLO:** the `train_yolo.py` command, GPU check, augmentation flags
+- [ ] **Where the weights are stored** for each model (`checkpoint_best_total.pth` and `weights/best.pt`) and how to back them up
+- [ ] **How to run each model** on a split (`sort_rfdetr_errors.py`, `sort_yolo_errors.py`) and on a single image
+- [ ] Reading the results: metrics, the error-type folders (wrong object / material / color, missed, false positives), YOLO vs transformer comparison
+- [ ] Hooking a trained model into the arm app (`vision/model/classifier.py`)
+- [ ] Live demo: laser hitting an object -> detection
+
+**Video link:** _add here_  ·  **Weights download:** _add here_  ·  **Recorded on:** _add date_

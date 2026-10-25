@@ -1,5 +1,7 @@
 # Object detection: YOLO vs RF-DETR (vision transformer)
 
+[← back to the main README](../README.md)
+
 Two detectors trained and evaluated on the **same dataset**, with the **same
 rules** for deciding what counts as correct, so their results can be compared
 directly. The dataset's class names are `Object X - Material Y - Color Z -
@@ -64,35 +66,61 @@ used by both sorters, so a "wrong material" for YOLO means exactly what it does
 for RF-DETR. An image goes in the folder of its *most serious* failure; the CSVs
 list every mistake individually.
 
-## Quick start (Windows)
+## Quick start
+
+Run everything from the `training_scripts/` folder. Paths use forward slashes, which work in PowerShell, cmd and bash.
+First `pip install` the packages in [Dependencies](#dependencies) at the bottom.
 
 ```
-cd C:\Users\finns\Downloads\roboticsarmAI\yolo_training_scripts
+cd training_scripts
 
-:: 0. dataset prep (once, or whenever the PDFs change)
+# 0. dataset prep (once, or whenever the PDFs change) - read-only check, writes dataset/dataset_build_report.txt
 cd common
-python build_dataset.py --dataset-dir ..\..\dataset
+python build_dataset.py --dataset-dir ../../dataset
 cd ..
 
-:: 1a. YOLO
+# 1a. YOLO  (train, evaluate, sort every valid image into correct / error-type folders)
 cd yolo
-python train_yolo.py --dataset-dir ..\..\dataset --model yolov8s.pt --epochs 100 --device 0 --cache ram --evaluate
-python sort_yolo_errors.py --dataset-dir ..\..\dataset --weights runs\detect\runs\train\exp\weights\best.pt
+python train_yolo.py --dataset-dir ../../dataset --model yolov8s.pt --epochs 100 --device 0 --cache ram --evaluate
+python sort_yolo_errors.py --dataset-dir ../../dataset --weights runs/detect/runs/train/exp/weights/best.pt
 cd ..
 
-:: 1b. RF-DETR
+# 1b. RF-DETR (transformer): standard run
 cd transformer
-python train_rfdetr.py --dataset-dir ..\..\dataset --model small --epochs 100 --device cuda --no-amp --name pretrained
-python sort_rfdetr_errors.py --dataset-dir ..\..\dataset --weights runs\rfdetr\pretrained
-python plot_rfdetr_loss.py runs\rfdetr\pretrained
+python train_rfdetr.py --dataset-dir ../../dataset --model small --epochs 100 --device cuda --no-amp --name pretrained
+python sort_rfdetr_errors.py --dataset-dir ../../dataset --weights runs/rfdetr/pretrained
+python plot_rfdetr_loss.py runs/rfdetr/pretrained
 cd ..
 
-:: 2. compare the two (same split, same --conf / --iou!)
-python common\compare_models.py --yolo-dir yolo\runs\detect\runs\train\exp\error_sort_valid --transformer-dir transformer\runs\rfdetr\pretrained\error_sort_valid --out-dir comparison
+# 1b'. RF-DETR low-memory run (6 GB GPU) - the run behind the current results
+cd transformer
+python train_rfdetr.py --dataset-dir ../../dataset --model nano --epochs 100 --batch 2 --grad-accum 8 --resolution 512 --device cuda --no-amp --workers 0 --patience 20 --name nano_lowmem
+cd ..
+
+# 2. compare the two (same split, same --conf / --iou!)
+python common/compare_models.py --yolo-dir yolo/runs/detect/runs/train/exp/error_sort_valid --transformer-dir transformer/runs/rfdetr/pretrained/error_sort_valid --out-dir comparison
 ```
 
 Run the sorters with the **same `--split`, `--conf` and `--iou`** for both
 models; `compare_models.py` warns if they differ.
+
+## Where the weights are stored
+
+Weights are written by the training scripts and are **not committed to git**.
+
+| model | best weights | other files in the same run |
+|---|---|---|
+| YOLO | `yolo/runs/detect/runs/train/<name>/weights/best.pt` | `last.pt`, `results.png`, `results.csv` |
+| RF-DETR | `transformer/runs/rfdetr/<name>/checkpoint_best_total.pth` | `checkpoint_best_ema.pth`, `checkpoint_best_regular.pth`, `training_config.json`, `metrics.csv`, `loss_curves.png`, `eval_val/` |
+
+Back up the whole run folder (or at least the `.pth` / `best.pt`) to a shared drive or GitHub Release. The per-model READMEs show how to load either one for a single image.
+
+## Latest evaluation snapshot
+
+RF-DETR nano (`nano_lowmem`), validation split, from `transformer/runs/rfdetr/nano_lowmem/eval_val/evaluation_report_val.txt`:
+COCO mAP50 **0.944**, mAP50-95 **0.454**, F1 0.902 (COCO evaluator); at conf 0.3 / IoU 0.5 exact-class P/R/F1 0.873 / 0.921 / 0.896; weighted composite F1 **0.925**. No YOLO evaluation output is stored in the repo yet.
+
+> **Read the scores with this caveat:** `dataset_stats` found that 188 of 340 validation images (55%) have a near-duplicate in train (56 look identical), because each object was photographed in a rotating shoot. Validation scores are therefore probably higher than on genuinely new photos. See [`../dataset_stats`](../dataset_stats/README.md) and `stats_after_split/`; `resplit_dataset.py --mode object-disjoint` tests unseen objects.
 
 ## Head-to-head results (fill in after your runs)
 

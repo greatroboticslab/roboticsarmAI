@@ -1,7 +1,23 @@
 # common/ -- dataset tools and the shared evaluation code
 
+[← training_scripts](../README.md) · [← back to the main README](../../README.md)
+
 Used by both `yolo/` and `transformer/`. Run these from inside this folder
 (e.g. `python build_dataset.py --dataset-dir ../../dataset`).
+
+## Typical order
+
+```bash
+cd training_scripts/common
+python build_dataset.py --dataset-dir ../../dataset                                   # 1. audit labels vs PDFs (read-only), read dataset/dataset_build_report.txt
+python resplit_dataset.py --dataset-dir ../../dataset --mode stratified --train-ratio 0.8 --val-ratio 0.2   # 2. optional: preview a new split (add --apply-in-place to keep it)
+python visualize_annotations.py --dataset-dir ../../dataset --split valid --limit 12 --grid   # 3. optional: eyeball the labels
+cp object_categories.yaml ../../dataset/object_categories.yaml                        # 4. optional: enables the "same category" error type + per-category scores
+# 5. train: ../yolo/train_yolo.py or ../transformer/train_rfdetr.py
+# 6. after sorting errors: collect_examples.py, then compare_models.py (see below)
+```
+
+Add `--help` to any script for every option. Dataset counts and the train/valid leakage check are in [`../../dataset_stats`](../../dataset_stats/README.md).
 
 ## `dataset/data.yaml` is the source of truth
 
@@ -169,19 +185,23 @@ PDF text-extraction artifact truncated it).
   pictures, and writes `examples_index.csv` + `examples_captions.md`.
 
   ```bash
-  python collect_examples.py --sorted-dir ../transformer/runs/rfdetr/pretrained/error_sort_valid --out-dir ../transformer/results
+  python collect_examples.py --sorted-dir ../transformer/runs/rfdetr/nano_lowmem/error_sort_valid --out-dir ../transformer/results
   python collect_examples.py --sorted-dir ... --out-dir ../yolo/results --per-type 3 --pick most-confident
   ```
   `--pick` is `random` (default, seeded so re-runs don't shuffle), `first`, or
   `most-confident` (the mistakes the model was most sure about).
 - **`make_placeholders.py`** -- (re)creates the grey placeholder pictures in a
   `results/` folder. Never overwrites existing files unless `--force`.
+
+  ```bash
+  python make_placeholders.py --results-dir ../yolo/results --per-type 2
+  ```
 - **`compare_models.py`** -- side-by-side table, per-image agreement, and a
   large-print bar chart from two sorters' output folders
   (`comparison.txt/.csv/.png`).
 
   ```bash
-  python compare_models.py --yolo-dir ../yolo/runs/detect/runs/train/exp/error_sort_valid --transformer-dir ../transformer/runs/rfdetr/pretrained/error_sort_valid
+  python compare_models.py --yolo-dir ../yolo/runs/detect/runs/train/exp/error_sort_valid --transformer-dir ../transformer/runs/rfdetr/nano_lowmem/error_sort_valid --out-dir ../comparison
   # two runs of the SAME model also work: add --label-a "pretrained" --label-b "scratch"
   ```
 

@@ -1,5 +1,7 @@
 # transformer/ -- RF-DETR (Roboflow vision transformer)
 
+[← training_scripts](../README.md) · [← back to the main README](../../README.md)
+
 [RF-DETR](https://github.com/roboflow/rf-detr) is a transformer detector built
 on a DINOv2 vision-transformer backbone. These scripts train it on the **same**
 `dataset/` as the YOLO scripts (same `data.corrected.yaml`, same label files),
@@ -13,6 +15,14 @@ python train_rfdetr.py --dataset-dir ../../dataset --model small --epochs 100 --
 python sort_rfdetr_errors.py --dataset-dir ../../dataset --weights runs/rfdetr/pretrained
 python plot_rfdetr_loss.py runs/rfdetr/pretrained
 ```
+
+Low-memory run on a 6 GB GPU (the one behind the results below):
+
+```
+python train_rfdetr.py --dataset-dir ../../dataset --model nano --epochs 100 --batch 2 --grad-accum 8 --resolution 512 --device cuda --no-amp --workers 0 --patience 20 --name nano_lowmem
+```
+
+Run these from `training_scripts/transformer/`. Needs a CUDA build of PyTorch for `--device cuda` (`python -c "import torch; print(torch.cuda.is_available())"` must print `True`).
 
 ## How the evaluation works
 
@@ -115,20 +125,63 @@ python plot_rfdetr_loss.py runs/rfdetr/pretrained
   python plot_rfdetr_loss.py runs/rfdetr/pretrained runs/rfdetr/scratch      # saves loss_comparison.png
   ```
 
+## Training flags at a glance
+
+| flag | meaning |
+|---|---|
+| `--model nano\|small\|medium\|base\|large` | Size. With this dataset use `nano` or `small` |
+| `--epochs`, `--patience` | Max epochs and early-stopping patience (0 = off) |
+| `--batch` x `--grad-accum` | Effective batch (default 4 x 4 = 16). If out of GPU memory: lower `--batch`, raise `--grad-accum` |
+| `--resolution` | Input size (smaller = less memory; 512 in the low-memory run) |
+| `--device cuda` / `cpu` / `mps` | Where to train |
+| `--no-amp` | Full fp32 (GTX 16-series fp16/cuDNN errors) |
+| `--workers 0` | If training hangs on Windows |
+| `--from-scratch` | No pretrained COCO weights (much worse on ~1,700 images) |
+| `--name` | Run folder: `runs/rfdetr/<name>/` |
+| `--eval-only --weights X.pth` | Evaluate a checkpoint without training |
+| `--conf`, `--iou` | Thresholds for the P/R/F1 breakdown (default 0.3 / 0.5) |
+
+## Where the weights are stored
+
+Created by training, **not committed to git**. In `training_scripts/transformer/runs/rfdetr/<name>/`:
+
+- `checkpoint_best_total.pth` - the best checkpoint; this is what every other script loads (`--weights` takes this file or the run folder)
+- `checkpoint_best_ema.pth`, `checkpoint_best_regular.pth` - alternates
+- `training_config.json`, `metrics.csv`, `loss_curves.png` - settings and training history
+- `eval_val/` (and `eval_test/` if a test split exists) - evaluation report and CSVs
+- `error_sort_valid/` - written by `sort_rfdetr_errors.py`
+- `dataset_staged/` - a temporary copy of the dataset; safe to delete
+
+The `nano_lowmem` run folder in the repo holds the config, metrics, curves and evaluation; its `.pth` stays on the training machine.
+
+## Run the trained model on one image
+
+```python
+from PIL import Image
+from rfdetr import RFDETR
+
+model = RFDETR.from_checkpoint("runs/rfdetr/nano_lowmem/checkpoint_best_total.pth")
+det = model.predict(Image.open("some_photo.jpg"), threshold=0.3)
+print(det.class_id, det.confidence, det.xyxy)   # class_id indexes `names` in dataset/data.corrected.yaml
+```
+
 ## Results (fill in after your runs)
 
-Run: `______________`   Dataset split: `valid`   conf `0.3`   IoU `0.5`
+Run: `nano_lowmem` (RF-DETR nano, 512 px, 100 epochs max, patience 20)   Dataset split: `valid`   conf `0.3`   IoU `0.5`
 
 | metric | value |
 |---|---|
-| COCO mAP50 | |
-| COCO mAP50-95 | |
-| precision | |
-| recall | |
-| F1 | |
-| composite F1 (object/material/color) | |
-| images fully correct | |
-| objects found with exact class | |
+| COCO mAP50 | 0.944 |
+| COCO mAP50-95 | 0.454 |
+| precision | 0.946 (COCO evaluator); 0.873 at conf 0.3 |
+| recall | 0.883 (COCO evaluator); 0.921 at conf 0.3 |
+| F1 | 0.902 (COCO evaluator); 0.896 at conf 0.3 |
+| composite F1 (object/material/color) | 0.925 |
+| images fully correct | _run `sort_rfdetr_errors.py` to fill in_ |
+| objects found with exact class | 315 of 342 (TP 315, FP 46, FN 27) |
+
+
+> **Read the scores with this caveat:** `dataset_stats` found that 188 of 340 validation images (55%) have a near-duplicate in train (56 look identical), because each object was photographed in a rotating shoot. Validation scores are therefore probably higher than on genuinely new photos. See [`../../dataset_stats`](../../dataset_stats/README.md) and `../../stats_after_split/`; `resplit_dataset.py --mode object-disjoint` tests unseen objects.
 
 ![Loss curves](results/loss_curves.png)
 *Fill in with:* `python plot_rfdetr_loss.py runs/rfdetr/pretrained --out results/loss_curves.png`
@@ -291,10 +344,3 @@ A second box on an object that was already found. *False positive.*
 *What happened:* _fill in after the run_
 1,  guessed the wrong object type
   2 guessed the wrong object type
-
-
-
-
-
-  last run i did 
-  python train_rfdetr.py --dataset-dir ..\..\dataset --model nano --epochs 100 --batch 2 --grad-accum 8 --resolution 512 --device cuda --no-amp --workers 0 --patience 20 --name nano_lowmem
