@@ -1,0 +1,145 @@
+RF-DETR evaluation -- split: val  (conf >= 0.3, IoU >= 0.5)
+==============================================================================
+
+COCO METRICS (from RF-DETR's own evaluator)
+  val/mAP_50_95               0.4536
+  val/mAP_50                  0.9437
+  val/mAP_75                  0.3574
+  val/mAR                     0.5576
+  val/F1                      0.9018
+  val/precision               0.9456
+  val/recall                  0.8828
+
+OVERALL (instance-weighted, exact class must match)
+  precision 0.8726   recall 0.9211   F1 0.8962
+  TP 315  FP 46  FN 27  ground-truth instances 342
+
+WEIGHTED COMPOSITE (macro F1; object/material/color weights 0.60/0.30/0.10)
+  0.9245
+
+PER CLASS  (sorted by F1, worst first)
+  class                                                                      n    TP    FP    FN    prec     rec      F1
+  Object car key fob with keyring - Material metal  - Pdfname u4lxlaYXiY     0     0     1     0   0.000   0.000   0.000
+  Object slip joint pliers - Material  plastic - Color yellow - Pdfname      4     2     1     2   0.667   0.500   0.571
+  Object robotic gripper finger assembly - Material plastic - Color blue     8     6     5     2   0.545   0.750   0.632
+  Object protective phone case - Material  plastic -  Pdfname asdfeafgta     4     2     0     2   1.000   0.500   0.667
+  Object retractable gel pen - Material plastic- Pdfname  asdasdaswe         1     1     1     0   0.500   1.000   0.667
+  Object precision screwdriver - Material Metal - Pdfname NoEr35VbQ7sR       5     4     2     1   0.667   0.800   0.727
+  Object ballpoint pen  - Material plastic - Color red - Pdfname Tg2wygr     5     3     0     2   1.000   0.600   0.750
+  Object ballpoint pen - Material rubber  - Color red - Pdfname Tg2wygrq     6     6     4     0   0.600   1.000   0.750
+  Object scissors -  Material  plastic - Pdfname  tYexGlkiIXWc              14    12     5     2   0.706   0.857   0.774
+  Object car key fob with keyring - Material plastic - Pdfname u4lxlaYXi    13    10     2     3   0.833   0.769   0.800
+  Object desktop tape dispenser - Material  plastic tape - Pdfname 8pMd2     6     4     0     2   1.000   0.667   0.800
+  Object slip joint pliers - Material  metal   - Pdfname favaeaevcsrta       4     4     2     0   0.667   1.000   0.800
+  Object protective phone case - Material   rubber  -  Pdfname asdfeafgt     9     9     4     0   0.692   1.000   0.818
+  Object precision screwdriver - Material rubber - Color black and orang     9     7     1     2   0.875   0.778   0.824
+  Object cardboard shipping box - Material composite -  Color brown - Pd     9     8     2     1   0.800   0.889   0.842
+  Object ballpoint pen - Material plastic  - Color clear - Pdfname Tg2wy     6     6     2     0   0.750   1.000   0.857
+  Object desktop tape dispenser - Material plastic   - Pdfname 8pMd29OsI     9     9     3     0   0.750   1.000   0.857
+  Object robotic gripper finger assembly  - Material metal -  Pdfname Yy     6     6     2     0   0.750   1.000   0.857
+  Object scissors -  Material metal - Pdfname  tYexGlkiIXWc                  3     3     1     0   0.750   1.000   0.857
+  Object - extruded aluminum profile -  Material metal - Pdfname IJiB5jb    13    12     2     1   0.857   0.923   0.889
+  Object retractable gel pen - Material rubber - Pdfname  asdasdaswe         5     4     0     1   1.000   0.800   0.889
+  Object rubber duck -  Material rubber  -Color blue - Pdfname BWuUnwTLu    16    14     1     2   0.933   0.875   0.903
+  Object screw packaging box - Material cardboard - Pdfname VgpKnmoKJfrS    12    11     1     1   0.917   0.917   0.917
+  Object toy football - Material foam - Color blue - Pdfname VT1ffZoLOnK    12    11     1     1   0.917   0.917   0.917
+  Object breadboard - Material plastic - Color white - Pdfname  UT1NgGrF     9     9     1     0   0.900   1.000   0.947
+  Object microfiber cleaning cloth  - Material fabric  - Color black - P     9     9     1     0   0.900   1.000   0.947
+  Object bifold wallet - Material leather - Pdfname qb3CMu4EyzEc            10    10     1     0   0.909   1.000   0.952
+  Object fitness tracker replacement band - Material silicone -  Pdfname    12    11     0     1   1.000   0.917   0.957
+  Object book  - Material paper  - Color red - Pdfname QP9o9Hihi4G7         13    12     0     1   1.000   0.923   0.960
+  Object Amazon recyclable paper mailer -  Material paper  - Color brown    10    10     0     0   1.000   1.000   1.000
+  Object cardboard shipping box-  Material plastic  - Color  blue -Pdfna     1     1     0     0   1.000   1.000   1.000
+  Object claw hammer -Material  rubber - Pdfname 2LKzx9zgCNVB                4     4     0     0   1.000   1.000   1.000
+  Object claw hammer -Material metal - Pdfname 2LKzx9zgCNVB                  8     8     0     0   1.000   1.000   1.000
+  Object combination wrench - Material metal-   Pdfname faefasdffdaea        7     7     0     0   1.000   1.000   1.000
+  Object graphing calculator slide case - Material plastic - Pdfname as1     9     9     0     0   1.000   1.000   1.000
+  Object insulated water bottle  - Material metal - Color navy blue - Pd     1     1     0     0   1.000   1.000   1.000
+  Object plastic container lid - Material plastic - Color red -  Pdfname     8     8     0     0   1.000   1.000   1.000
+  Object plastic first aid kit - Material plastic  -Color blue  -Pdfname     6     6     0     0   1.000   1.000   1.000
+  Object plastic first aid kit - Material plastic -  Color blue and whit     3     3     0     0   1.000   1.000   1.000
+  Object rock  - Material stone - Pdfname as35as4adsa                        5     5     0     0   1.000   1.000   1.000
+  Object tabletop - Material composite  plastic -  Pdfname jhjasdfwat        6     6     0     0   1.000   1.000   1.000
+  Object tree branch - Material wood - Pdfname pipoaepaf                     6     6     0     0   1.000   1.000   1.000
+  Object white rectangular foam block - Material Foam  - Color white - P     9     9     0     0   1.000   1.000   1.000
+  Object wire spool  -Material plastic -  Color oranges - Pdfname ZryFz3     6     6     0     0   1.000   1.000   1.000
+  Object wire spool - Material  rubber - Color oranges -  Pdfname  ZryFz     4     4     0     0   1.000   1.000   1.000
+  Object wireless earbud charging case - Material plastic - Pdfname qzJI    12    12     0     0   1.000   1.000   1.000
+  object stapler - material metal - color black - Pdfname fduiadew           5     5     0     0   1.000   1.000   1.000
+
+PER OBJECT  (sorted by F1, worst first)
+  object                               n    TP    FP    FN    prec     rec      F1
+  slip joint pliers                    8     6     3     2   0.667   0.750   0.706
+  robotic gripper finger assembly     14    12     7     2   0.632   0.857   0.727
+  car key fob with keyring            13    10     3     3   0.769   0.769   0.769
+  scissors                            17    15     6     2   0.714   0.882   0.789
+  retractable gel pen                  6     5     1     1   0.833   0.833   0.833
+  ballpoint pen                       17    16     5     1   0.762   0.941   0.842
+  precision screwdriver               14    12     2     2   0.857   0.857   0.857
+  cardboard shipping box              10     9     2     1   0.818   0.900   0.857
+  - extruded aluminum profile         13    12     2     1   0.857   0.923   0.889
+  desktop tape dispenser              15    14     2     1   0.875   0.933   0.903
+  rubber duck                         16    14     1     2   0.933   0.875   0.903
+  screw packaging box                 12    11     1     1   0.917   0.917   0.917
+  toy football                        12    11     1     1   0.917   0.917   0.917
+  protective phone case               13    13     2     0   0.867   1.000   0.929
+  breadboard                           9     9     1     0   0.900   1.000   0.947
+  microfiber cleaning cloth            9     9     1     0   0.900   1.000   0.947
+  bifold wallet                       10    10     1     0   0.909   1.000   0.952
+  fitness tracker replacement band    12    11     0     1   1.000   0.917   0.957
+  book                                13    12     0     1   1.000   0.923   0.960
+  amazon recyclable paper mailer      10    10     0     0   1.000   1.000   1.000
+  claw hammer                         12    12     0     0   1.000   1.000   1.000
+  combination wrench                   7     7     0     0   1.000   1.000   1.000
+  graphing calculator slide case       9     9     0     0   1.000   1.000   1.000
+  insulated water bottle               1     1     0     0   1.000   1.000   1.000
+  plastic container lid                8     8     0     0   1.000   1.000   1.000
+  plastic first aid kit                9     9     0     0   1.000   1.000   1.000
+  rock                                 5     5     0     0   1.000   1.000   1.000
+  stapler                              5     5     0     0   1.000   1.000   1.000
+  tabletop                             6     6     0     0   1.000   1.000   1.000
+  tree branch                          6     6     0     0   1.000   1.000   1.000
+  white rectangular foam block         9     9     0     0   1.000   1.000   1.000
+  wire spool                          10    10     0     0   1.000   1.000   1.000
+  wireless earbud charging case       12    12     0     0   1.000   1.000   1.000
+
+PER MATERIAL  (sorted by F1, worst first)
+  material              n    TP    FP    FN    prec     rec      F1
+  plastic tape          6     4     0     2   1.000   0.667   0.800
+  composite             9     8     2     1   0.800   0.889   0.842
+  plastic             118   105    20    13   0.840   0.890   0.864
+  rubber               53    48    10     5   0.828   0.906   0.865
+  metal                52    50    10     2   0.833   0.962   0.893
+  cardboard            12    11     1     1   0.917   0.917   0.917
+  fabric                9     9     1     0   0.900   1.000   0.947
+  foam                 21    20     1     1   0.952   0.952   0.952
+  leather              10    10     1     0   0.909   1.000   0.952
+  silicone             12    11     0     1   1.000   0.917   0.957
+  paper                23    22     0     1   1.000   0.957   0.978
+  composite plastic     6     6     0     0   1.000   1.000   1.000
+  stone                 5     5     0     0   1.000   1.000   1.000
+  wood                  6     6     0     0   1.000   1.000   1.000
+
+PER COLOR  (sorted by F1, worst first)
+  color                n    TP    FP    FN    prec     rec      F1
+  yellow               4     2     1     2   0.667   0.500   0.571
+  black and orange     9     7     1     2   0.875   0.778   0.824
+  clear                6     6     2     0   0.750   1.000   0.857
+  blue                43    39     6     4   0.867   0.907   0.886
+  (unknown)          183   172    24    11   0.878   0.940   0.908
+  red                 32    30     3     2   0.909   0.938   0.923
+  brown               19    18     2     1   0.900   0.947   0.923
+  black               14    14     1     0   0.933   1.000   0.966
+  white               18    18     1     0   0.947   1.000   0.973
+  blue and white       3     3     0     0   1.000   1.000   1.000
+  navy blue            1     1     0     0   1.000   1.000   1.000
+  oranges             10    10     0     0   1.000   1.000   1.000
+
+SUMMARY -- COMPLETE RESULTS FOR EVERY LEVEL
+                                           precision   recall       F1
+  overall (instance-weighted)                 0.8726   0.9211   0.8962
+  macro avg across classes                    0.8888   0.9213   0.8941
+  macro avg across objects                    0.9129   0.9453   0.9273
+  macro avg across materials                  0.9271   0.9325   0.9262
+  macro avg across colors                     0.8938   0.9175   0.9026
+  weighted composite (object/material/color)                      0.9245

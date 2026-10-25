@@ -1,0 +1,48 @@
+class_id,class,object,material,color,train_images,train_instances,valid_images,valid_instances,total_instances,flags
+0,Object - extruded aluminum profile -  Material metal - Pdfname IJiB5jbMhrV7,- extruded aluminum profile,metal,(unspecified),51,51,13,13,64,
+1,Object Amazon recyclable paper mailer -  Material paper  - Color brown - Pdfname ZSbzRHMUOqAP,Amazon recyclable paper mailer,paper,brown,41,41,10,10,51,
+2,Object ballpoint pen  - Material plastic - Color red - Pdfname Tg2wygrqE5uZ,ballpoint pen,plastic,red,15,16,5,5,21,few train images (<30)
+3,Object ballpoint pen - Material plastic  - Color clear - Pdfname Tg2wygrqE5uZ,ballpoint pen,plastic,clear,25,25,6,6,31,few train images (<30)
+4,Object ballpoint pen - Material rubber  - Color red - Pdfname Tg2wygrqE5uZ,ballpoint pen,rubber,red,30,30,6,6,36,
+5,Object bifold wallet - Material leather - Pdfname qb3CMu4EyzEc,bifold wallet,leather,(unspecified),39,39,10,10,49,
+6,Object book  - Material paper  - Color red - Pdfname QP9o9Hihi4G7,book,paper,red,51,51,13,13,64,
+7,Object breadboard - Material plastic - Color white - Pdfname  UT1NgGrFNbGM,breadboard,plastic,white,34,34,9,9,43,
+8,Object car key fob with keyring - Material metal  - Pdfname u4lxlaYXiY3D,car key fob with keyring,metal,(unspecified),11,11,0,0,11,few train images (<30); NOT IN VALID (can't be scored)
+9,Object car key fob with keyring - Material plastic - Pdfname u4lxlaYXiY3D,car key fob with keyring,plastic,(unspecified),39,39,13,13,52,
+10,Object cardboard shipping box - Material composite -  Color brown - Pdfname OHMlPZx8zUzd,cardboard shipping box,composite,brown,31,31,9,9,40,
+11,Object cardboard shipping box-  Material plastic  - Color  blue -Pdfname OHMlPZx8zUzd,cardboard shipping box,plastic,blue,11,11,1,1,12,few train images (<30); few valid images (<5)
+12,Object claw hammer -Material  rubber - Pdfname 2LKzx9zgCNVB,claw hammer,rubber,(unspecified),17,17,4,4,21,few train images (<30); few valid images (<5)
+13,Object claw hammer -Material metal - Pdfname 2LKzx9zgCNVB,claw hammer,metal,(unspecified),32,32,8,8,40,
+14,Object combination wrench - Material metal-   Pdfname faefasdffdaea,combination wrench,metal,(unspecified),26,26,7,7,33,few train images (<30)
+15,Object desktop tape dispenser - Material  plastic tape - Pdfname 8pMd29OsIRjD,desktop tape dispenser,plastic tape,(unspecified),16,16,6,6,22,few train images (<30)
+16,Object desktop tape dispenser - Material plastic   - Pdfname 8pMd29OsIRjD,desktop tape dispenser,plastic,(unspecified),48,48,9,9,57,
+17,Object fitness tracker replacement band - Material silicone -  Pdfname  fdfasdjhadae,fitness tracker replacement band,silicone,(unspecified),40,42,10,12,54,
+18,Object graphing calculator slide case - Material plastic - Pdfname as1D2765rACT,graphing calculator slide case,plastic,(unspecified),38,38,9,9,47,
+19,Object insulated water bottle  - Material metal - Color navy blue - Pdfname Uop6evwTVgMl,insulated water bottle,metal,navy blue,2,2,1,1,3,few train images (<30); few valid images (<5)
+20,Object microfiber cleaning cloth  - Material fabric  - Color black - Pdfname drQGvVi456iM,microfiber cleaning cloth,fabric,black,34,34,9,9,43,
+21,Object plastic container lid - Material plastic - Color red -  Pdfname  ZC63DBkv6oJY,plastic container lid,plastic,red,34,36,8,8,44,
+22,Object plastic first aid kit - Material plastic  -Color blue  -Pdfname 6lew56E5S7Ez,plastic first aid kit,plastic,blue,15,15,6,6,21,few train images (<30)
+23,Object plastic first aid kit - Material plastic -  Color blue and white - Pdfname 6lew56E5S7Ez,plastic first aid kit,plastic,blue and white,21,21,3,3,24,few train images (<30); few valid images (<5)
+24,Object precision screwdriver - Material Metal - Pdfname NoEr35VbQ7sR,precision screwdriver,Metal,(unspecified),18,18,5,5,23,few train images (<30)
+25,Object precision screwdriver - Material rubber - Color black and orange - Pdfname NoEr35VbQ7sR,precision screwdriver,rubber,black and orange,39,39,9,9,48,
+26,Object protective phone case - Material   rubber  -  Pdfname asdfeafgta,protective phone case,rubber,(unspecified),43,43,9,9,52,
+27,Object protective phone case - Material  plastic -  Pdfname asdfeafgta,protective phone case,plastic,(unspecified),10,10,4,4,14,few train images (<30); few valid images (<5)
+28,Object retractable gel pen - Material plastic- Pdfname  asdasdaswe,retractable gel pen,plastic,(unspecified),18,18,1,1,19,few train images (<30); few valid images (<5); odd valid share 5%
+29,Object retractable gel pen - Material rubber - Pdfname  asdasdaswe,retractable gel pen,rubber,(unspecified),7,7,5,5,12,few train images (<30); odd valid share 42%
+30,Object robotic gripper finger assembly  - Material metal -  Pdfname Yy6dySnH33wN,robotic gripper finger assembly,metal,(unspecified),24,24,6,6,30,few train images (<30)
+31,Object robotic gripper finger assembly - Material plastic - Color blue - Pdfname Yy6dySnH33wN,robotic gripper finger assembly,plastic,blue,32,34,8,8,42,
+32,Object rock  - Material stone - Pdfname as35as4adsa,rock,stone,(unspecified),20,20,5,5,25,few train images (<30)
+33,Object rubber duck -  Material rubber  -Color blue - Pdfname BWuUnwTLudUE,rubber duck,rubber,blue,63,63,16,16,79,
+34,Object scissors -  Material  plastic - Pdfname  tYexGlkiIXWc,scissors,plastic,(unspecified),46,47,14,14,61,
+35,Object scissors -  Material metal - Pdfname  tYexGlkiIXWc,scissors,metal,(unspecified),23,24,3,3,27,few train images (<30); few valid images (<5)
+36,Object screw packaging box - Material cardboard - Pdfname VgpKnmoKJfrS,screw packaging box,cardboard,(unspecified),48,48,12,12,60,
+37,Object slip joint pliers - Material  metal   - Pdfname favaeaevcsrta,slip joint pliers,metal,(unspecified),20,20,4,4,24,few train images (<30); few valid images (<5)
+38,Object slip joint pliers - Material  plastic - Color yellow - Pdfname favaeaevcsrta,slip joint pliers,plastic,yellow,12,12,4,4,16,few train images (<30); few valid images (<5)
+39,Object tabletop - Material composite  plastic -  Pdfname jhjasdfwat,tabletop,composite  plastic,(unspecified),25,25,6,6,31,few train images (<30)
+40,Object toy football - Material foam - Color blue - Pdfname VT1ffZoLOnKv,toy football,foam,blue,50,50,12,12,62,
+41,Object tree branch - Material wood - Pdfname pipoaepaf,tree branch,wood,(unspecified),26,26,6,6,32,few train images (<30)
+42,Object white rectangular foam block - Material Foam  - Color white - Pdfname LpbAVoaL01XV,white rectangular foam block,Foam,white,34,34,9,9,43,
+43,Object wire spool  -Material plastic -  Color oranges - Pdfname ZryFz3DBSiO8,wire spool,plastic,oranges,20,20,6,6,26,few train images (<30)
+44,Object wire spool - Material  rubber - Color oranges -  Pdfname  ZryFz3DBSiO8,wire spool,rubber,oranges,19,19,4,4,23,few train images (<30); few valid images (<5)
+45,Object wireless earbud charging case - Material plastic - Pdfname qzJIPQkli2jB,wireless earbud charging case,plastic,(unspecified),50,50,12,12,62,
+46,object stapler - material metal - color black - Pdfname fduiadew,stapler,metal,black,21,21,5,5,26,few train images (<30)

@@ -1,0 +1,140 @@
+==============================================================================
+DATASET STATISTICS
+==============================================================================
+dataset: C:\Users\finns\Downloads\roboticsarmAI\dataset
+classes: 47   (names from data.corrected.yaml)
+
+SPLITS
+  split     images  with boxes  background  instances  inst/img
+  train       1365        1365           0       1378      1.01
+  valid        340         340           0        342      1.01
+  valid share of all images: 19.9%
+
+CLASS BALANCE (train instances)
+  min 2   median 26   max 63   imbalance (max/min of non-empty) 31.5x
+  classes with a warning: 24 of 47
+
+PER OBJECT (fewest train instances first)
+  object                             classes  train img train inst  valid img valid inst
+  insulated water bottle                   1          2          2          1          1
+  rock                                     1         20         20          5          5
+  stapler                                  1         21         21          5          5
+  retractable gel pen                      2         25         25          6          6
+  tabletop                                 1         25         25          6          6
+  combination wrench                       1         26         26          7          7
+  tree branch                              1         26         26          6          6
+  slip joint pliers                        2         32         32          8          8
+  breadboard                               1         34         34          9          9
+  microfiber cleaning cloth                1         34         34          9          9
+  white rectangular foam block             1         34         34          9          9
+  plastic container lid                    1         34         36          8          8
+  plastic first aid kit                    2         36         36          9          9
+  graphing calculator slide case           1         38         38          9          9
+  bifold wallet                            1         39         39         10         10
+  wire spool                               2         39         39         10         10
+  Amazon recyclable paper mailer           1         41         41         10         10
+  cardboard shipping box                   2         42         42         10         10
+  fitness tracker replacement band         1         40         42         10         12
+  screw packaging box                      1         48         48         12         12
+  claw hammer                              2         49         49         12         12
+  car key fob with keyring                 2         50         50         13         13
+  toy football                             1         50         50         12         12
+  wireless earbud charging case            1         50         50         12         12
+  - extruded aluminum profile              1         51         51         13         13
+  book                                     1         51         51         13         13
+  protective phone case                    2         53         53         13         13
+  precision screwdriver                    2         57         57         14         14
+  robotic gripper finger assembly          2         56         58         14         14
+  rubber duck                              1         63         63         16         16
+  desktop tape dispenser                   2         64         64         15         15
+  ballpoint pen                            3         70         71         17         17
+  scissors                                 2         69         71         17         17
+
+PER MATERIAL
+  material                           classes  train img train inst  valid img valid inst
+  plastic tape                             1         16         16          6          6
+  Metal                                    1         18         18          5          5
+  stone                                    1         20         20          5          5
+  composite  plastic                       1         25         25          6          6
+  wood                                     1         26         26          6          6
+  composite                                1         31         31          9          9
+  fabric                                   1         34         34          9          9
+  Foam                                     1         34         34          9          9
+  leather                                  1         39         39         10         10
+  silicone                                 1         40         42         10         12
+  cardboard                                1         48         48         12         12
+  foam                                     1         50         50         12         12
+  paper                                    2         92         92         23         23
+  metal                                    9        210        211         47         47
+  rubber                                   7        218        218         53         53
+  plastic                                 17        468        474        118        118
+
+PER COLOR
+  color                              classes  train img train inst  valid img valid inst
+  navy blue                                1          2          2          1          1
+  yellow                                   1         12         12          4          4
+  blue and white                           1         21         21          3          3
+  clear                                    1         25         25          6          6
+  black and orange                         1         39         39          9          9
+  oranges                                  2         39         39         10         10
+  black                                    2         55         55         14         14
+  white                                    2         68         68         18         18
+  brown                                    2         72         72         19         19
+  red                                      4        130        133         32         32
+  blue                                     5        171        173         43         43
+  (unspecified)                           25        735        739        181        183
+
+CLASSES THAT NEED ATTENTION (fewest train images first)
+  class                                                      train img valid img  warning
+  Object insulated water bottle  - Material metal - Color n          2         1  few train images (<30); few valid images (<5)
+  Object retractable gel pen - Material rubber - Pdfname  a          7         5  few train images (<30); odd valid share 42%
+  Object protective phone case - Material  plastic -  Pdfna         10         4  few train images (<30); few valid images (<5)
+  Object car key fob with keyring - Material metal  - Pdfna         11         0  few train images (<30); NOT IN VALID (can't be scored)
+  Object cardboard shipping box-  Material plastic  - Color         11         1  few train images (<30); few valid images (<5)
+  Object slip joint pliers - Material  plastic - Color yell         12         4  few train images (<30); few valid images (<5)
+  Object ballpoint pen  - Material plastic - Color red - Pd         15         5  few train images (<30)
+  Object plastic first aid kit - Material plastic  -Color b         15         6  few train images (<30)
+  Object desktop tape dispenser - Material  plastic tape -          16         6  few train images (<30)
+  Object claw hammer -Material  rubber - Pdfname 2LKzx9zgCN         17         4  few train images (<30); few valid images (<5)
+  Object retractable gel pen - Material plastic- Pdfname  a         18         1  few train images (<30); few valid images (<5); odd valid share 5%
+  Object precision screwdriver - Material Metal - Pdfname N         18         5  few train images (<30)
+  Object wire spool - Material  rubber - Color oranges -  P         19         4  few train images (<30); few valid images (<5)
+  Object slip joint pliers - Material  metal   - Pdfname fa         20         4  few train images (<30); few valid images (<5)
+  Object rock  - Material stone - Pdfname as35as4adsa               20         5  few train images (<30)
+  Object wire spool  -Material plastic -  Color oranges - P         20         6  few train images (<30)
+  Object plastic first aid kit - Material plastic -  Color          21         3  few train images (<30); few valid images (<5)
+  object stapler - material metal - color black - Pdfname f         21         5  few train images (<30)
+  Object scissors -  Material metal - Pdfname  tYexGlkiIXWc         23         3  few train images (<30); few valid images (<5)
+  Object robotic gripper finger assembly  - Material metal          24         6  few train images (<30)
+  Object ballpoint pen - Material plastic  - Color clear -          25         6  few train images (<30)
+  Object tabletop - Material composite  plastic -  Pdfname          25         6  few train images (<30)
+  Object tree branch - Material wood - Pdfname pipoaepaf            26         6  few train images (<30)
+  Object combination wrench - Material metal-   Pdfname fae         26         7  few train images (<30)
+
+BOXES
+  total boxes 1720
+  width  as % of image (p5/p25/p50/p75/p95): 5.6 / 8.1 / 9.9 / 12.0 / 16.6
+  height as % of image (p5/p25/p50/p75/p95): 5.7 / 8.2 / 10.8 / 14.3 / 22.0
+  boxes under 32 px (on the original image): 0.2%   covering under 5% of image side: 0.9%
+  (many tiny boxes => use a larger --imgsz / RF-DETR resolution, otherwise they get shrunk away)
+
+IMAGES
+  total 1705; distinct sizes 2
+    1280x720: 1581
+    752x480: 124
+  brightness (0-255): train p5/p50/p95 = 68/140/163   valid p5/p50/p95 = 66/140/164
+  contrast (std): train p5/p50/p95 = 26/46/69   valid p5/p50/p95 = 27/47/69
+  sharpness (higher = crisper): train p5/p50/p95 = 28/177/336   valid p5/p50/p95 = 26/184/341
+
+LABEL PROBLEMS
+  none found
+  (every one is listed in label_issues.csv)
+
+DUPLICATES AND TRAIN/VALID LEAKAGE
+  exact duplicate groups: 0
+  valid: 188 of 340 images (55%) have a near-duplicate in train  [56 identical-looking]
+  train (within): 790 of 1365 images (58%) have a near-duplicate elsewhere in train
+  !! A large share of validation images look almost the same as training images, so validation scores
+     are probably higher than the model will score on genuinely new photos. See train_valid_near_duplicates.csv.
+     Fix: split by object/capture session rather than by random image (resplit_dataset.py has object-disjoint modes).
+  (near-duplicate = image fingerprint distance <= 6 of 64; a rotating/shuffled shoot of one object trips this)

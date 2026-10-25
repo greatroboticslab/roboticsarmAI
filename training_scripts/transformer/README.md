@@ -291,3 +291,10 @@ A second box on an object that was already found. *False positive.*
 *What happened:* _fill in after the run_
 1,  guessed the wrong object type
   2 guessed the wrong object type
+
+
+
+
+
+  last run i did 
+  python train_rfdetr.py --dataset-dir ..\..\dataset --model nano --epochs 100 --batch 2 --grad-accum 8 --resolution 512 --device cuda --no-amp --workers 0 --patience 20 --name nano_lowmem

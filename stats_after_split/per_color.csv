@@ -1,0 +1,13 @@
+color,classes,train_images,train_instances,valid_images,valid_instances
+navy blue,1,2,2,1,1
+yellow,1,12,12,4,4
+blue and white,1,21,21,3,3
+clear,1,25,25,6,6
+black and orange,1,39,39,9,9
+oranges,2,39,39,10,10
+black,2,55,55,14,14
+white,2,68,68,18,18
+brown,2,72,72,19,19
+red,4,130,133,32,32
+blue,5,171,173,43,43
+(unspecified),25,735,739,181,183

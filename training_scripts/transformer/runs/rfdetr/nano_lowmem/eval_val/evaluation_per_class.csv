@@ -1,0 +1,48 @@
+class,instances,tp,fp,fn,precision,recall,f1
+Object - extruded aluminum profile -  Material metal - Pdfname IJiB5jbMhrV7,13,12,2,1,0.8571428571428571,0.9230769230769231,0.888888888888889
+Object Amazon recyclable paper mailer -  Material paper  - Color brown - Pdfname ZSbzRHMUOqAP,10,10,0,0,1.0,1.0,1.0
+Object ballpoint pen  - Material plastic - Color red - Pdfname Tg2wygrqE5uZ,5,3,0,2,1.0,0.6,0.7499999999999999
+Object ballpoint pen - Material plastic  - Color clear - Pdfname Tg2wygrqE5uZ,6,6,2,0,0.75,1.0,0.8571428571428571
+Object ballpoint pen - Material rubber  - Color red - Pdfname Tg2wygrqE5uZ,6,6,4,0,0.6,1.0,0.7499999999999999
+Object bifold wallet - Material leather - Pdfname qb3CMu4EyzEc,10,10,1,0,0.9090909090909091,1.0,0.9523809523809523
+Object book  - Material paper  - Color red - Pdfname QP9o9Hihi4G7,13,12,0,1,1.0,0.9230769230769231,0.9600000000000001
+Object breadboard - Material plastic - Color white - Pdfname  UT1NgGrFNbGM,9,9,1,0,0.9,1.0,0.9473684210526316
+Object car key fob with keyring - Material metal  - Pdfname u4lxlaYXiY3D,0,0,1,0,0.0,0.0,0.0
+Object car key fob with keyring - Material plastic - Pdfname u4lxlaYXiY3D,13,10,2,3,0.8333333333333334,0.7692307692307693,0.8
+Object cardboard shipping box - Material composite -  Color brown - Pdfname OHMlPZx8zUzd,9,8,2,1,0.8,0.8888888888888888,0.8421052631578948
+Object cardboard shipping box-  Material plastic  - Color  blue -Pdfname OHMlPZx8zUzd,1,1,0,0,1.0,1.0,1.0
+Object claw hammer -Material  rubber - Pdfname 2LKzx9zgCNVB,4,4,0,0,1.0,1.0,1.0
+Object claw hammer -Material metal - Pdfname 2LKzx9zgCNVB,8,8,0,0,1.0,1.0,1.0
+Object combination wrench - Material metal-   Pdfname faefasdffdaea,7,7,0,0,1.0,1.0,1.0
+Object desktop tape dispenser - Material  plastic tape - Pdfname 8pMd29OsIRjD,6,4,0,2,1.0,0.6666666666666666,0.8
+Object desktop tape dispenser - Material plastic   - Pdfname 8pMd29OsIRjD,9,9,3,0,0.75,1.0,0.8571428571428571
+Object fitness tracker replacement band - Material silicone -  Pdfname  fdfasdjhadae,12,11,0,1,1.0,0.9166666666666666,0.9565217391304348
+Object graphing calculator slide case - Material plastic - Pdfname as1D2765rACT,9,9,0,0,1.0,1.0,1.0
+Object insulated water bottle  - Material metal - Color navy blue - Pdfname Uop6evwTVgMl,1,1,0,0,1.0,1.0,1.0
+Object microfiber cleaning cloth  - Material fabric  - Color black - Pdfname drQGvVi456iM,9,9,1,0,0.9,1.0,0.9473684210526316
+Object plastic container lid - Material plastic - Color red -  Pdfname  ZC63DBkv6oJY,8,8,0,0,1.0,1.0,1.0
+Object plastic first aid kit - Material plastic  -Color blue  -Pdfname 6lew56E5S7Ez,6,6,0,0,1.0,1.0,1.0
+Object plastic first aid kit - Material plastic -  Color blue and white - Pdfname 6lew56E5S7Ez,3,3,0,0,1.0,1.0,1.0
+Object precision screwdriver - Material Metal - Pdfname NoEr35VbQ7sR,5,4,2,1,0.6666666666666666,0.8,0.7272727272727272
+Object precision screwdriver - Material rubber - Color black and orange - Pdfname NoEr35VbQ7sR,9,7,1,2,0.875,0.7777777777777778,0.823529411764706
+Object protective phone case - Material   rubber  -  Pdfname asdfeafgta,9,9,4,0,0.6923076923076923,1.0,0.8181818181818181
+Object protective phone case - Material  plastic -  Pdfname asdfeafgta,4,2,0,2,1.0,0.5,0.6666666666666666
+Object retractable gel pen - Material plastic- Pdfname  asdasdaswe,1,1,1,0,0.5,1.0,0.6666666666666666
+Object retractable gel pen - Material rubber - Pdfname  asdasdaswe,5,4,0,1,1.0,0.8,0.888888888888889
+Object robotic gripper finger assembly  - Material metal -  Pdfname Yy6dySnH33wN,6,6,2,0,0.75,1.0,0.8571428571428571
+Object robotic gripper finger assembly - Material plastic - Color blue - Pdfname Yy6dySnH33wN,8,6,5,2,0.5454545454545454,0.75,0.631578947368421
+Object rock  - Material stone - Pdfname as35as4adsa,5,5,0,0,1.0,1.0,1.0
+Object rubber duck -  Material rubber  -Color blue - Pdfname BWuUnwTLudUE,16,14,1,2,0.9333333333333333,0.875,0.9032258064516129
+Object scissors -  Material  plastic - Pdfname  tYexGlkiIXWc,14,12,5,2,0.7058823529411765,0.8571428571428571,0.7741935483870968
+Object scissors -  Material metal - Pdfname  tYexGlkiIXWc,3,3,1,0,0.75,1.0,0.8571428571428571
+Object screw packaging box - Material cardboard - Pdfname VgpKnmoKJfrS,12,11,1,1,0.9166666666666666,0.9166666666666666,0.9166666666666666
+Object slip joint pliers - Material  metal   - Pdfname favaeaevcsrta,4,4,2,0,0.6666666666666666,1.0,0.8
+Object slip joint pliers - Material  plastic - Color yellow - Pdfname favaeaevcsrta,4,2,1,2,0.6666666666666666,0.5,0.5714285714285715
+Object tabletop - Material composite  plastic -  Pdfname jhjasdfwat,6,6,0,0,1.0,1.0,1.0
+Object toy football - Material foam - Color blue - Pdfname VT1ffZoLOnKv,12,11,1,1,0.9166666666666666,0.9166666666666666,0.9166666666666666
+Object tree branch - Material wood - Pdfname pipoaepaf,6,6,0,0,1.0,1.0,1.0
+Object white rectangular foam block - Material Foam  - Color white - Pdfname LpbAVoaL01XV,9,9,0,0,1.0,1.0,1.0
+Object wire spool  -Material plastic -  Color oranges - Pdfname ZryFz3DBSiO8,6,6,0,0,1.0,1.0,1.0
+Object wire spool - Material  rubber - Color oranges -  Pdfname  ZryFz3DBSiO8,4,4,0,0,1.0,1.0,1.0
+Object wireless earbud charging case - Material plastic - Pdfname qzJIPQkli2jB,12,12,0,0,1.0,1.0,1.0
+object stapler - material metal - color black - Pdfname fduiadew,5,5,0,0,1.0,1.0,1.0

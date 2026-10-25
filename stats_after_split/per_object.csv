@@ -1,0 +1,34 @@
+object,classes,train_images,train_instances,valid_images,valid_instances
+insulated water bottle,1,2,2,1,1
+rock,1,20,20,5,5
+stapler,1,21,21,5,5
+retractable gel pen,2,25,25,6,6
+tabletop,1,25,25,6,6
+combination wrench,1,26,26,7,7
+tree branch,1,26,26,6,6
+slip joint pliers,2,32,32,8,8
+breadboard,1,34,34,9,9
+microfiber cleaning cloth,1,34,34,9,9
+white rectangular foam block,1,34,34,9,9
+plastic container lid,1,34,36,8,8
+plastic first aid kit,2,36,36,9,9
+graphing calculator slide case,1,38,38,9,9
+bifold wallet,1,39,39,10,10
+wire spool,2,39,39,10,10
+Amazon recyclable paper mailer,1,41,41,10,10
+cardboard shipping box,2,42,42,10,10
+fitness tracker replacement band,1,40,42,10,12
+screw packaging box,1,48,48,12,12
+claw hammer,2,49,49,12,12
+car key fob with keyring,2,50,50,13,13
+toy football,1,50,50,12,12
+wireless earbud charging case,1,50,50,12,12
+- extruded aluminum profile,1,51,51,13,13
+book,1,51,51,13,13
+protective phone case,2,53,53,13,13
+precision screwdriver,2,57,57,14,14
+robotic gripper finger assembly,2,56,58,14,14
+rubber duck,1,63,63,16,16
+desktop tape dispenser,2,64,64,15,15
+ballpoint pen,3,70,71,17,17
+scissors,2,69,71,17,17
