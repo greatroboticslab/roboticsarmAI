@@ -544,4 +544,4 @@ Class ids map to the names in `dataset/data.corrected.yaml` (index 0 = first ent
 - [ ] Hooking a trained model into the arm app (`vision/model/classifier.py`)
 - [ ] Live demo: laser hitting an object -> detection
 
-**Video link:** _add here_  ·  **Weights download:** _add here_  ·  **Recorded on:** _add date_
+**Video link:** https://youtu.be/7z5Cr6MiunY ·  **Weights download:** _add here_  ·  **Recorded on:** 10/25/2026
