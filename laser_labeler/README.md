@@ -82,3 +82,9 @@ python -m pytest
 - `docs/decisions.md`, `docs/verified_facts.md`
 
 API keys go in the OS keyring only, never in files.
+
+
+https://youtu.be/Jo7P1j3Wrhw
+
+
+**Video link:** https://youtu.be/Jo7P1j3Wrhw ·
