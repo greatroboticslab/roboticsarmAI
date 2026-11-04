@@ -1,0 +1,45 @@
+# Shipped defaults. A user settings file overrides any of these.
+# No secrets here: API keys live in the OS keyring only.
+roboflow:
+  workspace: ""
+  project: ""
+  version: null
+
+provider:
+  provider: openai_compat      # openai_compat | gemini | anthropic
+  model: ""                    # set in the AI settings tab; never hardcoded
+  base_url: "http://localhost:11434/v1"
+  temperature: 0.0
+  max_image_px: 1024
+  run_mode: pipeline           # pipeline | agent
+  structured_output: false     # ask the server to force valid JSON (Ollama, LM Studio, OpenAI); pipeline mode only
+  daily_cost_cap_usd: 5.0
+  price_in_per_mtok: 0         # USD per million input tokens: YOU enter your provider's price
+  price_out_per_mtok: 0        # USD per million output tokens (0 = free/local)
+
+escalation:                  # optional: a cloud model re-labels images the main model is unsure about
+  enabled: false
+  provider: ""               # gemini | anthropic (uses the key you saved on the Sign in tab)
+  model: ""
+  confidence_threshold: 0.5
+  price_in_per_mtok: 0       # USD per million tokens for THIS model; you enter it
+  price_out_per_mtok: 0
+
+labeling:
+  table_rule: only_if_no_object_hit   # only_if_no_object_hit | always_label | never_label
+  color_placeholder: na
+  camera_source: tag                  # tag | folder
+  camera_tag_prefix: "camera:"
+  laser_level_classes: false          # append coarse levels to las_ class names
+  scheme: full                        # full = obj_... and las_<event> classes | components = obj_... plus component1/2/3
+  keep_awake: true
+
+data_dir: data
+
+# Added in Phase 3
+run:
+  max_agent_steps: 12        # tool-use turns before agent mode gives up and falls back
+  max_repairs: 2             # times the model is asked to fix an invalid JSON reply
+  max_candidates: 6          # laser spots shown to the model per image (pipeline mode)
+  question_confidence: 0.4   # object boxes below this confidence get a question
+  color_confidence: 0.25     # pixel color name is trusted at or above this

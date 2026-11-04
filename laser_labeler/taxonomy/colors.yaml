@@ -1,0 +1,17 @@
+# Controlled list of colors (lowercase letters/digits only).
+# "na" (the grayscale placeholder) is allowed automatically; it need not be listed.
+colors:
+  - black
+  - white
+  - gray
+  - red
+  - orange
+  - yellow
+  - green
+  - blue
+  - purple
+  - pink
+  - brown
+  - silver
+  - gold
+  - clear

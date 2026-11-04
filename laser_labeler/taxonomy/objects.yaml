@@ -1,0 +1,12 @@
+# Objects and their sub-objects.
+# Entries must be lowercase letters/digits only: no "-", "_" or spaces.
+# Write multi-word names as one word (for example: ballpointpen).
+objects:
+  pen: [ballpoint, gel, marker]
+  table: [desk, workbench]
+  cup: [mug, glass, paper]
+  bottle: [water, soda]
+  mirror: [flat, curved]
+  lens: [convex, concave]
+  paper: [sheet, cardboard]
+  tool: [screwdriver, scissors]

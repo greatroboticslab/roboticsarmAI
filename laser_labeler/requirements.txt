@@ -1,0 +1,14 @@
+# Everything the app needs. Install with:  pip install -r requirements.txt
+# Needs Python 3.11 or newer.
+PyQt6>=6.5
+pyyaml>=6
+keyring>=24
+numpy
+opencv-python-headless
+pillow
+# AI providers (only the ones you use need a key, but the packages are small)
+openai
+anthropic
+google-genai
+# PDF reports (later phases)
+reportlab

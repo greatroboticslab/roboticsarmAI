@@ -1,0 +1,7 @@
+# Laser event types. Hyphens are allowed here (they are the event's own word separator).
+laser_events:
+  - first-incidence
+  - reflection
+  - refraction
+  - scatter
+  - other

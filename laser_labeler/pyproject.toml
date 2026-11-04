@@ -1,0 +1,23 @@
+[project]
+name = "laser-labeler"
+version = "0.1.0"
+description = "Desktop app that auto-labels laser images for Roboflow, with human review"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6",
+    "keyring>=24",
+    "numpy",
+    "opencv-python-headless",  # headless: avoids clashing with the Qt that PyQt6 brings
+    "pillow",
+]
+
+[project.optional-dependencies]
+# Roboflow is called over REST (stdlib only), so it needs no package.
+providers = ["openai", "anthropic", "google-genai"]
+reports = ["reportlab"]
+gui = ["PyQt6"]
+dev = ["pytest", "jsonschema"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,7 @@
+# Incidence type recorded on object boxes (lowercase letters/digits only).
+incidence:
+  - first
+  - reflected
+  - refracted
+  - scattered
+  - other

@@ -1,0 +1,11 @@
+# Controlled list of materials (lowercase letters/digits only).
+materials:
+  - glass
+  - metal
+  - plastic
+  - rubber
+  - wood
+  - paper
+  - fabric
+  - ceramic
+  - liquid
