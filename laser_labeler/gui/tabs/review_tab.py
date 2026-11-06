@@ -17,6 +17,7 @@ from core.models import ImageLabelSet, LaserBox, ObjectBox
 from core.queue_db import QueueRow
 from core.reports.sidecar import read_sidecar
 from core.providers.hints import failure_hint
+from core.review.reasons import reason_line
 from core.review.service import (ReviewError, add_laser_box, add_object_box, delete_box)
 from core.roboflow.upload import UploadSummary, build_upload_plan, upload_annotations
 from gui.context import AppContext
@@ -110,6 +111,7 @@ class ReviewTab(QWidget):
         self.problems.setWordWrap(True)
         self.problems.setStyleSheet("color: #bc4c00")
         self.canvas = ImageCanvas()
+        self.viewer = ConversationViewer()
         self.mode_buttons: dict[str, QPushButton] = {}
         modes = QHBoxLayout()
         group = QButtonGroup(self)
@@ -140,7 +142,19 @@ class ReviewTab(QWidget):
         cc.addWidget(self.header)
         cc.addWidget(self.problems)
         cc.addLayout(modes)
-        cc.addWidget(self.canvas, 1)
+        conversation = QWidget()
+        conv = QVBoxLayout(conversation)
+        conv.setContentsMargins(0, 0, 0, 0)
+        conv.addWidget(QLabel("<b>Conversation</b>: what the app found in the image, what the model was asked and answered, "
+                              "and why any question was raised"))
+        conv.addWidget(self.viewer, 1)
+        self.center_split = QSplitter(Qt.Orientation.Vertical)
+        self.center_split.addWidget(self.canvas)
+        self.center_split.addWidget(conversation)
+        self.center_split.setStretchFactor(0, 3)
+        self.center_split.setStretchFactor(1, 2)
+        self.center_split.setSizes([480, 260])
+        cc.addWidget(self.center_split, 1)
         cc.addLayout(actions)
 
         self.boxes = QListWidget()
@@ -168,11 +182,9 @@ class ReviewTab(QWidget):
         ql.addWidget(self.questions, 1)
         ql.addWidget(self.answer_btn)
         ql.addWidget(self.question_hint)
-        self.viewer = ConversationViewer()
         self.right = QTabWidget()
         self.right.addTab(labels, "Labels")
         self.right.addTab(qs, "Questions")
-        self.right.addTab(self.viewer, "Conversation")
 
         split = QSplitter(Qt.Orientation.Horizontal)
         for w, size in ((left, 270), (center, 560), (self.right, 380)):
@@ -270,10 +282,19 @@ class ReviewTab(QWidget):
             conf = f"{row.confidence:.2f}" if row.confidence is not None else "-"
             extra = f", {row.question_count} question(s)" if row.question_count else ""
             why = f"\n{row.error[:90]}" if row.status == "failed" and row.error else ""
+            if row.status == "needs_input":
+                why = f"\nwhy: {self._why(row)}"
             item = QListWidgetItem(f"{row.name}\n{row.status}, confidence {conf}{extra}{why}")
             item.setData(Qt.ItemDataRole.UserRole, row.image_id)
             self.list.addItem(item)
         self.grid.set_items([self._grid_item(r) for r in chunk], keep_selection=False)
+
+    @staticmethod
+    def _why(row: QueueRow) -> str:
+        try:
+            return reason_line(read_sidecar(row.sidecar_path)) or "open question"
+        except (OSError, ValueError, TypeError):
+            return "open question"
 
     def _grid_item(self, row: QueueRow) -> GridItem:
         boxes = []
@@ -411,6 +432,7 @@ class ReviewTab(QWidget):
         self.header.setText(f"<b>{ls.image_name}</b> &nbsp; {row.status}, confidence "
                             f"{(row.confidence if row.confidence is not None else 0):.2f}, prompt {ls.prompt_version or '-'}, "
                             f"{ls.provider or '-'}/{ls.model or '-'}, {ls.run_mode or '-'} mode"
+                            + (f"<br><b>Needs your input:</b> {reason_line(ls)}" if row.status == "needs_input" else "")
                             + (f"<br>{ls.notes}" if ls.notes else ""))
         self._show_problems(service.taxonomy_problems(ls))
         selected = keep_box or self.canvas.selected()
@@ -432,7 +454,7 @@ class ReviewTab(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, b.id)
             self.boxes.addItem(item)
         for o in ls.object_boxes:
-            item = QListWidgetItem(f"object {o.id}: {o.general_object}/{o.sub_object}, {o.material}, {o.color}")
+            item = QListWidgetItem(f"object {o.id}: {o.general_object}, {o.material}, {o.color}")
             item.setData(Qt.ItemDataRole.UserRole, o.id)
             self.boxes.addItem(item)
         for i in range(self.boxes.count()):
@@ -525,9 +547,9 @@ class ReviewTab(QWidget):
         service, added = self.ctx.service(), []
         tax = service.taxonomy()
         try:
-            if box.sub_object not in tax.objects.get(box.general_object, []):
-                service.add_to_taxonomy("sub_object", box.sub_object, parent_object=box.general_object)
-                added.append(f"{box.general_object}/{box.sub_object}")
+            if box.general_object not in tax.objects:
+                service.add_to_taxonomy("object", box.general_object)
+                added.append(box.general_object)
             if box.material not in tax.materials:
                 service.add_to_taxonomy("material", box.material)
                 added.append(box.material)

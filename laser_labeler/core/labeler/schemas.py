@@ -27,10 +27,8 @@ def _question() -> dict:
 
 
 def _surface(tax: Taxonomy) -> dict:
-    subs = sorted({s for values in tax.objects.values() for s in values})
     return _object({
         "general_object": {"enum": [*tax.objects, UNKNOWN]},
-        "sub_object": {"enum": [*subs, UNKNOWN]},
         "material": {"enum": [*tax.materials, UNKNOWN]},
         "finish": _text(True),
         "incidence": {"enum": list(INCIDENCES)},

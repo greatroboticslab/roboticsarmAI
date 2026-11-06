@@ -165,13 +165,13 @@ def test_new_boxes_get_unique_ids_and_sensible_defaults(env):
     ls, tax = env.service.load("a"), env.service.taxonomy()
     obj = add_object_box(ls, env.path, tax, (100, 80, 80, 60), env.settings)
     assert obj.id == "o2" and obj.color == "red" and obj.laser_ids == ["l1"]  # colour sampled, laser inside
-    assert obj.general_object in tax.objects and obj.sub_object in tax.objects[obj.general_object]
+    assert obj.general_object in tax.objects
     assert next_id("o", ["o1", "o2", "o4"]) == "o3"
 
 
 # ---------------------------------------------------------------- questions
 def test_answering_every_question_resumes_the_image(env):
-    env.label(env.path, "a", [env.good(general_object="spoon", sub_object="metal", material="metal")])
+    env.label(env.path, "a", [env.good(general_object="spoon", material="metal")])
     row = env.db.get("a")
     assert row.status == "needs_input" and row.question_count >= 1
     questions = env.service.load("a").questions
@@ -194,7 +194,7 @@ def test_answer_sets_the_field_and_can_extend_the_taxonomy(env):
 
 
 def test_field_answer_validation(env):
-    env.label(env.path, "a", [env.good(general_object="spoon", sub_object="metal", material="metal")])
+    env.label(env.path, "a", [env.good(general_object="spoon", material="metal")])
     # build a field question by hand on the saved label set
     ls = env.service.load("a")
     from core.models import Question
@@ -278,7 +278,7 @@ def test_pdf_contents_and_rebuild_keeps_addenda(env, tmp_path):
     env.service.rebuild_pdf("a")
     assert first.read_bytes()[:5] == b"%PDF-" and abs(first.stat().st_size - size) < 2000
     assert len(load_addenda(env.data / "pdfs" / "a.addenda.json")) == 1  # rebuilding adds no fake edit
-    assert class_label(ls, "object", ls.object_boxes[0]).startswith("obj_pen-ballpoint_glass")
+    assert class_label(ls, "object", ls.object_boxes[0]).startswith("obj_pen_glass")
     bad = env.service.load("a")
     bad.object_boxes[0].material = "Not Valid"
     assert class_label(bad, "object", bad.object_boxes[0]).startswith("(invalid class")

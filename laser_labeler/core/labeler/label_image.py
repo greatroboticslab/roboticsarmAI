@@ -9,6 +9,7 @@ from core.camera import camera_id_for, load_image
 from core.labeler.agent_mode import AgentModeFailed, run_agent
 from core.labeler.context import build_context
 from core.labeler.conversation import CostGuard
+from core.review.reasons import question_kind
 from core.labeler.finalize import RawResult, finalize
 from core.labeler.parse_reply import ReplyParseError
 from core.labeler.pipeline_mode import run_pipeline
@@ -88,12 +89,18 @@ def label_image_unsaved(
     ctx.user_note = user_note.strip()
     if ctx.user_note:
         transcript.add_event("reviewer_note", ctx.user_note)
+    transcript.add_event("detection", ctx.detection.explain())  # what the app saw, before any model is asked
     try:
         raw, used_mode, version = _raw_result(ctx, provider, _run_mode(settings, provider, mode), settings,
                                               taxonomy, transcript, guard, Path(prompt_dir or prompt_dir_for_run()))
         result = finalize(ctx, raw, image_id=image_id, camera_id=camera, table_rule=labeling["table_rule"],
                           color_confidence=run["color_confidence"], question_confidence=run["question_confidence"],
-                          scheme=labeling.get("scheme", "full"))
+                          scheme=labeling.get("scheme", "full"),
+                          laser_object_fraction=float(labeling.get("laser_box_object_fraction", 0.0)))
+        for q in result.questions:  # every question and what caused it, so the conversation explains the status
+            transcript.add_event("question", f"[{question_kind(q)}] {q.text}")
+        transcript.add_event("result", f"status {result.status}: {len(result.laser_boxes)} laser box(es), "
+                                       f"{len(result.object_boxes)} object box(es), {len(result.questions)} question(s)")
     except (ProviderError, ReplyParseError) as exc:
         transcript.add_event("error", str(exc))
         used_mode, version = "", ""

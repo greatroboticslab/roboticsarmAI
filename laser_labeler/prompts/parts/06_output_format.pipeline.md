@@ -10,7 +10,7 @@ Reply with ONLY one JSON object (no prose, no code fence):
   "status": "ok" or "needs_input",
   "candidates": [
     {"id": "c1", "is_laser": true, "kind": "first_incidence", "order": 0, "from_id": null,
-     "object": {"general_object": "pen", "sub_object": "ballpoint", "material": "rubber",
+     "object": {"general_object": "<the object, from the taxonomy>", "material": "<from the taxonomy>",
                 "finish": null, "incidence": "first", "confidence": 0.8},
      "notes": ""}
   ],

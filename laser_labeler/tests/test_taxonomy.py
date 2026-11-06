@@ -17,16 +17,16 @@ def tax_dir(tmp_path):
 
 def test_shipped_taxonomy_is_valid():
     tax = load_taxonomy(SHIPPED)
-    assert "ballpoint" in tax.objects["pen"]
+    assert "pen" in tax.objects and isinstance(tax.objects, list)
     assert "rubber" in tax.materials
     assert "first-incidence" in tax.laser_events
 
 
 def test_check_object_accepts_and_rejects():
     tax = load_taxonomy(SHIPPED)
-    assert tax.check_object("pen", "ballpoint", "rubber", "black", "first") == []
-    assert tax.check_object("pen", "ballpoint", "rubber", "na", "first") == []
-    problems = tax.check_object("pen", "mug", "unobtainium", "plaid", "sideways")
+    assert tax.check_object("pen", "rubber", "black", "first") == []
+    assert tax.check_object("pen", "rubber", "na", "first") == []
+    problems = tax.check_object("spoon", "unobtainium", "plaid", "sideways")
     assert len(problems) == 4
 
 
@@ -39,11 +39,11 @@ def test_bad_entry_with_separator_refused(tax_dir):
 
 def test_missing_and_malformed_files(tax_dir):
     (tax_dir / "colors.yaml").unlink()
-    (tax_dir / "objects.yaml").write_text("objects: {pen: []}\n")
+    (tax_dir / "objects.yaml").write_text("objects: [Pen]\n")
     with pytest.raises(TaxonomyError) as exc:
         load_taxonomy(tax_dir)
     text = str(exc.value)
-    assert "colors.yaml" in text and "pen" in text
+    assert "colors.yaml" in text and "Pen" in text
 
 
 def test_duplicates_reported(tax_dir):
@@ -55,10 +55,8 @@ def test_duplicates_reported(tax_dir):
 def test_add_entries(tax_dir):
     tax = add_entry(tax_dir, "material", "foam")
     assert "foam" in tax.materials
-    tax = add_entry(tax_dir, "sub_object", "fountain", parent_object="pen")
-    assert "fountain" in tax.objects["pen"]
-    tax = add_entry(tax_dir, "sub_object", "wine", parent_object="glassware")
-    assert tax.objects["glassware"] == ["wine"]
+    tax = add_entry(tax_dir, "object", "glassware")
+    assert "glassware" in tax.objects and "pen" in tax.objects
     tax = add_entry(tax_dir, "laser_event", "diffraction")
     assert "diffraction" in tax.laser_events
 
@@ -69,7 +67,14 @@ def test_add_entry_rejects_bad_and_duplicate(tax_dir):
     with pytest.raises(TaxonomyError):
         add_entry(tax_dir, "material", "glass")
     with pytest.raises(TaxonomyError):
-        add_entry(tax_dir, "object", "lamp")
+        add_entry(tax_dir, "object", "pen")  # already there
+    with pytest.raises(Exception):
+        add_entry(tax_dir, "object", "desk-lamp")
     with pytest.raises(TaxonomyError):
-        add_entry(tax_dir, "sub_object", "x")  # no parent
+        add_entry(tax_dir, "sub_object", "x")  # sub-objects no longer exist
     assert "hard-foam" not in load_taxonomy(tax_dir).materials
+
+
+def test_the_older_mapping_format_is_still_read_and_sub_objects_ignored(tax_dir):
+    (tax_dir / "objects.yaml").write_text("objects:\n  pen: [ballpoint, gel]\n  cup: [mug]\n")
+    assert load_taxonomy(tax_dir).objects == ["pen", "cup"]

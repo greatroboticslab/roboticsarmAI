@@ -18,7 +18,7 @@ def label_set(name="a.png", material="rubber", box=(100, 80, 80, 60)):
     return ImageLabelSet(
         "a", name, "cam", False, 0.1, status="approved", image_width=320, image_height=240,
         laser_boxes=[LaserBox("l1", "first_incidence", (130, 100, 20, 20), 0)],
-        object_boxes=[ObjectBox("o1", box, "pen", "ballpoint", material, "red", "first", ["l1"], confidence=0.9)])
+        object_boxes=[ObjectBox("o1", box, "pen", material, "red", "first", ["l1"], confidence=0.9)])
 
 
 def write_truth(tmp_path, ls, file_name="a.rf.abc123def.png"):

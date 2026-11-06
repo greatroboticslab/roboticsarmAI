@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from core.models import ImageLabelSet
-from core.schema.class_names import (ClassNameError, ComponentClass, LaserClass, ObjectClass, decode_class)
+from core.schema.class_names import (ClassNameError, ComponentClass, LaserClass, MergedClass, ObjectClass, decode_class)
 from core.schema.coco_export import class_names_for
 from core.tools.geometry import iou
 
 MATCH_IOU = 0.5
 _RF_SUFFIX = re.compile(r"^(.*?)\.rf\.[0-9a-zA-Z]+(\.\w+)$")
-OBJECT_FIELDS = ("general_object", "sub_object", "material", "color", "incidence")
+OBJECT_FIELDS = ("general_object", "material", "color", "incidence")
 
 
 @dataclass
@@ -99,7 +99,9 @@ def _match(truth: list[TruthBox], preds: list[tuple[str, tuple]]) -> list[tuple[
 
 
 def _laser_part(decoded) -> str:
-    return decoded.event if isinstance(decoded, LaserClass) else f"component{decoded.number}"
+    if isinstance(decoded, LaserClass):
+        return decoded.event
+    return f"component{(decoded.component if isinstance(decoded, MergedClass) else decoded).number}"
 
 
 def score_image(truth: Sequence[TruthBox], label_set: ImageLabelSet, color_placeholder: str = "na") -> dict[str, FamilyScore]:
@@ -109,7 +111,7 @@ def score_image(truth: Sequence[TruthBox], label_set: ImageLabelSet, color_place
     except ClassNameError:
         predicted = []  # a box with a value outside the scheme cannot be named: counts as missing
     scores = {"laser": FamilyScore(), "object": FamilyScore()}
-    for family, kind in (("laser", (LaserClass, ComponentClass)), ("object", ObjectClass)):
+    for family, kind in (("laser", (LaserClass, ComponentClass, MergedClass)), ("object", ObjectClass)):
         t = [b for b in truth if isinstance(b.decoded, kind)]
         p = [(n, box) for n, box in predicted if isinstance(decode_class(n), kind)]
         sc = scores[family]
@@ -120,6 +122,9 @@ def score_image(truth: Sequence[TruthBox], label_set: ImageLabelSet, color_place
             want, got = t[ti].decoded, decode_class(p[pi][0])
             if family == "laser":  # an event name, or which part of the spot
                 sc.agree["event"] = sc.agree.get("event", 0) + (_laser_part(want) == _laser_part(got))
+                if isinstance(want, MergedClass) and isinstance(got, MergedClass):  # the object part of the name
+                    for name in OBJECT_FIELDS:
+                        sc.agree[name] = sc.agree.get(name, 0) + (getattr(want.object, name) == getattr(got.object, name))
                 continue
             for name in OBJECT_FIELDS:
                 sc.agree[name] = sc.agree.get(name, 0) + (getattr(want, name) == getattr(got, name))

@@ -18,12 +18,13 @@ def class_names_for(label_set: ImageLabelSet, color_placeholder: str = "na") -> 
     """Return (class_name, box) for every box in the set."""
     items: list[tuple[str, tuple]] = []
     for laser in label_set.laser_boxes:
-        items.append((laser.class_name, laser.box))
+        items.append((label_set.laser_class_name(laser, color_placeholder), laser.box))
+    carried = label_set.merged_object_ids()  # their object info is already in the laser part names
     for obj in label_set.object_boxes:
+        if obj.id in carried:
+            continue
         color = resolve_color(obj.color, label_set.is_grayscale, color_placeholder)
-        name = encode_object_class(
-            obj.general_object, obj.sub_object, obj.material, color, obj.incidence
-        )
+        name = encode_object_class(obj.general_object, obj.material, color, obj.incidence)
         items.append((name, obj.box))
     return items
 

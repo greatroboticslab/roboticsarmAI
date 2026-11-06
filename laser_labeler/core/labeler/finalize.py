@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.labeler.components import apply_components
+from core.labeler.laser_size import grow_laser_boxes
 from core.labeler.context import LabelContext
 from core.labeler.table_rule import apply_table_rule
 from core.models import INCIDENCES, ImageLabelSet, LaserBox, ObjectBox, Question
@@ -60,7 +61,7 @@ def _color_for(ctx: LabelContext, item: dict, box, color_conf: float, questions:
 
 
 def _taxonomy_questions(ctx: LabelContext, obj: ObjectBox, color_asked: bool) -> list[Question]:
-    problems = ctx.taxonomy.check_object(obj.general_object, obj.sub_object, obj.material, obj.color,
+    problems = ctx.taxonomy.check_object(obj.general_object, obj.material, obj.color,
                                          obj.incidence, ctx.color_placeholder)
     problems = [p for p in problems if not (color_asked and p.startswith("color"))]
     return [Question(f"qt_{obj.id}_{i}", f"{p}. Pick an allowed value or add it to the taxonomy.",
@@ -78,7 +79,7 @@ def _objects(ctx: LabelContext, raw: list[dict], color_conf: float, low_conf: fl
             incidence = "other"
         asked = len(questions)
         color = _color_for(ctx, item, box, color_conf, questions)
-        obj = ObjectBox(item["id"], box, item["general_object"], item["sub_object"], item["material"],
+        obj = ObjectBox(item["id"], box, item["general_object"], item["material"],
                         color, incidence,
                         list(item.get("laser_ids", [])), item.get("finish"), item["confidence"], item.get("notes", ""))
         questions.extend(_taxonomy_questions(ctx, obj, len(questions) > asked))
@@ -94,8 +95,8 @@ def merge_duplicate_objects(objects: list[ObjectBox], min_iou: float = 0.6) -> l
     kept: list[ObjectBox] = []
     for obj in objects:
         twin = next((k for k in kept if iou(k.box, obj.box) >= min_iou and
-                     (k.general_object, k.sub_object, k.material, k.color, k.incidence) ==
-                     (obj.general_object, obj.sub_object, obj.material, obj.color, obj.incidence)), None)
+                     (k.general_object, k.material, k.color, k.incidence) ==
+                     (obj.general_object, obj.material, obj.color, obj.incidence)), None)
         if twin:
             twin.laser_ids = sorted(set(twin.laser_ids) | set(obj.laser_ids))
             twin.confidence = min(twin.confidence, obj.confidence)
@@ -105,16 +106,18 @@ def merge_duplicate_objects(objects: list[ObjectBox], min_iou: float = 0.6) -> l
 
 
 def finalize(ctx: LabelContext, raw: RawResult, *, image_id: str, camera_id: str, table_rule: str,
-             color_confidence: float = 0.25, question_confidence: float = 0.4, scheme: str = "full") -> ImageLabelSet:
+             color_confidence: float = 0.25, question_confidence: float = 0.4, scheme: str = "full",
+             laser_object_fraction: float = 0.0) -> ImageLabelSet:
     questions = list(raw.questions)
     lasers = _measure_lasers(ctx, raw.laser_boxes)
-    if scheme == "components":  # each spot becomes its parts: core, halo, beam
+    if scheme in ("components", "merged"):  # each spot becomes its parts: core, halo, beam
         lasers = apply_components(lasers, ctx.detection.lines, ctx.image.width, ctx.image.height,
                                   intensity=ctx.intensity, noise=ctx.stats.noise_level)
     objects = _objects(ctx, raw.object_boxes, color_confidence, question_confidence, questions)
     merged = merge_duplicate_objects(objects)
     objects = apply_table_rule(merged, table_rule)
     removed = {o.id for o in merged} - {o.id for o in objects}  # dropped by the table rule
+    grow_laser_boxes(lasers, objects, laser_object_fraction, ctx.image.width, ctx.image.height)
     known = {o.id for o in objects} | {ls.id for ls in lasers}
     questions = [q for q in questions if q.target_id not in removed]
     for q in questions:
@@ -126,5 +129,5 @@ def finalize(ctx: LabelContext, raw: RawResult, *, image_id: str, camera_id: str
         image_id=image_id, image_name=Path(ctx.image.path).name, camera_id=camera_id,
         is_grayscale=ctx.image.is_grayscale, background_level=ctx.stats.background_level,
         exposure=ctx.image.exposure, laser_boxes=lasers, object_boxes=objects, questions=questions,
-        status="needs_input" if questions else "pending", image_width=ctx.image.width,
+        status="needs_input" if questions else "pending", scheme=scheme, image_width=ctx.image.width,
         image_height=ctx.image.height, notes=raw.notes)

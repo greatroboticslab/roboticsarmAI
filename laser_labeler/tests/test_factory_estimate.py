@@ -90,7 +90,7 @@ def escalation(replies, threshold=0.5, provider_cls=ScriptedProvider):
 
 def test_needs_escalation_rules():
     sure = ImageLabelSet("x", "x", "c", False, 0.0, laser_boxes=[LaserBox("l1", "first_incidence", (1, 1, 5, 5), 0, metrics={"confidence": 0.9})],
-                         object_boxes=[ObjectBox("o1", (0, 0, 9, 9), "pen", "gel", "glass", "red", "first", confidence=0.3)])
+                         object_boxes=[ObjectBox("o1", (0, 0, 9, 9), "pen", "glass", "red", "first", confidence=0.3)])
     assert "below" in needs_escalation(sure, 0.5) and needs_escalation(sure, 0.2) == ""
     assert needs_escalation(ImageLabelSet("x", "x", "c", False, 0.0, status="failed"), 0.5)
     assert needs_escalation(ImageLabelSet("x", "x", "c", False, 0.0, status="needs_input"), 0.5) == ""  # nothing found

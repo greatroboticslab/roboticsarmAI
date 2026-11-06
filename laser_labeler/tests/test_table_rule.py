@@ -4,7 +4,7 @@ from core.models import ObjectBox
 
 def box(obj, laser_ids):
     return ObjectBox(id=f"{obj}-{len(laser_ids)}", box=(0, 0, 10, 10), general_object=obj,
-                     sub_object="x", material="wood", color="brown", incidence="first",
+                     material="wood", color="brown", incidence="first",
                      laser_ids=laser_ids)
 
 

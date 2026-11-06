@@ -93,9 +93,9 @@ def class_label(label_set: ImageLabelSet, kind: str, item, placeholder: str = "n
     """The Roboflow class name of a box, or a readable fallback when its values are not valid tokens."""
     try:
         if kind == "laser":
-            return item.class_name
+            return label_set.laser_class_name(item, placeholder)
         color = resolve_color(item.color, label_set.is_grayscale, placeholder)
-        return encode_object_class(item.general_object, item.sub_object, item.material, color, item.incidence)
+        return encode_object_class(item.general_object, item.material, color, item.incidence)
     except ClassNameError:
         return f"(invalid class: {item.kind if kind == 'laser' else item.general_object})"
 

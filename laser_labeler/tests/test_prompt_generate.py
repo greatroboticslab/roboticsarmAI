@@ -29,12 +29,14 @@ def reply(parts, summary="added ceramic guidance"):
 
 
 def test_taxonomy_changes_in_words():
-    old = {"materials": ["glass"], "colors": ["red", "blue"], "objects": {"pen": ["gel"]}, "laser_events": [], "incidence": []}
-    new = {"materials": ["glass", "velvet"], "colors": ["red"], "objects": {"pen": ["gel", "marker"], "cup": ["mug"]},
+    old = {"materials": ["glass"], "colors": ["red", "blue"], "objects": ["pen"], "laser_events": [], "incidence": []}
+    new = {"materials": ["glass", "velvet"], "colors": ["red"], "objects": ["pen", "cup"],
            "laser_events": [], "incidence": []}
     out = g.taxonomy_changes(old, new)
     assert "materials: added velvet" in out and "colors: removed blue" in out
-    assert "pen gained sub-objects marker" in out and "new object cup with sub-objects mug" in out
+    assert "objects: added cup" in out
+    older = {**old, "objects": {"pen": ["gel"]}}  # versions saved before sub-objects were dropped
+    assert "objects: added cup" in g.taxonomy_changes(older, new) and "pen" not in g.taxonomy_changes(older, new).split("objects:")[-1]
     assert "unknown" in g.taxonomy_changes(None, new)
     assert "has not changed" in g.taxonomy_changes(new, new)
 
@@ -42,12 +44,12 @@ def test_taxonomy_changes_in_words():
 def test_request_contains_everything_the_model_needs(env):
     ls = ImageLabelSet("a", "a.png", "cam", False, 0.1, status="approved",
                        laser_boxes=[LaserBox("l1", "first_incidence", (1, 2, 3, 4), 0)],
-                       object_boxes=[ObjectBox("o1", (5, 6, 7, 8), "pen", "gel", "glass", "red", "first")])
+                       object_boxes=[ObjectBox("o1", (5, 6, 7, 8), "pen", "glass", "red", "first")])
     corrections = [{"text": "o1: material rubber -> glass"}]
     msgs = g.build_messages(g.read_parts(env.parts), {"materials": ["glass"]}, env.tax, corrections, [ls])
     body = msgs[1].text
     assert msgs[0].role == "system" and "{{taxonomy}}" in msgs[0].text and "01_role_task.md" in body
-    assert "rubber -> glass" in body and "obj_pen-gel_glass_red_first" in body and "las_first-incidence" in body
+    assert "rubber -> glass" in body and "obj_pen_glass_red_first" in body and "las_first-incidence" in body
     assert "materials: added" in body and "Approved examples" in body
 
 

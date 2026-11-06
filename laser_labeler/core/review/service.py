@@ -29,7 +29,7 @@ from core.tools.geometry import clamp_box
 
 HIT_SEARCH_RADIUS = 40  # a clicked hit point snaps to a detected spot this close
 DEFAULT_HIT_BOX = 15
-TAXONOMY_KIND = {"material": "material", "color": "color", "sub_object": "sub_object", "general_object": "sub_object"}
+TAXONOMY_KIND = {"material": "material", "color": "color", "general_object": "object"}
 
 
 class ReviewError(ValueError):
@@ -234,19 +234,14 @@ class ReviewService:
 
     def _taxonomy_for(self, obj: ObjectBox, field: str, value: str, add: bool) -> list[str]:
         tax = self.taxonomy()
-        known = {"material": tax.materials, "color": [*tax.colors, self.placeholder], "sub_object":
-                 tax.objects.get(obj.general_object, []), "general_object": list(tax.objects)}[field]
+        known = {"material": tax.materials, "color": [*tax.colors, self.placeholder],
+                 "general_object": tax.objects}[field]
         if value in known:
             return []
         if not add:
             return [f"{field.replace('_', ' ')} '{value}' is not in your taxonomy lists."]
         try:
-            if field == "general_object":
-                add_entry(self.taxonomy_dir, "sub_object", obj.sub_object, parent_object=value)
-            elif field == "sub_object":
-                add_entry(self.taxonomy_dir, "sub_object", value, parent_object=obj.general_object)
-            else:
-                add_entry(self.taxonomy_dir, TAXONOMY_KIND[field], value)
+            add_entry(self.taxonomy_dir, TAXONOMY_KIND[field], value)
         except (TaxonomyError, ClassNameError) as exc:
             raise ReviewError(str(exc)) from None
         return []
@@ -256,13 +251,13 @@ class ReviewService:
         tax = self.taxonomy()
         out = []
         for o in ls.object_boxes:
-            out += [f"{o.id}: {p}" for p in tax.check_object(o.general_object, o.sub_object, o.material,
+            out += [f"{o.id}: {p}" for p in tax.check_object(o.general_object, o.material,
                                                               o.color, o.incidence, self.placeholder)]
         return out
 
-    def add_to_taxonomy(self, kind: str, value: str, parent_object: str | None = None) -> Taxonomy:
+    def add_to_taxonomy(self, kind: str, value: str) -> Taxonomy:
         try:
-            return add_entry(self.taxonomy_dir, kind, value, parent_object)
+            return add_entry(self.taxonomy_dir, kind, value)
         except (TaxonomyError, ClassNameError) as exc:
             raise ReviewError(str(exc)) from None
 
@@ -377,7 +372,7 @@ def add_laser_box(ls: ImageLabelSet, image_path: str | Path, settings: dict, box
         raise ReviewError(f"Laser event must be one of: {', '.join(LASER_KINDS)}.")
     if component is not None and component not in COMPONENT_NAMES:
         raise ReviewError(f"Component must be one of: {', '.join(COMPONENT_NAMES)}.")
-    if component is None and settings["labeling"].get("scheme", "full") == "components":
+    if component is None and settings["labeling"].get("scheme", "full") in ("components", "merged"):
         component = "component1"
     width, height = ls.image_width or 10**6, ls.image_height or 10**6
     cores = sorted((b for b in ls.laser_boxes if not b.is_part), key=lambda b: b.order)
@@ -430,7 +425,7 @@ def add_object_box(ls: ImageLabelSet, image_path: str | Path, taxonomy: Taxonomy
     x, y, w, h = clamped
     inside = [b.id for b in ls.laser_boxes if x <= b.box[0] + b.box[2] / 2 <= x + w and y <= b.box[1] + b.box[3] / 2 <= y + h]
     obj = ObjectBox(next_id("o", (o.id for o in ls.object_boxes)), clamped, first_object,  # type: ignore[arg-type]
-                    (taxonomy.objects.get(first_object) or ["other"])[0], (taxonomy.materials or ["other"])[0], color,
+                    (taxonomy.materials or ["other"])[0], color,
                     "first", inside, None, 1.0, "added by reviewer")
     ls.object_boxes.append(obj)
     return obj

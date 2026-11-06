@@ -60,8 +60,11 @@ def validate_settings(settings: dict[str, Any]) -> None:
 
     if settings["labeling"]["table_rule"] not in RULES:
         raise SettingsError(f"labeling.table_rule must be one of {RULES}")
-    if settings["labeling"].get("scheme", "full") not in ("full", "components"):
-        raise SettingsError("labeling.scheme must be 'full' or 'components'")
+    if settings["labeling"].get("scheme", "full") not in ("full", "components", "merged"):
+        raise SettingsError("labeling.scheme must be 'full', 'components' or 'merged'")
+    fraction = settings["labeling"].get("laser_box_object_fraction", 0.0)
+    if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 <= fraction <= 0.5:
+        raise SettingsError("labeling.laser_box_object_fraction must be a number from 0 to 0.5")
     if settings["provider"]["run_mode"] not in ("pipeline", "agent"):
         raise SettingsError("provider.run_mode must be 'pipeline' or 'agent'")
     if settings["provider"]["provider"] not in ("openai_compat", "gemini", "anthropic"):

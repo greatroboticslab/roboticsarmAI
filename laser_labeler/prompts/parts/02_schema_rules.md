@@ -1,8 +1,9 @@
 ## Labeling rules
 
 1. Follow the beam through every bounce, refraction and scatter, in order. Give each place the beam appears its own laser box with an event type from the allowed list. The first laser box has no `from_id`; every later one names the box before it.
-2. For each laser hit on a surface, give one object box covering only where the laser lands on that single material and color region. If one hit spans two materials or colors, make two boxes. Example: a laser on a pen's rubber grip gives a rubber-grip box and nothing else on the pen. If the pen's transparent part and rubber grip are both hit, that is two object boxes, each with its own full attributes.
-3. Each object box has: general object, sub-object, material, color, incidence. These describe the box region only, not the whole object. Use only values from the taxonomy below.
+2. For each laser hit on a surface, give one object box covering only where the laser lands on that single material and color region. If one hit spans two materials or colors, make two boxes. Example of the splitting rule only (it says nothing about what is in this image): if a laser lands on both the glass body and the ceramic handle of one cup, that is two object boxes, each with its own full attributes.
+6. Name what you actually see. Never choose the nearest-sounding taxonomy entry to avoid asking: a wrong confident name is worse than a question. If the object is not in the taxonomy, ask (see the questions section) and set a low confidence.
+3. Each object box has: object, material, color, incidence. These describe the box region only, not the whole object. Use only values from the taxonomy below.
 4. Incidence says how the laser reaches that region: `first`, `reflected`, `refracted`, `scattered` or `other`.
 5. Table rule (`{{table_rule}}`): label the table only if no other object in the image has a laser hit on it. If any other object is hit, make no table box.
 6. Grayscale images have no color: write `{{color_placeholder}}` as the color.

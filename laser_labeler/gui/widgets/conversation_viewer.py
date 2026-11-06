@@ -13,7 +13,8 @@ SYSTEM_PREVIEW = 400  # characters of the system prompt shown (it is long and th
 TEXT_LIMIT = 4000
 ROLE_COLORS = {"system": "#7a7f87", "user": "#1f6feb", "assistant": "#1a7f4b", "tool": "#9a6700"}
 EVENT_COLORS = {"answer": "#8250df", "reviewer_note": "#8250df", "error": "#cf222e", "fallback": "#bc4c00",
-                "invalid_reply": "#bc4c00", "escalation": "#bc4c00"}
+                "invalid_reply": "#bc4c00", "escalation": "#bc4c00", "detection": "#0a7ea4",
+                "question": "#bc4c00", "result": "#1a7f4b"}
 
 
 def _clip(text: str, limit: int) -> str:

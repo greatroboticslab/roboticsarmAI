@@ -41,5 +41,5 @@ def pipeline_json(candidates, questions=None, status="ok"):
     return {"status": status, "candidates": candidates, "questions": questions or []}
 
 
-PEN_RUBBER = {"general_object": "pen", "sub_object": "ballpoint", "material": "rubber",
+PEN_RUBBER = {"general_object": "pen", "material": "rubber",
               "finish": None, "incidence": "first", "confidence": 0.8}

@@ -5,7 +5,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, get_args
 
-from core.schema.class_names import COMPONENT_NAMES, encode_component_class, encode_laser_class
+from core.schema.class_names import (COMPONENT_NAMES, encode_component_class, encode_laser_class, encode_merged_class,
+                                     encode_object_class, resolve_color)
 
 LaserKind = Literal["first_incidence", "reflection", "refraction", "scatter", "other"]
 Status = Literal[
@@ -72,8 +73,7 @@ class LaserBox:
 class ObjectBox:
     id: str
     box: Box
-    general_object: str
-    sub_object: str
+    general_object: str  # "the object", for example pen
     material: str
     color: str  # "na" (or the configured placeholder) on grayscale
     incidence: str  # first / reflected / refracted / scattered / other
@@ -91,6 +91,7 @@ class ObjectBox:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ObjectBox":
+        data = {k: v for k, v in data.items() if k != "sub_object"}  # older sidecars had a sub-object; it is gone
         return cls(**data)
 
 
@@ -132,10 +133,33 @@ class ImageLabelSet:
     questions: list[Question] = field(default_factory=list)
     run_mode: str = ""  # "pipeline" or "agent": the mode that produced this set
     notes: str = ""
+    scheme: str = "full"  # label scheme it was made with: full | components | merged
 
     def __post_init__(self) -> None:
         if self.status not in STATUSES:
             raise ValueError(f"unknown status {self.status!r}")
+
+    def object_for_laser(self, laser: "LaserBox") -> "ObjectBox | None":
+        """The object box a laser spot (or a part of it) lands on, if any."""
+        core = laser.from_id if laser.is_part else laser.id
+        return next((o for o in self.object_boxes if laser.id in o.laser_ids or core in o.laser_ids), None)
+
+    def laser_class_name(self, laser: "LaserBox", color_placeholder: str = "na") -> str:
+        """The Roboflow class of a laser box. Under the "merged" scheme a part that lands on an object is named
+        after both, e.g. obj_pen-ballpoint_rubber_red_first__component1; otherwise it is the plain laser class."""
+        obj = self.object_for_laser(laser) if self.scheme == "merged" and laser.component else None
+        if obj is None:
+            return laser.class_name
+        color = resolve_color(obj.color, self.is_grayscale, color_placeholder)
+        return encode_merged_class(
+            encode_object_class(obj.general_object, obj.material, color, obj.incidence), laser.component)
+
+    def merged_object_ids(self) -> set[str]:
+        """Object boxes whose information is carried by laser part boxes (so they are not exported separately)."""
+        if self.scheme != "merged":
+            return set()
+        found = (self.object_for_laser(b) for b in self.laser_boxes if b.component)
+        return {o.id for o in found if o is not None}
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

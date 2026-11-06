@@ -16,7 +16,7 @@ def label_set(n, status="approved", pdf="data/pdfs/img.pdf", prompt="v7", box=(1
         image_id=f"img{n}", image_name=f"img{n}.jpg", camera_id="cam", is_grayscale=False,
         background_level=0.1, laser_boxes=[LaserBox("l1", "first_incidence", box, 0,
                                                     metrics={"peak_intensity": 0.987654})],
-        object_boxes=[ObjectBox("o1", (50, 50, 20, 20), "table", "top", "wood", "brown", "first",
+        object_boxes=[ObjectBox("o1", (50, 50, 20, 20), "table", "wood", "brown", "first",
                                 laser_ids=["l1"], confidence=0.9)],
         prompt_version=prompt, provider="p", model="m", pdf_path=pdf, status=status,
         image_width=640, image_height=480)

@@ -10,7 +10,7 @@ def make_set(name="a.jpg", status="approved", gray=False):
         background_level=0.1, status=status, image_width=100, image_height=80,
         laser_boxes=[LaserBox("l1", "first_incidence", (10, 10, 5, 5), 0),
                      LaserBox("l2", "reflection", (50, 40, 8, 8), 1, from_id="l1")],
-        object_boxes=[ObjectBox("o1", (5, 5, 20, 20), "pen", "ballpoint", "rubber",
+        object_boxes=[ObjectBox("o1", (5, 5, 20, 20), "pen", "rubber",
                                 "black", "first", laser_ids=["l1"], confidence=0.9)],
     )
 
@@ -20,7 +20,7 @@ def test_basic_export():
     names = [c["name"] for c in coco["categories"]]
     assert names == sorted(names)
     assert set(names) == {"las_first-incidence", "las_reflection",
-                          "obj_pen-ballpoint_rubber_black_first"}
+                          "obj_pen_rubber_black_first"}
     assert len(coco["images"]) == 1 and len(coco["annotations"]) == 3
     ann = coco["annotations"][0]
     assert ann["area"] == ann["bbox"][2] * ann["bbox"][3]
@@ -37,7 +37,7 @@ def test_only_approved_or_edited_exported():
 
 def test_grayscale_uses_na_even_if_color_set():
     coco = build_coco([make_set(gray=True)])
-    assert "obj_pen-ballpoint_rubber_na_first" in [c["name"] for c in coco["categories"]]
+    assert "obj_pen_rubber_na_first" in [c["name"] for c in coco["categories"]]
 
 
 def test_numbers_and_links_not_sent():

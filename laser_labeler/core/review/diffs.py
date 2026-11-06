@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from core.models import ImageLabelSet
 
-OBJECT_FIELDS = ("general_object", "sub_object", "material", "color", "incidence", "finish")
+OBJECT_FIELDS = ("general_object", "material", "color", "incidence", "finish")
 def _name(box) -> str:
     return box.component or box.kind
 
@@ -44,7 +44,7 @@ class Change:
 
 
 def _obj_context(o) -> str:
-    return f"{o.general_object}/{o.sub_object} {o.material} {o.color}"
+    return f"{o.general_object} {o.material} {o.color}"
 
 
 def _same(a, b) -> bool:

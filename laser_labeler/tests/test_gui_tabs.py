@@ -266,3 +266,41 @@ def test_a_pasted_model_command_is_tidied_when_saved_and_used(app, ctx):
     assert tab.save() and ctx.settings()["provider"]["model"] == "qwen2.5vl:7b"
     ctx.update_settings(lambda s: s["provider"].update(model='"qwen2.5vl:7b" '))  # hand-edited settings file
     assert ctx.provider().model == "qwen2.5vl:7b"
+
+
+def test_label_run_says_what_each_waiting_image_needs(app, ctx, tmp_path):
+    from PIL import Image
+    from tests.synth import finish, scene
+    pics = tmp_path / "pics"
+    pics.mkdir()
+    for name in ("x.png", "y.png"):
+        Image.fromarray(finish(scene())).save(pics / name)  # no laser in either
+    tab = SelectImagesTab(ctx)
+    tab.scan_paths([pics])
+    tab.tick_all_btn.click()
+    assert tab.add_to_queue() == 2
+    run = LabelRunTab(ctx, provider_fn=lambda: ScriptedProvider([]), confirm_fn=lambda t: True)
+    assert run.start()
+    assert wait_until(app, lambda: not run.running(), 20)
+    assert ctx.db.counts()["needs_input"] == 2
+    assert "no laser found" in run.notice.text() and "Click where the beam first hits" in run.notice.text()
+    assert "Waiting for you: 2 x no laser found" in run.message.text()
+    assert "Needs input" in run.message.text() or "Review queue" in run.message.text()
+
+
+def test_ai_settings_laser_box_size_saves_and_reloads(app, ctx):
+    tab = AISettingsTab(ctx)
+    assert tab.box_size.value() == 0.33
+    tab.box_size.setValue(0.4)
+    assert tab.save()
+    assert ctx.settings()["labeling"]["laser_box_object_fraction"] == 0.4
+    assert AISettingsTab(ctx).box_size.value() == 0.4
+
+
+def test_ai_settings_offers_the_merged_scheme(app, ctx):
+    tab = AISettingsTab(ctx)
+    assert tab.scheme.findData("merged") >= 0
+    tab.scheme.setCurrentIndex(tab.scheme.findData("merged"))
+    assert tab.save()
+    assert ctx.settings()["labeling"]["scheme"] == "merged"
+    assert AISettingsTab(ctx).scheme.currentData() == "merged"

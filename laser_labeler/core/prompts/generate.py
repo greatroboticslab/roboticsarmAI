@@ -66,16 +66,15 @@ def taxonomy_changes(old: dict | None, new: dict) -> str:
             lines.append(f"{key}: added {', '.join(added)}")
         if removed:
             lines.append(f"{key}: removed {', '.join(removed)}")
-    old_obj, new_obj = old.get("objects", {}), new.get("objects", {})
-    for name, subs in new_obj.items():
-        if name not in old_obj:
-            lines.append(f"objects: new object {name} with sub-objects {', '.join(subs)}")
-            continue
-        fresh = [sub for sub in subs if sub not in old_obj[name]]
-        if fresh:
-            lines.append(f"objects: {name} gained sub-objects {', '.join(fresh)}")
-    lines += [f"objects: removed object {name}" for name in old_obj if name not in new_obj]
+    old_obj, new_obj = _object_names(old.get("objects")), _object_names(new.get("objects"))
+    lines += [f"objects: added {name}" for name in new_obj if name not in old_obj]
+    lines += [f"objects: removed {name}" for name in old_obj if name not in new_obj]
     return "\n".join(lines) or "(the taxonomy has not changed)"
+
+
+def _object_names(raw) -> list[str]:
+    """Object names from a stored taxonomy snapshot (a list now; older versions stored object -> sub-objects)."""
+    return list(raw or [])
 
 
 def render_example(ls: ImageLabelSet, placeholder: str = "na") -> str:
@@ -84,7 +83,7 @@ def render_example(ls: ImageLabelSet, placeholder: str = "na") -> str:
         parts.append(f"  laser {b.class_name} box={list(b.box)} order={b.order}")
     for o in ls.object_boxes:
         try:
-            name = encode_object_class(o.general_object, o.sub_object, o.material,
+            name = encode_object_class(o.general_object, o.material,
                                        resolve_color(o.color, ls.is_grayscale, placeholder), o.incidence)
         except ClassNameError:
             continue

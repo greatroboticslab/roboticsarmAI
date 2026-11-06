@@ -8,6 +8,12 @@ def failure_hint(error: str | None, provider: str = "", model: str = "") -> str:
     if not text:
         return ""
     local = provider in ("", "openai_compat")
+    if "context size" in text or "context length" in text or "context window" in text or "num_ctx" in text \
+            or "maximum context" in text or "too many tokens" in text:
+        extra = (" For Ollama: set the OLLAMA_CONTEXT_LENGTH environment variable to 8192 and restart Ollama, or make a "
+                 "copy of the model with `PARAMETER num_ctx 8192` in a Modelfile (see the README)." if local else "")
+        return ("The request is longer than the model's context window (Ollama defaults to 4096 tokens). Raise the "
+                "window, or shrink the request: lower Max candidates and the image size in AI settings." + extra)
     if any(w in text for w in ("does not support image", "doesn't support image", "image input", "multimodal", "vision",
                                "images are not supported", "image_url")) and "not found" not in text:
         return ("This model cannot read images. Pick a vision model (one that accepts pictures) in AI settings, "

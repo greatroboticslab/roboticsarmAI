@@ -8,8 +8,8 @@ When you are done, reply with ONLY one JSON object (no prose, no code fence):
     {"id": "l1", "kind": "first_incidence", "box": [x, y, w, h], "order": 0, "from_id": null, "notes": ""}
   ],
   "object_boxes": [
-    {"id": "o1", "box": [x, y, w, h], "general_object": "pen", "sub_object": "ballpoint",
-     "material": "rubber", "finish": null, "color": "black", "incidence": "first",
+    {"id": "o1", "box": [x, y, w, h], "general_object": "<the object, from the taxonomy>",
+     "material": "<from the taxonomy>", "finish": null, "color": "black", "incidence": "first",
      "laser_ids": ["l1"], "confidence": 0.8, "notes": ""}
   ],
   "questions": [

@@ -5,8 +5,7 @@ import pytest
 from core.labeler.parse_reply import (ReplyParseError, extract_json, parse_agent_reply, parse_pipeline_reply)
 
 LASER = {"id": "l1", "kind": "first_incidence", "box": [1, 2, 3, 4], "order": 0, "from_id": None}
-OBJ = {"id": "o1", "box": [1, 2, 30, 40], "general_object": "pen", "sub_object": "gel",
-       "material": "glass", "color": "clear", "incidence": "first", "laser_ids": ["l1"], "confidence": 0.7}
+OBJ = {"id": "o1", "box": [1, 2, 30, 40], "general_object": "pen", "material": "glass", "color": "clear", "incidence": "first", "laser_ids": ["l1"], "confidence": 0.7}
 
 
 def test_extract_json_variants():
@@ -58,5 +57,4 @@ def test_pipeline_reply_requires_every_id_and_known_ids():
     with pytest.raises(ReplyParseError, match="kind"):
         parse_pipeline_reply(json.dumps({"candidates": [cand("c1", kind="zap")]}), ["c1"])
     with pytest.raises(ReplyParseError, match="material"):
-        parse_pipeline_reply(json.dumps({"candidates": [cand("c1", object={"general_object": "a", "sub_object": "b",
-                                                                          "incidence": "first"})]}), ["c1"])
+        parse_pipeline_reply(json.dumps({"candidates": [cand("c1", object={"general_object": "a", "incidence": "first"})]}), ["c1"])

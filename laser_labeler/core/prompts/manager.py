@@ -28,8 +28,7 @@ class PromptBuild:
 
 
 def render_taxonomy(tax: Taxonomy, color_placeholder: str = "na") -> str:
-    lines = ["Objects and their sub-objects:"]
-    lines += [f"- {name}: {', '.join(subs)}" for name, subs in tax.objects.items()]
+    lines = [f"Objects: {', '.join(tax.objects)}"]
     lines += [
         f"Materials: {', '.join(tax.materials)}",
         f"Colors: {', '.join(tax.colors)} (use `{color_placeholder}` on grayscale images)",

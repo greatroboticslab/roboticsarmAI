@@ -31,7 +31,8 @@ labeling:
   camera_source: tag                  # tag | folder
   camera_tag_prefix: "camera:"
   laser_level_classes: false          # append coarse levels to las_ class names
-  scheme: full                        # full = obj_... and las_<event> classes | components = obj_... plus component1/2/3
+  scheme: full                        # full = obj_... and las_<event> | components = obj_... plus component1/2/3 | merged = component boxes named <obj_...>__componentN
+  laser_box_object_fraction: 0.33     # plain laser boxes grow to this fraction of the object box they hit (max 0.5); 0 = tight boxes
   keep_awake: true
 
 data_dir: data

@@ -44,7 +44,7 @@ def test_registry_passes_the_flag():
 def test_pipeline_schema_accepts_good_replies_and_rejects_bad_ones():
     schema = pipeline_schema(["c1", "c2"], TAX)
     jsonschema.Draft202012Validator.check_schema(schema)
-    obj = {"general_object": "pen", "sub_object": "ballpoint", "material": "rubber", "finish": None,
+    obj = {"general_object": "pen", "material": "rubber", "finish": None,
            "incidence": "first", "confidence": 0.8}
     good = {"status": "ok", "questions": [], "candidates": [
         {"id": "c1", "is_laser": True, "kind": "first_incidence", "order": 0, "from_id": None, "object": obj, "notes": ""},

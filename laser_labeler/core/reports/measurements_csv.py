@@ -20,7 +20,7 @@ def rows_for(label_set: ImageLabelSet) -> list[dict]:
     for box in sorted(label_set.laser_boxes, key=lambda b: b.order):
         row = {"image_id": label_set.image_id, "image_name": label_set.image_name,
                "camera_id": label_set.camera_id, "box_id": box.id,
-               "class": box.class_name, "order": box.order,
+               "class": label_set.laser_class_name(box), "order": box.order,
                "background_level": label_set.background_level}
         row.update({k: box.metrics[k] for k in METRIC_COLUMNS if k in box.metrics})
         row.update({f"exposure_{k}": v for k, v in (label_set.exposure or {}).items()})

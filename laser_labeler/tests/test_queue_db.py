@@ -21,7 +21,7 @@ def label_set(status="pending", obj_conf=0.9, laser_conf=0.8, questions=(), note
     return ImageLabelSet(
         "x", "x.png", "cam", False, 0.1, status=status, notes=notes, questions=list(questions),
         laser_boxes=[LaserBox("l1", "first_incidence", (1, 1, 5, 5), 0, metrics={"confidence": laser_conf})],
-        object_boxes=[ObjectBox("o1", (0, 0, 9, 9), "pen", "gel", "glass", "clear", "first", confidence=obj_conf)])
+        object_boxes=[ObjectBox("o1", (0, 0, 9, 9), "pen", "glass", "clear", "first", confidence=obj_conf)])
 
 
 def labeled(db, image_id, **kw):

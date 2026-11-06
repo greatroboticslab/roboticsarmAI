@@ -88,7 +88,7 @@ def _laser(item: dict, i: int) -> dict:
 def _object(item: dict, i: int) -> dict:
     where = f"object_boxes[{i}]"
     out = {"id": str(_need(item, "id", (str, int), where)), "box": _box(item, where)}
-    for key in ("general_object", "sub_object", "material", "incidence"):
+    for key in ("general_object", "material", "incidence"):
         out[key] = str(_need(item, key, str, where))
     out.update(color=item.get("color"), finish=item.get("finish"), notes=str(item.get("notes", "")),
                laser_ids=[str(v) for v in item.get("laser_ids") or []],
@@ -144,7 +144,7 @@ def parse_pipeline_reply(text: str, expected_ids: list[str]) -> PipelineReply:
         if obj is not None:
             if not isinstance(obj, dict):
                 raise ReplyParseError(f"{where}: 'object' must be an object or null")
-            for key in ("general_object", "sub_object", "material", "incidence"):
+            for key in ("general_object", "material", "incidence"):
                 _need(obj, key, str, f"{where}.object")
             _confidence(obj.get("confidence"), f"{where}.object")
         seen[cid] = {"id": cid, "is_laser": is_laser, "kind": kind, "order": item.get("order"),

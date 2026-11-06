@@ -33,7 +33,7 @@ def test_component_class_names():
     assert encode_component_class("component2") == "component2"
     assert decode_class("component3") == ComponentClass(3)
     assert class_family("component1") == "laser" and class_family("las_reflection") == "laser"
-    assert class_family("obj_pen-ballpoint_rubber_red_first") == "object"
+    assert class_family("obj_pen_rubber_red_first") == "object"
     assert isinstance(decode_class("las_reflection"), LaserClass)
     for bad in ("component4", "component", "Component1", "component1 "):
         with pytest.raises(ClassNameError):
@@ -135,7 +135,7 @@ def test_ids_never_collide_with_existing_boxes():
 
 # ---------------------------------------------------------------- export, CSV, PDF, diffs
 def label_set(boxes):
-    obj = ObjectBox("o1", (90, 70, 40, 30), "pen", "ballpoint", "rubber", "red", "first", ["l1"], None, 0.8)
+    obj = ObjectBox("o1", (90, 70, 40, 30), "pen", "rubber", "red", "first", ["l1"], None, 0.8)
     return ImageLabelSet("a", "a.png", "cam", False, 0.1, laser_boxes=boxes, object_boxes=[obj], status="approved",
                          image_width=320, image_height=240)
 
@@ -143,10 +143,10 @@ def label_set(boxes):
 def test_coco_uses_component_classes_and_keeps_object_classes():
     ls = label_set(apply_components([core_box()], [BeamLine(20.0, 140.0, 96.0, 83.0)], 320, 240))
     names = [n for n, _ in class_names_for(ls)]
-    assert sorted(names) == ["component1", "component2", "component3", "obj_pen-ballpoint_rubber_red_first"]
+    assert sorted(names) == ["component1", "component2", "component3", "obj_pen_rubber_red_first"]
     coco = build_coco([ls])
     assert [c["name"] for c in coco["categories"]] == ["component1", "component2", "component3",
-                                                       "obj_pen-ballpoint_rubber_red_first"]
+                                                       "obj_pen_rubber_red_first"]
     assert len(coco["annotations"]) == 4
 
 
@@ -212,7 +212,7 @@ def test_components_scheme_labels_core_and_halo(halo_image, tmp_path):
     assert result.status == "pending" and not result.questions
     assert 0 < result.object_boxes[0].confidence <= 1
     names = [n for n, _ in class_names_for(result)]
-    assert any(n.startswith("obj_pen-ballpoint") for n in names) and "component1" in names
+    assert any(n.startswith("obj_pen_") for n in names) and "component1" in names
 
 
 def test_components_scheme_with_a_plain_spot_has_just_the_core(tmp_path):
@@ -273,7 +273,7 @@ def test_deleting_a_core_removes_its_parts():
 def test_golden_scoring_understands_component_classes():
     from core.labeler.golden import TruthBox, score_image
     truth = [TruthBox("component1", (96, 76, 8, 8)), TruthBox("component2", (86, 66, 28, 28)),
-             TruthBox("obj_pen-ballpoint_rubber_red_first", (90, 70, 40, 30))]
+             TruthBox("obj_pen_rubber_red_first", (90, 70, 40, 30))]
     ls = label_set(apply_components([core_box()], [], 320, 240))
     scores = score_image(truth, ls)
     assert scores["laser"].truth == 2 and scores["laser"].predicted == 2 and scores["laser"].matched == 2

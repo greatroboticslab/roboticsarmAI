@@ -60,7 +60,7 @@ def _build(ctx: LabelContext, candidates, reply: PipelineReply) -> RawResult:
             region = tighten_box(ctx.rgb, expand_box(cand.box, 2 * max(cand.box[2:]), ctx.image.width, ctx.image.height))
             raw.object_boxes.append({
                 "id": "o" + cand.id[1:], "box": region.box, "laser_ids": [lid], "color": None,
-                "general_object": obj["general_object"], "sub_object": obj["sub_object"],
+                "general_object": obj["general_object"],
                 "material": obj["material"], "finish": obj.get("finish"), "incidence": obj["incidence"],
                 "confidence": min(obj.get("confidence") or 0.5, max(region.confidence, 0.3) + 0.2),
                 "notes": "" if region.changed else "box not tightened"})

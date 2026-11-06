@@ -2,7 +2,7 @@
 
 Ask a question instead of guessing when:
 - the laser is not visible, or you cannot tell where it first hit;
-- an object, sub-object or material is not in the taxonomy, or several fit and you cannot choose;
+- an object or material is not in the taxonomy, or several fit and you cannot choose (do not pick the closest-sounding entry: ask, with `allow_taxonomy_add: true`);
 - the finish matters (matte vs glossy) and you cannot tell;
 - lighting makes a color ambiguous;
 - the beam path between two spots is not visible.

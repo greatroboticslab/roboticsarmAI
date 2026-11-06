@@ -1,12 +1,11 @@
-# Objects and their sub-objects.
-# Entries must be lowercase letters/digits only: no "-", "_" or spaces.
-# Write multi-word names as one word (for example: ballpointpen).
+# Objects the laser can land on. One word each, lowercase letters/digits only: no "-", "_" or spaces.
+# (If it is a pen, just say pen: there are no sub-objects.)
 objects:
-  pen: [ballpoint, gel, marker]
-  table: [desk, workbench]
-  cup: [mug, glass, paper]
-  bottle: [water, soda]
-  mirror: [flat, curved]
-  lens: [convex, concave]
-  paper: [sheet, cardboard]
-  tool: [screwdriver, scissors]
+  - pen
+  - table
+  - cup
+  - bottle
+  - mirror
+  - lens
+  - paper
+  - tool

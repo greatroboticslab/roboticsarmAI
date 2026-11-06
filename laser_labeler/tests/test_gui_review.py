@@ -370,3 +370,44 @@ def test_deleting_the_core_in_review_removes_its_halo(app, ctx, tmp_path):
     tab.delete_btn.click()
     assert [b.id for b in tab.draft.laser_boxes] == []
     tab.close()
+
+
+# ---------------------------------------------------------------- why an image needs input, and the visible conversation
+def blank_labeled(ctx, tmp_path, name="blank"):
+    from PIL import Image
+    from tests.synth import finish, scene
+    path = tmp_path / f"{name}.png"
+    Image.fromarray(finish(scene())).save(path)
+    ctx.db.add_images([NewImage(name, f"{name}.png", str(path))])
+    provider = ScriptedProvider([])
+    settings, tax = ctx.settings(), ctx.service().taxonomy()
+    run_queue(ctx.db, lambda row: label_image(row.path, provider=provider, taxonomy=tax, settings=settings,
+                                              data_dir=ctx.data_dir, image_id=row.image_id),
+              sidecar_dir=ctx.data_dir / "sidecars")
+
+
+def test_needs_input_rows_say_why_and_the_conversation_is_always_visible(app, ctx, tmp_path):
+    blank_labeled(ctx, tmp_path)
+    tab = ReviewTab(ctx)
+    tab.resize(1300, 850)
+    tab.show()
+    tab.filter_box.setCurrentText("Needs your input")
+    assert "why: no laser found" in tab.list.item(0).text()
+    tab.select_image("blank")
+    assert "Needs your input:</b> no laser found" in tab.header.text()
+    assert tab.right.count() == 2  # Labels and Questions: the conversation is not hidden in a tab
+    app.processEvents()
+    assert tab.viewer.isVisible() and tab.viewer.height() > 60
+    shown = tab.viewer.toPlainText()
+    assert "DETECTION" in shown and "found no laser spot" in shown and "QUESTION" in shown and "RESULT" in shown
+    tab.close()
+
+
+def test_conversation_is_shown_for_every_kind_of_image(app, ctx, tmp_path):
+    label(ctx, tmp_path, ("a.png",), [good()])
+    tab = ReviewTab(ctx)
+    tab.show()
+    tab.select_image("a")
+    shown = tab.viewer.toPlainText()
+    assert "DETECTION" in shown and "SYSTEM" in shown and "ASSISTANT" in shown and "RESULT" in shown
+    tab.close()

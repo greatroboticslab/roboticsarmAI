@@ -7,9 +7,14 @@ from core.schema.class_names import (
 
 
 def test_object_round_trip():
-    name = encode_object_class("pen", "ballpoint", "rubber", "black", "first")
-    assert name == "obj_pen-ballpoint_rubber_black_first"
-    assert decode_class(name) == ObjectClass("pen", "ballpoint", "rubber", "black", "first")
+    name = encode_object_class("pen", "rubber", "black", "first")
+    assert name == "obj_pen_rubber_black_first"
+    assert decode_class(name) == ObjectClass("pen", "rubber", "black", "first")
+
+
+def test_older_names_with_a_sub_object_still_decode_and_drop_it():
+    assert decode_class("obj_pen-ballpoint_rubber_black_first") == ObjectClass("pen", "rubber", "black", "first")
+    assert class_family("obj_pen-ballpoint_rubber_black_first") == "object"
 
 
 def test_laser_round_trip():
@@ -20,8 +25,7 @@ def test_laser_round_trip():
 
 def test_grayscale_color_is_na():
     color = resolve_color("black", is_grayscale=True)
-    assert encode_object_class("pen", "ballpoint", "rubber", color, "first") == \
-        "obj_pen-ballpoint_rubber_na_first"
+    assert encode_object_class("pen", "rubber", color, "first") == "obj_pen_rubber_na_first"
     assert resolve_color("black", is_grayscale=False) == "black"
     assert resolve_color("black", True, placeholder="gray0") == "gray0"
 
@@ -29,9 +33,9 @@ def test_grayscale_color_is_na():
 @pytest.mark.parametrize("bad", ["ball-point", "ball_point", "ball point", "Pen", "", "pen!"])
 def test_separators_and_bad_chars_rejected(bad):
     with pytest.raises(ClassNameError):
-        encode_object_class(bad, "ballpoint", "rubber", "black", "first")
+        encode_object_class(bad, "rubber", "black", "first")
     with pytest.raises(ClassNameError):
-        encode_object_class("pen", bad, "rubber", "black", "first")
+        encode_object_class("pen", bad, "black", "first")
 
 
 @pytest.mark.parametrize("bad", ["first_incidence", "First", "-x", "x-", "a--b", ""])
@@ -41,10 +45,9 @@ def test_bad_laser_events_rejected(bad):
 
 
 @pytest.mark.parametrize("bad", [
-    "", "pen", "obj_", "xyz_pen-ballpoint_rubber_black_first",
-    "obj_pen_rubber_black_first",                     # missing sub-object hyphen field
-    "obj_pen-ballpoint_rubber_black",                 # too few fields
-    "obj_pen-ballpoint_rubber_black_first_extra",     # too many fields
+    "", "pen", "obj_", "xyz_pen_rubber_black_first",
+    "obj_pen_rubber_black",                           # too few fields
+    "obj_pen_rubber_black_first_extra",               # too many fields
     "obj_pen-ball-point_rubber_black_first",          # extra hyphen
     "las_", "las_Bad",
 ])

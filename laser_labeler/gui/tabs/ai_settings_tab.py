@@ -18,7 +18,9 @@ from gui.workers.verify_worker import start_call
 PROVIDER_LABELS = {"openai_compat": "OpenAI-compatible (local server, OpenAI, OpenRouter)", "gemini": "Google Gemini",
                    "anthropic": "Claude (Anthropic)"}
 SCHEME_LABELS = {"full": "Full: obj_... classes and las_<event> classes (default)",
-                 "components": "Components: obj_... classes, and each laser spot split into component1 / 2 / 3"}
+                 "components": "Components: obj_... classes, and each laser spot split into component1 / 2 / 3",
+                 "merged": "Merged: no separate object boxes; each component box is named after its object, "
+                           "e.g. obj_pen-ballpoint_rubber_red_first__component1"}
 RULE_LABELS = {"only_if_no_object_hit": "Label the table only if no object has a laser hit (default)",
                "always_label": "Always label the table", "never_label": "Never label the table"}
 
@@ -67,6 +69,8 @@ class AISettingsTab(QWidget):
                                   "component3 = the visible beam line leading to it. The app finds these parts from the "
                                   "pixels; a part it cannot see is left out. Applies to images labeled from now on.")
         self.scheme_help.setWordWrap(True)
+        self.box_size = _spin(0, 0.5, 2, 0.05)
+        self.box_size.setToolTip("0 keeps the laser box tight around the spot. 0.33 makes it a third of the object box it hits.")
         self.keep_awake = QCheckBox("Keep the computer awake during a labeling run")
         self.esc_on = QCheckBox("Send images the main model fails on or is unsure about to a cloud model")
         self.esc_provider = _combo({k: PROVIDER_LABELS[k] for k in ESCALATION_PROVIDERS})
@@ -114,6 +118,7 @@ class AISettingsTab(QWidget):
         rform = QFormLayout(rules)
         rform.addRow("Label scheme", self.scheme)
         rform.addRow("", self.scheme_help)
+        rform.addRow("Laser box size (fraction of the object it hits, 0 = tight)", self.box_size)
         rform.addRow("Table rule", self.table_rule)
         rform.addRow("", self.keep_awake)
         self.esc_box = QGroupBox("Hybrid escalation (off by default)")
@@ -168,6 +173,7 @@ class AISettingsTab(QWidget):
         self.cap.setValue(float(p.get("daily_cost_cap_usd", 0)))
         self._pick(self.table_rule, lab["table_rule"])
         self._pick(self.scheme, lab.get("scheme", "full"))
+        self.box_size.setValue(float(lab.get("laser_box_object_fraction", 0.0)))
         self.keep_awake.setChecked(bool(lab.get("keep_awake")))
         self.esc_on.setChecked(bool(e.get("enabled")))
         self._pick(self.esc_provider, e.get("provider") or ESCALATION_PROVIDERS[0])
@@ -209,6 +215,7 @@ class AISettingsTab(QWidget):
             s["provider"].update(self.provider_block())
             s["labeling"]["table_rule"] = self.table_rule.currentData()
             s["labeling"]["scheme"] = self.scheme.currentData()
+            s["labeling"]["laser_box_object_fraction"] = round(self.box_size.value(), 2)
             s["labeling"]["keep_awake"] = self.keep_awake.isChecked()
             s["escalation"].update(enabled=self.esc_on.isChecked(), provider=self.esc_provider.currentData(),
                                    model=self.esc_model.text().strip(), confidence_threshold=self.esc_threshold.value(),

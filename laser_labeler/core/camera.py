@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import math
+
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -52,12 +55,22 @@ def is_grayscale_array(rgb: np.ndarray, tolerance: int = GRAY_TOLERANCE) -> bool
     return bool(np.abs(r - g).max() <= tolerance and np.abs(g - b).max() <= tolerance)
 
 
+def _local_noise(v: np.ndarray) -> float:
+    """Sensor noise from what is left after removing the picture's own structure: each pixel minus the mean of
+    its 3x3 neighbourhood. A textured table or a lit object spreads the whole image's brightness out, which says
+    nothing about noise; this does not see it. The 3x3 mean takes 1/9 of a pixel's variance with it, hence the factor."""
+    if min(v.shape) < 3:
+        return float(np.std(v))
+    k = np.ones((3, 3), np.float32) / 9.0
+    residual = v - cv2.filter2D(v.astype(np.float32), -1, k, borderType=cv2.BORDER_REPLICATE)
+    return float(1.4826 * np.median(np.abs(residual - np.median(residual))) / math.sqrt(8.0 / 9.0))
+
+
 def image_stats(rgb: np.ndarray) -> ImageStats:
-    """Background = median brightness. The laser covers few pixels, so the median ignores it."""
+    """Background = median brightness. The laser covers few pixels, so the median ignores it.
+    Noise comes from pixel-to-pixel differences, not from the spread of the whole picture."""
     v = intensity_map(rgb)
-    median = float(np.median(v))
-    mad = float(np.median(np.abs(v - median)))
-    return ImageStats(background_level=median, noise_level=max(1.4826 * mad, 1.0 / 255.0))
+    return ImageStats(background_level=float(np.median(v)), noise_level=max(_local_noise(v), 1.0 / 255.0))
 
 
 def _to_uint8(pil: Image.Image) -> np.ndarray:

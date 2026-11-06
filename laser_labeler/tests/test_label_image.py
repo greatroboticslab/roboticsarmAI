@@ -157,7 +157,7 @@ def test_table_rule_drops_table_when_object_is_hit(image, settings, tmp_path):
     spot(img, 250, 200, sigma=2.5, amp=0.5, color=(1, 1, 1))
     path = tmp_path / "two.png"
     Image.fromarray(finish(img)).save(path)
-    table = {"general_object": "table", "sub_object": "desk", "material": "wood", "finish": None,
+    table = {"general_object": "table", "material": "wood", "finish": None,
              "incidence": "reflected", "confidence": 0.8}
     reply = text(pipeline_json([
         {"id": "c1", "is_laser": True, "kind": "first_incidence", "order": 0, "object": PEN_RUBBER},
@@ -171,8 +171,7 @@ def test_table_rule_drops_table_when_object_is_hit(image, settings, tmp_path):
 
 # ---------------- agent mode
 FINAL = {"laser_boxes": [{"id": "l1", "kind": "first_incidence", "box": [130, 100, 20, 20], "order": 0}],
-         "object_boxes": [{"id": "o1", "box": [100, 80, 80, 60], "general_object": "pen", "sub_object": "ballpoint",
-                           "material": "rubber", "color": "red", "incidence": "first", "laser_ids": ["l1"],
+         "object_boxes": [{"id": "o1", "box": [100, 80, 80, 60], "general_object": "pen", "material": "rubber", "color": "red", "incidence": "first", "laser_ids": ["l1"],
                            "confidence": 0.9}], "questions": []}
 
 
@@ -188,6 +187,7 @@ def test_agent_mode_uses_tools_then_answers(image, settings, tmp_path):
 
 def test_agent_coordinates_are_scaled_back_to_original(image, settings, tmp_path):
     settings["provider"]["max_image_px"] = 160  # the model sees half size
+    settings["labeling"]["laser_box_object_fraction"] = 0  # this test is about coordinates, not box size
     shown = {**FINAL, "laser_boxes": [{**FINAL["laser_boxes"][0], "box": [65, 50, 10, 10]}],
              "object_boxes": [{**FINAL["object_boxes"][0], "box": [50, 40, 40, 30]}]}
     result, _ = run(image, settings, tmp_path, [tool("detect_laser"), text(shown)], mode="agent")

@@ -4,10 +4,10 @@ Choices made where the spec was silent. Change freely; each is small.
 
 ## Phase 1
 
-- **Token rule.** Taxonomy entries (objects, sub-objects, materials, colors, incidence) must match `^[a-z0-9]+$`. Uppercase is refused too, so class names stay case-stable. Laser events additionally allow single `-` between words (`first-incidence`).
+- **Token rule.** Taxonomy entries (objects, materials, colors, incidence) must match `^[a-z0-9]+$`. Uppercase is refused too, so class names stay case-stable. Laser events additionally allow single `-` between words (`first-incidence`).
 - **Color placeholder.** `na` is always accepted as a color and does not need to be in `colors.yaml`. It is configurable (`labeling.color_placeholder`).
 - **Grayscale.** `coco_export` forces the placeholder color on grayscale images, whatever the box says.
-- **New objects.** An object cannot exist without a sub-object, so `add_entry(kind="sub_object", parent_object=...)` creates the parent if needed. `kind="object"` is refused with an explanation.
+- **New objects.** `add_entry(kind="object")` adds one object name (superseded: sub-objects no longer exist, see the last section).
 - **YAML comments.** Adding a taxonomy entry rewrites the file and drops comments.
 - **COCO categories.** Ids start at 1, assigned in sorted class-name order (stable). Whether Roboflow wants an id-0 supergroup category is unverified (Phase 2).
 - **COCO export scope.** Only `approved` and `edited` label sets are exported unless `only_exportable=False`. Boxes are clamped to the image; a box fully outside the image raises.
@@ -76,3 +76,38 @@ Choices made where the spec was silent. Change freely; each is small.
 - **Links and numbers.** A part points at its core with `from_id`, has the core's `order` and event as `kind`, and carries the core's confidence so the queue's weakest-box figure is not dragged down. Objects link to the core only. Halo and beam boxes are never re-measured as spots; the core is re-measured when you move it, and its parts are left as they are.
 - **Review.** The box editor has a Component dropdown. A drawn laser box is a core under this scheme; a drawn component2 or component3 attaches to the nearest core (and needs one). Deleting a core removes its halo and beam; deleting a part leaves the core. Changes to the component show in the PDF addendum and the corrections list.
 - **Beam detection is still the weak spot.** Beam lines come from the Hough search in `laser_detect`, which is untuned (on synthetic scenes with a bright object it can pick up object edges). Expect component3 boxes to need the most correcting in your first test. The unit tests cover the logic with hand-made lines, not real detections.
+
+## Why images need input, spread-out lasers, visible conversation
+
+- **Noise is local.** `image_stats.noise_level` is the robust spread of each pixel's difference from its 3x3 neighbourhood mean, not the spread of the whole image. The old whole-image figure was inflated by any textured or gradient scene, which pushed the "bright enough" bar so high that nothing counted as a laser (every image became "no laser found"). The background level is still the median.
+- **Spread spots.** A candidate region is grown from a peak inside a window of max(60 px, 10% of the long side). Regions that touch the window edge are rejected unless at least half saturated (they are a bigger bright thing, not a spot). Nested lobes are merged into one spot (larger region, brightest peak). Maximum area rose from 2% to 5% of the image. A spot must exceed the median of a ring around its box by 6 noise levels, which rejects gradients and the sides of bright objects. Nothing here was tuned on real images; the tests use synthetic Gaussian spots of sigma 3 to 40 px, on gradients, on a bright object, speckled, clipped, and streaks.
+- **The app says why it found nothing.** `Detection.explain()` states the brightest contrast against the noise bar, or counts of regions rejected as too small, too large, too stretched or not standing out. It is written into the transcript as a DETECTION event before any model call, so it exists even when no model is called. Each question is logged as a QUESTION event with its kind, and the run ends with a RESULT event.
+- **Reasons come from question ids** (`core/review/reasons.py`): `q_no_laser`, `ql_` (confidence below 0.4), `qc_` (color), `qt_` (taxonomy value), `qi_` (incidence), anything else is a model question. The list row, the header and the Label run summary all use it.
+- **The conversation is not a hidden tab.** It sits in a splitter under the image in the Review tab, so it is visible for every image.
+- **Failed runs show a reason and a hint** (`core/providers/hints.py`). Model names pasted with quotes, backticks or an `ollama run` prefix are cleaned before use.
+- **Test setup.** `tests/conftest.py` keeps one QApplication for the whole session. The container used for development had `opencv-python` and `opencv-contrib-python` installed beside the headless build; they load a second Qt (Qt5) into the process. After removing them, the full suite still crashed in the interpreter about once in four or five full runs (never in the GUI test files alone, never in a stress script of the same worker/signal pattern); the cause is not found. Treat a one-off segfault in a full run as a known flake and rerun; if it happens in the app itself, please report it.
+
+## Bigger laser boxes
+
+- Requested: laser boxes should cover roughly a third of the object they hit, not just the bright core. `core/labeler/laser_size.py` pads the box by 25% per side, then grows it to `labeling.laser_box_object_fraction` (default 0.33, capped at 0.5) of the object box that lists the laser, centred on the spot and clamped to the image. It runs in `finalize` after the object boxes exist, only for plain (non-component) boxes. I read "the band" as the object box the laser lands on; if you meant something else, only `grow_laser_boxes` changes.
+- In pipeline mode the object box is the app's own estimate (the spot's surroundings tightened to edges), so the laser box inherits any error in it.
+
+## Merged label scheme
+
+- Requested as an alternative setting: one label holding both the object data and the laser component. Chosen with the user: the laser part box carries it, `<obj class>__<componentN>`; separate object boxes are not exported (unless no laser part lands on them, so no object information is lost).
+- `labeling.scheme: merged` builds the parts exactly like `components` (core, halo, beam from the pixels). The merge happens when names are produced (`ImageLabelSet.laser_class_name`, used by COCO export, upload plan, CSV, PDF and golden scoring), not in the stored boxes, so Review edits to the object change the exported name and nothing is lost if you switch schemes. `ImageLabelSet.scheme` records the scheme each image was labeled with; old sidecars without it read as `full`.
+- A halo or beam finds its object through its core (`from_id`). A part whose core hits no object keeps its plain `componentN` name.
+- Golden scoring decodes merged names and also scores the object fields of matched parts, so a Roboflow export in this scheme can be compared like the others.
+
+## Prompt bias toward "pen"
+
+- The shipped prompt used a pen as its worked example, as the value in both output-format JSON templates, and as the first typical object in the background part. Small models copy examples, and the taxonomy has no entry for much of what the photos contain (3D-printed parts, tape, foam, cables), so "pen" became the nearest listed answer. The example is now a cup and the JSON templates use placeholders. New rule 6 and the questions part say to ask (with `allow_taxonomy_add`) instead of picking the closest-sounding entry. Expect more taxonomy questions at first; answering them with "add to taxonomy" is the intended way to grow the list.
+- The prompt files are only the starting point: the active prompt is a saved version, so after updating, make a new version in the Prompts tab and activate it.
+
+## No sub-objects
+
+- Requested: "if it's a pen just say pen"; telling a ballpoint from a gel pen is not useful. An object class is now `obj_<object>_<material>_<color>_<incidence>`, `objects.yaml` is a plain list of names, the model is no longer asked for a sub-object (a reply that still has one is accepted and the value ignored), the Review editor has no sub-object field, and `add_entry` has no `parent_object`.
+- The internal field is still called `general_object` (it means "the object"); only the sub-object field was removed.
+- Compatibility: `decode_class` still reads the old `obj_<object>-<sub>_...` names and drops the sub-object, so ground truth exported from Roboflow earlier can be scored. Old sidecars with a `sub_object` key load (the key is dropped). An old `objects.yaml` mapping of object to sub-objects is still read, keeping the object names only. Saved prompt versions that stored the old taxonomy still diff correctly.
+- Not migrated: classes already uploaded to Roboflow keep their old names (for example `obj_pen-ballpoint_...`). New uploads create new classes, so the two sets coexist in a project until you rename or delete the old ones there.
+

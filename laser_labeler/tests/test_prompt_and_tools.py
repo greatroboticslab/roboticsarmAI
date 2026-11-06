@@ -28,7 +28,7 @@ def test_prompt_modes_pick_the_right_parts():
 def test_prompt_fills_placeholders_and_versions_by_content(tmp_path):
     built = build_system_prompt("agent", TAX, table_rule="only_if_no_object_hit", color_placeholder="na")
     assert "{{" not in built.text
-    assert "pen: ballpoint" in built.text and "only_if_no_object_hit" in built.text
+    assert "Objects: pen, table" in built.text and "only_if_no_object_hit" in built.text
     assert built.version.startswith("draft-")
     assert build_system_prompt("agent", TAX).version == built.version  # stable
     parts = tmp_path / "parts"

@@ -29,8 +29,21 @@ Tabs, left to right:
 
 **Label scheme** (AI settings tab, applies to images labeled from then on):
 
-- *Full* (default): object classes `obj_<object>-<sub>_<material>_<color>_<incidence>` and laser classes `las_<event>`.
+- *Full* (default): object classes `obj_<object>_<material>_<color>_<incidence>` (one object word, for example `obj_pen_rubber_red_first`; there is no sub-object) and laser classes `las_<event>`.
 - *Components*: the same object classes, but each laser spot is split into its parts, which become the classes `component1` (the bright core), `component2` (the halo or glow around it) and `component3` (the visible beam line leading to it). The app finds the parts from the pixels, so a part it cannot see is left out; you can change a box's component, move it, draw one or delete it in the Review queue. Old and new images can sit in the same Roboflow project: each box is exported with its own class.
+
+**Merged scheme** (AI settings, "Label scheme" = Merged): one label carries both the object and the laser part. Each core / halo / beam box is named after the object it lands on, for example `obj_pen_rubber_red_first__component1`, and the object's own box is not sent separately (an object that no laser part lands on is still sent as a normal `obj_...` box). The two halves are joined by `__`. The names are built when you export or upload, so if you change an object's material or color in the Review queue the part names follow it. Images keep the scheme they were labeled with (shown in the sidecar as `scheme`). Expect many more classes, one per object description times three parts, so you need more images per class.
+
+**Laser box size** (AI settings tab, "Laser box size"; `labeling.laser_box_object_fraction`, default 0.33): a plain laser box is padded by a quarter on each side so the glow is inside it, then grown until each side is that fraction of the object box it hits (never more than half of it, never outside the image). Set it to 0 for a tight box. The component boxes (component1/2/3) are not resized. Measurements are taken before the box grows. If you move or resize a laser box in the Review queue it is re-measured from the box you leave, so keep it around the spot.
+
+**Why an image "needs your input"**: the reason is shown in four places, so you never have to guess.
+
+- Review queue list: each row under the filter *Needs your input* has a line `why: no laser found` (or `low confidence`, `color unclear`, `taxonomy value`, `incidence`, `model question`).
+- Review queue header: **Needs your input:** followed by the same reasons.
+- Review queue **Conversation panel** (always visible under the image, for every image, including ones where no model was called): first the app's own **DETECTION** finding in plain words (for example "brightest place is 11 levels above the background (noise 2.6), but a spot must rise at least 6 noise levels (16 levels) above it"), then the model's messages, then one line per **QUESTION** and a final **RESULT**.
+- Label run tab: after a run, "Waiting for you: 9 x no laser found, 3 x low confidence", and a failed image shows its error with a hint.
+
+**Spread-out lasers**: the spot does not have to be a tight dot. The detector grows each bright region from its peak, accepts soft round or oval glows up to 5% of the image, merges nested lobes of one glow into one spot, and judges "bright enough" against local pixel-to-pixel noise (so a textured scene no longer hides the laser). A candidate must stand out from a ring of pixels around it, so gradients and bright objects are not mistaken for a laser. Thresholds are constants at the top of `core/tools/laser_detect.py` (`MIN_NOISES`, `NEST_PEAK_RATIO`).
 
 The status bar shows the Roboflow project, the active prompt version, the provider and model, and today's spend.
 
@@ -83,8 +96,12 @@ python -m pytest
 
 API keys go in the OS keyring only, never in files.
 
+**Troubleshooting**: if the app or the tests crash at random, check `pip list` for `opencv-python` or `opencv-contrib-python` next to `opencv-python-headless`. Only the headless one should be installed; the others bundle a second copy of Qt that clashes with PyQt6 (`pip uninstall opencv-python opencv-contrib-python`, then `pip install --force-reinstall --no-deps opencv-python-headless`).
 
-https://youtu.be/Jo7P1j3Wrhw
+**Ollama context size**: Ollama runs models with a 4096-token context unless told otherwise, and this app sends the whole image, up to six crops and the prompt, which can be more (error: "request exceeds the available context size"). Two fixes, pick one:
 
+1. Set the environment variable `OLLAMA_CONTEXT_LENGTH=8192` (Windows: Start menu, "Edit the system environment variables", Environment Variables, New), then quit Ollama from the tray icon and start it again.
+2. Or make a copy of the model with a bigger window. Create a file named `Modelfile` containing `FROM qwen3-vl:4b` and `PARAMETER num_ctx 8192`, run `ollama create qwen3-vl-8k -f Modelfile`, and use `qwen3-vl-8k` as the model name in AI settings.
 
-**Video link:** https://youtu.be/Jo7P1j3Wrhw ·
+A bigger window uses more video memory. On a 6 GB card also lower Max candidates (3) and the image size (768) in AI settings.
+

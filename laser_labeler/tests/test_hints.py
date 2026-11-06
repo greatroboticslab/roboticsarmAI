@@ -13,6 +13,8 @@ from core.providers.hints import failure_hint
     ("ProviderError: BadRequestError: 400 this model does not support image input", "cannot read images"),
     ("ProviderError: 400 something else", "rejected the request"),
     ("TransientError: 503 overloaded", "problem on its side"),
+    ("BadRequestError: Error code: 400 - request (4638 tokens) exceeds the available context size (4096 tokens)",
+     "context window"),
 ])
 def test_known_failures_get_a_next_step(error, expect):
     assert expect in failure_hint(error, "openai_compat", "llama3")
@@ -45,3 +47,9 @@ from core.providers.hints import clean_model_name  # noqa: E402
 ])
 def test_pasted_model_names_are_tidied(pasted, clean):
     assert clean_model_name(pasted) == clean
+
+
+def test_context_size_hint_names_the_ollama_fix_only_for_local_servers():
+    err = "Error code: 400 - request (4638 tokens) exceeds the available context size (4096 tokens), try increasing it"
+    assert "OLLAMA_CONTEXT_LENGTH" in failure_hint(err, "openai_compat", "qwen3-vl:4b")
+    assert "OLLAMA_CONTEXT_LENGTH" not in failure_hint(err, "gemini", "g")

@@ -10,6 +10,8 @@ from PyQt6.QtCore import Qt
 
 from config.credentials import CredentialError, MissingCredentialError
 from core.providers.hints import failure_hint
+from core.review.reasons import describe_summary, reason_line, summarize
+from core.reports.sidecar import read_sidecar
 from core.labeler.factory import build_escalation, build_label_fn
 from core.labeler.guard import TrackerGuard
 from core.labeler.runner import STOP_TEXT, RunSummary
@@ -56,6 +58,9 @@ class LabelRunTab(QWidget):
         self.failure.setWordWrap(True)
         self.failure.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.failure.setStyleSheet("color: #b3261e")
+        self.notice = QLabel()  # the latest image that needs input, and why
+        self.notice.setWordWrap(True)
+        self.notice.setStyleSheet("color: #9a6700")
         self.canvas = ImageCanvas()
         self.viewer = ConversationViewer()
         self.viewer.setPlaceholderText("The conversation with the model appears here while a run is going.")
@@ -74,6 +79,7 @@ class LabelRunTab(QWidget):
         col.addWidget(self.spend_label)
         col.addWidget(self.spend_bar)
         col.addWidget(self.failure)
+        col.addWidget(self.notice)
         col.addWidget(split, 1)
         col.addWidget(self.message)
         self.start_btn.clicked.connect(self.start)
@@ -166,6 +172,16 @@ class LabelRunTab(QWidget):
         text = f"Last failure ({name}): {error or 'no details were saved'}"
         self.failure.setText(text + (f"\n{hint}" if hint else ""))
 
+    def waiting_summary(self) -> str:
+        """How many images wait on each kind of question, for example '9 x no laser found, 3 x low confidence'."""
+        sets = []
+        for row in self.ctx.db.list("needs_input"):
+            try:
+                sets.append(read_sidecar(row.sidecar_path))
+            except (OSError, ValueError, TypeError):
+                continue
+        return describe_summary(summarize(sets))
+
     def toggle_pause(self) -> None:
         if self.worker is None:
             return
@@ -205,6 +221,9 @@ class LabelRunTab(QWidget):
         failed = self.ctx.db.get(row.image_id)
         if failed is not None and failed.status == "failed":
             self.show_failure(failed.name, failed.error or "", failed.provider or "", failed.model or "")
+        if result is not None and result.status == "needs_input":
+            first = next((q.text for q in result.questions if q.answer is None), "")
+            self.notice.setText(f"Needs your input ({row.name}): {reason_line(result)}. {first}")
         if result is not None:
             self.canvas.set_boxes(boxes_of(result))
         eta = f"about {summary.eta_seconds / 60:.0f} min left" if summary.queued_left else "queue empty"
@@ -223,7 +242,9 @@ class LabelRunTab(QWidget):
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         why = STOP_TEXT.get(summary.stopped, summary.stopped)
-        self.message.setText(f"Finished {summary.processed} image(s)." + (f" The run {why}." if summary.stopped else ""))
+        waiting = self.waiting_summary()
+        self.message.setText(f"Finished {summary.processed} image(s)." + (f" The run {why}." if summary.stopped else "")
+                             + (f" Waiting for you: {waiting}. Open the Review queue, filter 'Needs your input'." if waiting else ""))
         self.refresh_counts()
         self.refresh_spend()
         self.ctx.queue_changed.emit()

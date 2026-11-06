@@ -30,7 +30,7 @@ class BoxEditor(QWidget):
         self.title = QLabel("Select a box on the image or in the list.")
         self.title.setWordWrap(True)
         # object fields
-        self.general, self.sub, self.material, self.color = (_editable_combo() for _ in range(4))
+        self.general, self.material, self.color = (_editable_combo() for _ in range(3))
         self.incidence = QComboBox()
         self.incidence.addItems(INCIDENCES)
         self.finish = QLineEdit()
@@ -52,7 +52,7 @@ class BoxEditor(QWidget):
         self.object_form_widget, self.laser_form_widget = QWidget(), QWidget()
         form = QFormLayout(self.object_form_widget)
         form.setContentsMargins(0, 0, 0, 0)
-        for label, widget in (("Object", self.general), ("Sub-object", self.sub), ("Material", self.material),
+        for label, widget in (("Object", self.general), ("Material", self.material),
                               ("Color", self.color), ("Incidence", self.incidence), ("Finish", self.finish)):
             form.addRow(label, widget)
         lform = QFormLayout(self.laser_form_widget)
@@ -66,7 +66,7 @@ class BoxEditor(QWidget):
             col.addWidget(w)
         self.set_box(None)
         self.general.currentTextChanged.connect(self._general_changed)
-        for combo, name in ((self.sub, "sub_object"), (self.material, "material"), (self.color, "color")):
+        for combo, name in ((self.material, "material"), (self.color, "color")):
             combo.currentTextChanged.connect(lambda text, n=name: self._set_attr(n, text))
         self.incidence.currentTextChanged.connect(lambda text: self._set_attr("incidence", text))
         self.finish.textEdited.connect(lambda text: self._set_attr("finish", text.strip() or None))
@@ -94,8 +94,7 @@ class BoxEditor(QWidget):
         self.info.setVisible(box is not None)
         if is_object:
             self.title.setText(f"<b>Object box {box.id}</b>")
-            self._fill(self.general, list(self._tax.objects), box.general_object)
-            self._fill(self.sub, self._tax.objects.get(box.general_object, []), box.sub_object)
+            self._fill(self.general, self._tax.objects, box.general_object)
             self._fill(self.material, self._tax.materials, box.material)
             self._fill(self.color, [*self._tax.colors, self._placeholder], box.color)
             self.incidence.setCurrentText(box.incidence)
@@ -143,12 +142,6 @@ class BoxEditor(QWidget):
             return
         if text != self._box.general_object:
             self._box.general_object = text
-            subs = self._tax.objects.get(text)
-            self._loading = True
-            if subs is not None:  # a known object: offer its sub-objects and pick the first
-                self._fill(self.sub, subs, subs[0])
-                self._box.sub_object = subs[0]
-            self._loading = False
             self.edited.emit()
 
     def _metric_changed(self, item: QTableWidgetItem) -> None:
