@@ -32,12 +32,15 @@ class Taxonomy:
 
     def check_object(
         self, general_object: str, material: str,
-        color: str, incidence: str, color_placeholder: str = "na",
+        color: str, incidence: str, color_placeholder: str = "na", only_object: bool = False,
     ) -> list[str]:
-        """Return a list of problems (empty means every value is allowed)."""
+        """Return a list of problems (empty means every value is allowed). With only_object, material, color and
+        incidence are not matched against the lists: only the object name must be one of yours."""
         problems = []
         if general_object not in self.objects:
             problems.append(f"object {general_object!r} not in taxonomy")
+        if only_object:
+            return problems
         if material not in self.materials:
             problems.append(f"material {material!r} not in taxonomy")
         if color != color_placeholder and color not in self.colors:
@@ -51,6 +54,30 @@ class Taxonomy:
             "objects": self.objects, "materials": self.materials, "colors": self.colors,
             "laser_events": self.laser_events, "incidence": self.incidence,
         }
+
+
+def _singular(word: str) -> str:
+    if len(word) > 3 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith(("ches", "shes", "xes", "sses")):
+        return word[:-2]
+    if len(word) > 2 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def match_entry(value: Any, entries: list[str]) -> str | None:
+    """The existing entry a model's free text means, or None: "Pens" -> pen, "ballpoint pen" -> pen,
+    "Glossy Plastic" -> plastic. The whole text is tried first, then its last word (the noun)."""
+    import re
+    words = re.findall(r"[a-z0-9]+", str(value or "").lower())
+    if not words:
+        return None
+    whole = "".join(words)
+    for candidate in (whole, _singular(whole), words[-1], _singular(words[-1])):
+        if candidate in entries:
+            return candidate
+    return None
 
 
 def _read_yaml(path: Path, problems: list[str]) -> Any:

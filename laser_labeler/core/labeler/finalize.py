@@ -12,10 +12,13 @@ from core.labeler.components import apply_components
 from core.labeler.laser_size import grow_laser_boxes
 from core.labeler.context import LabelContext
 from core.labeler.table_rule import apply_table_rule
+from core.schema.class_names import normalise_token
+from core.schema.taxonomy import match_entry
 from core.models import INCIDENCES, ImageLabelSet, LaserBox, ObjectBox, Question
 from core.tools.color import sample_color
-from core.tools.geometry import clamp_box, iou
+from core.tools.geometry import clamp_box, expand_box, iou
 from core.tools.measure_laser import measure_laser
+from core.tools.tighten_box import tighten_box
 
 
 @dataclass
@@ -55,14 +58,39 @@ def _color_for(ctx: LabelContext, item: dict, box, color_conf: float, questions:
     given = item.get("color")
     if isinstance(given, str) and given in ctx.taxonomy.colors:
         return given
+    if ctx.taxonomy_match != "all" and isinstance(given, str) and normalise_token(given, ""):
+        return match_entry(given, ctx.taxonomy.colors) or normalise_token(given)  # a listed color if one fits
     questions.append(Question(f"qc_{item['id']}", "The color of this region is ambiguous. Which is it?",
                               item["id"], "color", list(ctx.taxonomy.colors), True))
     return sample.name or "unknown"
 
 
+NOT_A_NAME = {"unknown", "unsure", "none", "null", "na", "n/a", "unidentified"}
+
+
+def _resolve(ctx: LabelContext, kind: str, raw: str) -> str:
+    """The taxonomy word for a model's object or material. A listed entry is reused; otherwise the text is made a
+    token and, with the match turned off, added to the lists (the app saves them; see label_image)."""
+    entries = ctx.taxonomy.objects if kind == "object" else ctx.taxonomy.materials
+    hit = match_entry(raw, entries)
+    if hit:
+        return hit
+    token = normalise_token(raw)
+    if (ctx.taxonomy_match == "off" and normalise_token(raw, "") and token not in entries
+            and str(raw).strip().lower() not in NOT_A_NAME):
+        entries.append(token)  # also seen by the next image's prompt
+        ctx.taxonomy_added.append((kind, token))
+    return token
+
+
 def _taxonomy_questions(ctx: LabelContext, obj: ObjectBox, color_asked: bool) -> list[Question]:
-    problems = ctx.taxonomy.check_object(obj.general_object, obj.material, obj.color,
-                                         obj.incidence, ctx.color_placeholder)
+    if ctx.taxonomy_match == "off":
+        if obj.general_object in NOT_A_NAME:  # the model could not name it: that is worth a question
+            return [Question(f"qt_{obj.id}_0", "The model could not tell what this object is. Type its name.",
+                             obj.id, "general_object", [], True)]
+        return []  # nothing else is asked about the lists
+    problems = ctx.taxonomy.check_object(obj.general_object, obj.material, obj.color, obj.incidence,
+                                         ctx.color_placeholder, only_object=ctx.taxonomy_match != "all")
     problems = [p for p in problems if not (color_asked and p.startswith("color"))]
     return [Question(f"qt_{obj.id}_{i}", f"{p}. Pick an allowed value or add it to the taxonomy.",
                      obj.id, None, [], True) for i, p in enumerate(problems)]
@@ -79,7 +107,10 @@ def _objects(ctx: LabelContext, raw: list[dict], color_conf: float, low_conf: fl
             incidence = "other"
         asked = len(questions)
         color = _color_for(ctx, item, box, color_conf, questions)
-        obj = ObjectBox(item["id"], box, item["general_object"], item["material"],
+        general, material = item["general_object"], item["material"]
+        if ctx.taxonomy_match != "all":  # reuse a listed word where one fits; free text must be a legal token
+            general, material = _resolve(ctx, "object", general), _resolve(ctx, "material", material)
+        obj = ObjectBox(item["id"], box, general, material,
                         color, incidence,
                         list(item.get("laser_ids", [])), item.get("finish"), item["confidence"], item.get("notes", ""))
         questions.extend(_taxonomy_questions(ctx, obj, len(questions) > asked))
@@ -88,6 +119,31 @@ def _objects(ctx: LabelContext, raw: list[dict], color_conf: float, low_conf: fl
                                       "Please check the object, material and color.", obj.id))
         objects.append(obj)
     return objects
+
+
+def _spot_on_box(object_box, spot_box, margin: float = 0.25) -> bool:
+    """True if the spot's centre is inside the object box, allowing a margin (a spot can sit on an edge)."""
+    x, y, w, h = object_box
+    cx, cy = spot_box[0] + spot_box[2] / 2, spot_box[1] + spot_box[3] / 2
+    return x - margin * w <= cx <= x + w * (1 + margin) and y - margin * h <= cy <= y + h * (1 + margin)
+
+
+def replace_misplaced_objects(ctx: LabelContext, items: list[dict], lasers: list[LaserBox]) -> list[dict]:
+    """An object box must hold the laser spot that hits it. A box that misses every spot it lists is wrong (a model
+    that drew it in the wrong coordinate system, say): the app finds the object around the spot itself and marks the
+    box low-confidence so a person checks it."""
+    spots = {ls.id: ls for ls in lasers}
+    out = []
+    for item in items:
+        hit = [spots[i] for i in item.get("laser_ids", []) if i in spots]
+        if hit and not any(_spot_on_box(item["box"], s.box) for s in hit):
+            spot = hit[0]
+            region = tighten_box(ctx.rgb, expand_box(spot.box, 2 * max(spot.box[2:]), ctx.image.width, ctx.image.height))
+            note = "The model's box did not contain its laser spot, so the app searched around the spot instead."
+            item = {**item, "box": region.box, "confidence": min(item.get("confidence") or 0.5, 0.3),
+                    "notes": f"{item.get('notes', '')} {note}".strip()}
+        out.append(item)
+    return out
 
 
 def merge_duplicate_objects(objects: list[ObjectBox], min_iou: float = 0.6) -> list[ObjectBox]:
@@ -110,10 +166,10 @@ def finalize(ctx: LabelContext, raw: RawResult, *, image_id: str, camera_id: str
              laser_object_fraction: float = 0.0) -> ImageLabelSet:
     questions = list(raw.questions)
     lasers = _measure_lasers(ctx, raw.laser_boxes)
-    if scheme in ("components", "merged"):  # each spot becomes its parts: core, halo, beam
-        lasers = apply_components(lasers, ctx.detection.lines, ctx.image.width, ctx.image.height,
-                                  intensity=ctx.intensity, noise=ctx.stats.noise_level)
-    objects = _objects(ctx, raw.object_boxes, color_confidence, question_confidence, questions)
+    if scheme in ("components", "merged"):  # direct hit = component1, every bounce = component2
+        lasers = apply_components(lasers)
+    items = replace_misplaced_objects(ctx, raw.object_boxes, lasers)
+    objects = _objects(ctx, items, color_confidence, question_confidence, questions)
     merged = merge_duplicate_objects(objects)
     objects = apply_table_rule(merged, table_rule)
     removed = {o.id for o in merged} - {o.id for o in objects}  # dropped by the table rule

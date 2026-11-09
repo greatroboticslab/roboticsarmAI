@@ -19,7 +19,7 @@ LASER_FIELDS = ("kind", "component", "order", "from_id")
 
 @dataclass(frozen=True)
 class Change:
-    kind: str  # attribute | box | added | removed | metric
+    kind: str  # attribute | box | added | removed | metric | scheme
     box_id: str
     field: str = ""
     before: str = ""
@@ -34,6 +34,8 @@ class Change:
             return f"{who}: box moved/resized {self.before} -> {self.after}"
         if self.kind == "metric":
             return f"{who}: measurement {self.field} {self.before} -> {self.after}"
+        if self.kind == "scheme":
+            return f"label scheme {self.before} -> {self.after}"
         if self.kind == "added":
             return f"{who}: box added ({self.after})"
         return f"{who}: box removed ({self.before})"
@@ -54,6 +56,9 @@ def _same(a, b) -> bool:
 def diff_label_sets(before: ImageLabelSet, after: ImageLabelSet) -> list[Change]:
     """Every difference a reviewer could have made: attributes, boxes, added/removed boxes, edited numbers."""
     changes: list[Change] = []
+    rescheme = before.scheme != after.scheme  # switching scheme re-derives the components; that is not a correction
+    if rescheme:
+        changes.append(Change("scheme", "image", "scheme", before.scheme, after.scheme))
     old_o = {o.id: o for o in before.object_boxes}
     new_o = {o.id: o for o in after.object_boxes}
     for oid, new in new_o.items():
@@ -78,6 +83,8 @@ def diff_label_sets(before: ImageLabelSet, after: ImageLabelSet) -> list[Change]
             changes.append(Change("added", lid, after=f"laser {_name(new)} at {list(new.box)}"))
             continue
         for name in LASER_FIELDS:
+            if rescheme and name == "component":
+                continue
             if not _same(getattr(old, name), getattr(new, name)):
                 changes.append(Change("attribute", lid, name, str(getattr(old, name) or ""),
                                       str(getattr(new, name) or ""), f"laser {_name(old)}"))

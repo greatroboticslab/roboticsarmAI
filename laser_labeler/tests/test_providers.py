@@ -132,7 +132,6 @@ def test_openai_missing_usage_is_zero():
     (openai_sdk.AuthenticationError("bad", response=http_resp(401), body=None), AuthError),
     (openai_sdk.PermissionDeniedError("no", response=http_resp(403), body=None), AuthError),
     (openai_sdk.InternalServerError("oops", response=http_resp(503), body=None), TransientError),
-    (openai_sdk.APITimeoutError(httpx2.Request("POST", "http://t")), TransientError),
     (openai_sdk.APIConnectionError(request=httpx2.Request("POST", "http://t")), TransientError),
     (openai_sdk.BadRequestError("bad", response=http_resp(400), body=None), ProviderError),
 ])
@@ -187,6 +186,51 @@ def test_openai_real_client_uses_placeholder_key_and_base_url(monkeypatch):
     seen.clear()
     OpenAICompatProvider("m", api_key="", base_url=None).chat([Message("user", "q")])
     assert seen["api_key"] == PLACEHOLDER_KEY
+
+
+def test_openai_timeout_is_not_retried_and_says_so():
+    client, s = oa_client(openai_sdk.APITimeoutError(httpx2.Request("POST", "http://t")))
+    p = OpenAICompatProvider("m", client=client, sleep=no_sleep(), attempts=5, timeout=300.0)
+    with pytest.raises(ProviderError, match="Request timed out after 300 seconds") as info:
+        p.chat([Message("user", "q")])
+    assert not isinstance(info.value, TransientError) and len(s.calls) == 1  # one try, not five slow ones
+
+
+def test_openai_thinking_off_and_timeout_are_sent_only_when_asked(monkeypatch):
+    client, s = oa_client(oa_reply(), oa_reply())
+    OpenAICompatProvider("m", client=client).chat([Message("user", "q")])
+    assert "reasoning_effort" not in s.calls[0]
+    OpenAICompatProvider("m", client=client, disable_thinking=True).chat([Message("user", "q")])
+    assert s.calls[1]["reasoning_effort"] == "none"
+    seen = {}
+    monkeypatch.setattr(openai_sdk, "OpenAI", lambda **kw: seen.update(kw) or oa_client(oa_reply())[0])
+    OpenAICompatProvider("m", timeout=120.0).chat([Message("user", "q")])
+    assert seen["timeout"] == 120.0
+    seen.clear()
+    OpenAICompatProvider("m").chat([Message("user", "q")])
+    assert "timeout" not in seen
+
+
+def test_a_reply_limit_is_sent_only_when_set():
+    client, s = oa_client(oa_reply(), oa_reply(), oa_reply())
+    OpenAICompatProvider("m", client=client).chat([Message("user", "q")])
+    OpenAICompatProvider("m", client=client, reply_limit=0).chat([Message("user", "q")])
+    OpenAICompatProvider("m", client=client, reply_limit=1200).chat([Message("user", "q")])
+    assert "max_tokens" not in s.calls[0] and "max_tokens" not in s.calls[1] and s.calls[2]["max_tokens"] == 1200
+
+
+def test_build_provider_passes_the_reply_limit():
+    settings = {"provider": "openai_compat", "model": "m", "base_url": "http://localhost:11434/v1", "reply_limit": 900}
+    assert build_provider(settings, None).reply_limit == 900
+    assert build_provider({**settings, "reply_limit": 0}, None).reply_limit is None
+
+
+def test_build_provider_passes_timeout_and_thinking():
+    settings = {"provider": "openai_compat", "model": "qwen3-vl:4b", "base_url": "http://localhost:11434/v1",
+                "timeout_s": 90, "disable_thinking": True}
+    p = build_provider(settings, None)
+    assert p.timeout == 90.0 and p.disable_thinking is True
+    assert build_provider({**settings, "timeout_s": 0}, None).timeout is None
 
 
 # ---------------------------------------------------------------- Anthropic

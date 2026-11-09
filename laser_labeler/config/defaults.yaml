@@ -12,10 +12,15 @@ provider:
   temperature: 0.0
   max_image_px: 1024
   run_mode: pipeline           # pipeline | agent
+  timeout_s: 300               # give up on one request after this many seconds (0 = the server library default); OpenAI-compatible servers
+  disable_thinking: false      # ask a reasoning model (qwen3, ...) to answer without its long thinking step (Ollama: reasoning_effort none)
+  reply_limit: 0          # stop a reply after this many tokens (0 = no limit); a model that rambles or "thinks" then fails fast instead of stalling; OpenAI-compatible servers
   structured_output: false     # ask the server to force valid JSON (Ollama, LM Studio, OpenAI); pipeline mode only
   daily_cost_cap_usd: 5.0
   price_in_per_mtok: 0         # USD per million input tokens: YOU enter your provider's price
   price_out_per_mtok: 0        # USD per million output tokens (0 = free/local)
+  profiles: {}                 # remembered per provider, so switching back restores it:
+                               #   {gemini: {model: "...", price_in_per_mtok: 0.3, price_out_per_mtok: 2.5}, ...}
 
 escalation:                  # optional: a cloud model re-labels images the main model is unsure about
   enabled: false
@@ -31,6 +36,7 @@ labeling:
   camera_source: tag                  # tag | folder
   camera_tag_prefix: "camera:"
   laser_level_classes: false          # append coarse levels to las_ class names
+  taxonomy_match: object     # off = reuse a matching entry, add new objects/materials to your lists without asking; object = only an unknown object asks; all = material, color and incidence too
   scheme: full                        # full = obj_... and las_<event> | components = obj_... plus component1/2/3 | merged = component boxes named <obj_...>__componentN
   laser_box_object_fraction: 0.33     # plain laser boxes grow to this fraction of the object box they hit (max 0.5); 0 = tight boxes
   keep_awake: true
@@ -41,6 +47,9 @@ data_dir: data
 run:
   max_agent_steps: 12        # tool-use turns before agent mode gives up and falls back
   max_repairs: 2             # times the model is asked to fix an invalid JSON reply
-  max_candidates: 6          # laser spots shown to the model per image (pipeline mode)
+  auto_resume_on_limit: true # a provider rate limit / daily quota pauses the run, then it carries on by itself when the limit reopens
+  auto_fit_context: true     # if a local server says the request is too long for its context window, retry smaller and remember it
+  max_candidates: 6          # laser spots shown to the model per image (pipeline mode); fewer is faster
+  crop_px: 384               # longest side of each zoomed crop sent with a candidate spot (pipeline mode); smaller is faster
   question_confidence: 0.4   # object boxes below this confidence get a question
   color_confidence: 0.25     # pixel color name is trusted at or above this

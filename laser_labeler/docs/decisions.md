@@ -111,3 +111,104 @@ Choices made where the spec was silent. Change freely; each is small.
 - Compatibility: `decode_class` still reads the old `obj_<object>-<sub>_...` names and drops the sub-object, so ground truth exported from Roboflow earlier can be scored. Old sidecars with a `sub_object` key load (the key is dropped). An old `objects.yaml` mapping of object to sub-objects is still read, keeping the object names only. Saved prompt versions that stored the old taxonomy still diff correctly.
 - Not migrated: classes already uploaded to Roboflow keep their old names (for example `obj_pen-ballpoint_...`). New uploads create new classes, so the two sets coexist in a project until you rename or delete the old ones there.
 
+## Pausing on provider limits
+
+- Before: a rate-limit or quota error was retried for about 15 seconds and then the image was marked failed, so a daily quota failed images one after another until five in a row stopped the run.
+- Now `label_image_unsaved(raise_on_limit=True)` (used only by the queue's label function) lets `RateLimitError` through. `run_queue` puts the image back in the queue, asks `on_limit(LimitInfo)` and carries on with the same image if it answers True; with no callback, or on False, the run ends with `stopped == "rate_limit"`. The Label run tab's `RunWorker` implements `on_limit` by emitting `rate_limited` and blocking until `resume_after_limit()` or `stop()`.
+- Review re-runs, `compare` and `label` still get a failed result for a limit, as before: they are single, attended calls.
+- The wait the provider asks for comes from its `Retry-After` header (OpenAI-compatible, Anthropic) or `retryDelay` (Gemini); when it gives none the advice text says so. The app never resumes by itself: it asks, as requested. Auto-resume would be a small addition to `_tick_limit`.
+- The window's close handler now ends a running labeling thread (and any limit wait) before the queue database closes.
+
+## Model name and prices per provider
+
+- `provider.profiles` maps each provider to its last `model`, `price_in_per_mtok` and `price_out_per_mtok`. The top-level `provider.model` and prices stay the active ones, so the labeling code, cost tracker and CLI are unchanged. The tab stashes the boxes under the provider being left and loads the one being entered; on load the active top-level values overwrite that provider's profile (a hand or CLI edit wins). Settings from before this change keep their model under their current provider.
+- Prices are remembered with the name on purpose: a model name and its price belong together, and carrying one provider's price to another would make the spend cap wrong.
+- Not done: separate entries for a local server versus OpenAI versus OpenRouter inside the "OpenAI-compatible" slot. They share one model, server address and key slot (`credentials` has one openai_compat key). Splitting them would mean keyed profiles by server address and one credential per server.
+
+## Components by hit order (supersedes the core / halo / beam parts above)
+
+- `component1` = a direct hit (the beam lands on the surface straight from the laser; two direct hits on the same object are both `component1`). `component2` = any bounce: reflection, refraction, scatter, other, however many bounces. `COMPONENT_NAMES` is now only those two.
+- The class follows the event kind (`core/labeler/components.py::component_for_kind`): `first_incidence` is component1, every other kind is component2. Every visible spot gets one of the two, so nothing is left unlabeled. The halo and beam boxes, the beam-ridge checks and `LaserBox.is_part` are gone. Every spot box now grows by the laser box size setting (before, parts were skipped).
+- Old sidecars written with the core / halo / beam meaning have no `scheme_version`. On load, `_migrate_parts` (raw dict, before boxes are validated) drops their halo and beam boxes, moves questions about them to the core, and recomputes each remaining component from its kind. New sidecars carry `scheme_version: 2`.
+- Prompt: `prompts/parts/02_schema_rules.md` now defines the event types. Make a new prompt version in the Prompts tab and activate it to use the wording.
+- Classes already on Roboflow keep their old meaning: component2 and component3 from the earlier scheme meant halo and beam. Use a fresh project or relabel those images.
+- `halo_radius_px` stays as a measurement (CSV, PDF); it is not a label.
+
+
+## Delete a box, and the merged one-label name in Review
+
+- Review: a box can be deleted with the Delete key, the "Delete selected box (Del)" button, or right-click in the box list. Deleting a laser box under "merged" hands its object back to being exported as its own box; deleting the object makes the spot fall back to a plain `componentN`.
+- Under "merged" the box list and the image labels show the one exported name (`obj_pen_rubber_red_first__component1`); the object box it is folded into is marked "named inside its laser box's label".
+- A laser box drawn in Review is linked to the smallest object box its centre is inside, so it gets the merged name too. A spot that lands on no object box keeps a plain `component1` / `component2`.
+
+## Merged names for images labeled under another scheme
+
+- An image keeps the scheme it was labeled with, so changing the setting to "merged" does not rename old images. Review now has a "Switch to '<scheme>' scheme" button that converts the open image to the current setting without calling the model (components come from each spot's event; under full they are removed). Pressing Apply saves it as an edit; the change shows in the PDF addendum as "label scheme X -> Y" and is not stored as a prompt correction.
+- `ImageLabelSet.object_for_laser` falls back to the smallest object box the spot's centre is inside when no object lists the spot, so an unlinked spot still gets the merged name. A spot on no object box keeps a plain `component1` / `component2`.
+
+## Local-model speed controls
+
+- The pipeline sends one whole-image view plus one zoomed crop per candidate spot (up to `run.max_candidates`), so request size, and time on a small GPU, scale with image size, spot count and crop size. All three are now settings in AI settings (`provider.max_image_px`, `run.max_candidates`, new `run.crop_px`).
+- `provider.disable_thinking` sends `reasoning_effort: "none"` on the OpenAI-compatible provider only when ticked (Ollama documents this field for its OpenAI endpoint; some other servers may reject it, which is why it is off by default).
+- `provider.timeout_s` (default 300) is passed to the OpenAI client. A timeout used to count as a transient connection error and was retried up to five times; it is now a plain `ProviderError` ("Request timed out") that is not retried, with a hint listing the speed settings.
+- Not measured: the token numbers in the README are estimates from the model's image patch size, not counts from a real run.
+
+## Taxonomy match: object only by default
+
+- What it was: after a run, every object box's object, material, color and incidence had to be in the YAML lists, and each miss became a "not in taxonomy" question (so the image needed input) and a Review warning on approval.
+- Now `labeling.taxonomy_match` is `object` by default: only the object name is matched (`Taxonomy.check_object(only_object=True)`). Material and color are normalised to a legal token (`normalise_token`) and accepted; the pixel color still wins when it is confident. `all` restores the old behaviour. Incidence is still checked against its fixed list (`INCIDENCES`), which is a schema value, not a taxonomy choice.
+- Cost: free-text materials and colors can multiply the Roboflow classes (every material/color/object combination is its own class name). The prompt now says to prefer the listed values. The lists are also still what colors are named from in the pixel check.
+- Prompt wording changed (`02_schema_rules.md` rule 3): make a new prompt version in the Prompts tab and activate it.
+
+## Taxonomy match: off mode, reuse before adding
+
+- `labeling.taxonomy_match` is now `off` | `object` (default) | `all`. In `off` and `object` the model's object and material are first matched to an existing entry with `match_entry` (exact, singular, last word), so "Ballpoint pens" reuses `pen`.
+- `off` asks nothing and adds a word that has no match: `finalize` records it in `ctx.taxonomy_added` and appends it to the in-memory lists (so the next image's prompt shows it); `label_image` writes a transcript event and calls `on_taxonomy_add`; `build_label_fn(taxonomy_dir=...)` turns that into `add_entry` (GUI and CLI pass the project taxonomy folder). Review approval adds any new object or material on the label (`ReviewService._add_new_words`).
+- Colors are never auto-added: the color list is the palette the pixel color is named from, and an extra name without a reference color would be unusable there.
+- Fixed in the same change: ticking "add to taxonomy" for a material while in `object` mode used to be skipped; an explicit tick is always honoured now.
+- Risk: a wrong model answer ("spaceship") is saved onto the lists. The conversation shows every addition so it can be removed from the YAML.
+
+## Object box must hold its laser spot
+
+- Seen in a real Review screenshot: the object box sat in the dark floor area away from the spot, and the laser box was then grown from that oversized object width. Pipeline mode cannot produce such a box (its edge search always starts from the spot), so it most likely came from agent mode, where the model's own coordinates are used as given (and Gemini/Qwen tend to answer in a normalised 0-1000 system, which the prompt does not ask for).
+- `finalize.replace_misplaced_objects`: if none of the laser spots an object lists has its centre inside the object box (plus a 25% margin), the app replaces the box with its own edge search around the spot (`tighten_box`), sets confidence to at most 0.3 and adds a note, so the low-confidence question sends it to Needs input. Boxes that hold their spot are untouched.
+- This repairs the symptom in every mode; it does not fix agent-mode coordinates. Pipeline mode is the recommended mode for Gemini and local models.
+
+## Letting the model name new objects
+
+- Why runs "stubbornly" never made new objects: the prompt said an object must be on the list and to ask instead of naming one, and with structured output the reply schema allowed only the listed objects (plus "unknown"), so the model physically could not name a new one.
+- Now, when `labeling.taxonomy_match` is `off` or `object`: the pipeline schema leaves object and material as free text, and `core/prompts/manager.py` appends a "Naming objects" rule to the end of the system prompt that overrides the earlier lines (it is appended in code, so saved prompt versions get it too). With `all`, the old strict behaviour stays.
+- "unknown" and similar (`NOT_A_NAME`) are never added to the lists. In `off` mode an object the model could not name still raises one question ("Type its name"); in `object` mode the normal not-in-taxonomy question covers it.
+- Review has a "Clear 'not in taxonomy' questions..." button (`ReviewService.clear_taxonomy_questions`) for images already stuck: it adds each named object and material to the lists, marks those `qt_` questions answered ("added to taxonomy") and returns images with no open question to `pending`. Questions about an unnamed ("unknown") object stay open.
+
+## Upload only updates labels on existing Roboflow images
+
+- The app has never uploaded image files. Every request in `core/roboflow/upload.py` is `POST /dataset/{project}/annotate/{image_id}` (labels), or the tags/metadata routes, addressed by the Roboflow image id of an image already in the project. A test (`test_only_annotate_and_tag_routes_are_used_and_never_an_image_upload`) fails if an image-upload route or image bytes ever appear.
+- Images downloaded from Roboflow keep their Roboflow id as the queue id, so their labels update the same image. Tick Overwrite in the upload dialog to replace labels an image already has; without it Roboflow answers 409.
+- Images queued from a local file have no Roboflow id (their id is the file name), so they are now left out of the plan with a reason instead of being sent to a route that cannot find them. Matching local files to existing Roboflow images by name is not built (the search response shape is still UNCONFIRMED LIVE, see verified_facts row 11).
+- `addToDataset` is still left at Roboflow's default (true); the docs say that moves an image out of its batch/job/review flow. If images change place in Roboflow after an upload, that is the setting to change.
+
+## Truncated replies are reported, not repaired
+
+- A reply whose `stop_reason` is a length stop (`length`, `max_tokens`, `max_output_tokens`) used to fail JSON parsing, and the repair loop then appended the cut-off text plus a correction request, making the request longer still. `repair_loop` now raises `ReplyTruncated` straight away ("The model ran out of tokens: its reply was cut off after N tokens, with the request at M tokens"), the transcript gets a `truncated` event, and the image is marked failed with a hint (`failure_hint`): shrink image size, spots and crop first, because a bigger window costs video memory; a large reply token count means the model is thinking or rambling.
+
+## Auto-fit the request to a small context window
+
+- Ollama's 4096-token window kept rejecting requests ("request (4948 tokens) exceeds the available context size (4096 tokens)"), and a 6 GB card cannot simply be given a bigger window. `openai_compat.map_error` now turns that error (Ollama/llama.cpp and OpenAI wording) into `ContextTooLong(request_tokens, window)`.
+- `label_image_unsaved` catches it and retries with a smaller request (`core/labeler/fit.py`: crops and spot count first, then the whole-image size, down to 384 px / 1 spot / 128 px crops), measured from what was really sent so a small image or few candidates do not waste retries. A fresh conversation is started for each attempt. The size that fitted is kept in a `FitMemory` for the rest of the run (`build_label_fn`), so only the first image pays; the escalation (cloud) call never uses it.
+- The result's notes say what was shrunk, and the transcript has a `fit` event. Setting `run.auto_fit_context: false` (AI settings checkbox) turns it off and restores the plain failure with its hint.
+- Cost: a shrunk request means a smaller whole image and fewer or smaller crops, so labels from a run that had to shrink may be a little less accurate. The notes mark those images.
+
+## Queue delete, passing over stalled images, auto-resume
+
+- `QueueDB.remove(ids)` and `QueueDB.clear(statuses)` delete queue rows only; image files, sidecars and Roboflow are untouched, and `uploaded` rows are kept unless named. The Label run tab has a "Clear queue..." menu (waiting, failed, everything not uploaded; the last one warns how many images hold unreviewed work) and is disabled during a run; the CLI has `queue clear [--status S] [--yes]`.
+- A timeout or a "ran out of tokens" failure already marked one image failed and let the run go on, but a streak of five failures stopped it, so three slow images in a row ended a run that could have continued. `runner.failure_kind` now separates "timeout", "image" (cut off) and "setup": only setup failures count toward `max_consecutive_failures`; timeouts have their own looser `max_consecutive_timeouts` (10, stop reason `too_many_timeouts`), since a hung server times out on every image; "ran out of tokens" never counts. The failure panel says in words that the image was marked failed and the run moved on.
+- Messages: the truncation message now sums request + reply (the user could not tell that 6161 + 2031 is exactly an 8192 window), and `failure_hint` repeats the arithmetic, blames a long reply when it is over 1,500 tokens, and warns that a 16k window usually makes timeouts worse. The timeout message includes the seconds waited.
+- `provider.reply_limit` (OpenAI-compatible only, default 0 = off, sent as `max_tokens`): a model that thinks for 2,000 tokens now fails fast. It is opt-in because some OpenAI models reject `max_tokens`. The setting name avoids the word "token" because the settings loader refuses any key whose name looks like a secret.
+- Auto-resume (`run.auto_resume_on_limit`, default on): `core/labeler/limits.py` decides the wait (provider hint plus 3 s, capped at 6 h; otherwise 1, 2, 5, 10, 20, then 30 minutes) and `RunWorker._wait_for_limit` waits that long, then returns True so `run_queue` retries the same image. `LimitInfo.consecutive` counts hits with no image finished in between; after 30 the worker stops waiting and asks as before. Resume now and Stop still work during the wait. CLI: `queue run --wait-on-limit` (off by default so non-interactive runs keep stopping with exit code 3).
+
+## "Unlabeled" means not labeled in the current system
+
+- Before, an image counted as labeled if Roboflow listed any class on it, so images labeled under an older scheme were hidden from "Unlabeled only". `core/schema/scheme_labels.py` now decides per scheme: CURRENT needs at least one laser-side label written the way the scheme writes it (`las_*` for full; `component1/2` for components; merged name or bare `component1/2` for merged). Objects alone are OLDER because they are written the same in every scheme; a `component3`+ (first components scheme) forces OLDER even next to `component1`. States: none, current, older, unknown.
+- Known limit: an image legitimately labeled "no laser, objects only" looks OLDER, and one labeled in the first components scheme with only component1/2 looks CURRENT. Images this app uploaded stay in the queue table (status `uploaded`), so the "hide images already in the queue" filter covers the first case.
+- The Select images tab uses it (radio "Needs labeling", marks `*` `~` `?`, default after a Roboflow load, follows scheme changes without a reload) and asks before queueing an image that is already CURRENT (skip, label again, cancel). Older-style images are queued normally; replacing their labels on Roboflow needs the existing Overwrite box, and the tab says so. The CLI's `add-roboflow --unlabeled` passes the saved scheme to `list_images(scheme=...)`. This relies on Roboflow's `labels` field listing class names (docs/verified_facts.md row 2, still unconfirmed live).

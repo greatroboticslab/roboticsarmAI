@@ -27,6 +27,9 @@ class LabelContext:
     factor: float
     color_placeholder: str = "na"
     max_candidates: int = 6
+    crop_px: int = 384  # longest side of the zoomed crop sent with each candidate (pipeline mode)
+    taxonomy_match: str = "object"  # "off": reuse matches, add new values; "object": only the object is matched; "all": every value
+    taxonomy_added: list[tuple[str, str]] = field(default_factory=list)  # ("object" | "material", value) added in "off" mode
     questions: list[Question] = field(default_factory=list)  # filled by the ask_user tool
     user_note: str = ""  # reviewer's note when an image is re-run
     _detection: Detection | None = None
@@ -56,7 +59,7 @@ class LabelContext:
 
 
 def build_context(image: ImageData, taxonomy: Taxonomy, *, max_image_px: int = 1024,
-                  color_placeholder: str = "na", max_candidates: int = 6) -> LabelContext:
+                  color_placeholder: str = "na", max_candidates: int = 6, crop_px: int = 384) -> LabelContext:
     shown, factor = downscale_to_max(image.rgb, max_image_px)
     return LabelContext(image, image_stats(image.rgb), taxonomy, shown, factor,
-                        color_placeholder, max_candidates)
+                        color_placeholder, max_candidates, crop_px)

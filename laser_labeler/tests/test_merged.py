@@ -23,8 +23,8 @@ OBJ = "obj_pen_rubber_red_first"
 
 def label_set(scheme="merged", with_object=True):
     lasers = [LaserBox("l1", "first_incidence", (100, 100, 20, 20), 0, component="component1"),
-              LaserBox("l2", "first_incidence", (90, 90, 40, 40), 0, from_id="l1", component="component2")]
-    objects = [ObjectBox("o1", (60, 60, 100, 80), "pen", "rubber", "red", "first", ["l1"], None, 0.9, "")]
+              LaserBox("l2", "reflection", (90, 90, 40, 40), 1, from_id="l1", component="component2")]
+    objects = [ObjectBox("o1", (60, 60, 100, 80), "pen", "rubber", "red", "first", ["l1", "l2"], None, 0.9, "")]
     return ImageLabelSet("i1", "a.png", "cam", False, 0.1, laser_boxes=lasers,
                          object_boxes=objects if with_object else [], status="approved",
                          image_width=300, image_height=300, scheme=scheme)
@@ -50,13 +50,13 @@ def test_encoding_needs_a_valid_object_class_and_component():
     with pytest.raises(ClassNameError):
         encode_merged_class("nonsense", "component1")
     with pytest.raises(ClassNameError):
-        encode_merged_class(OBJ, "halo")
+        encode_merged_class(OBJ, "component3")
 
 
 # ------------------------------------------------------------------ label set naming and export
-def test_parts_are_named_after_their_object_and_the_object_box_is_not_exported_twice():
+def test_spots_are_named_after_their_object_and_the_object_box_is_not_exported_twice():
     names = [n for n, _ in class_names_for(label_set())]
-    assert names == [f"{OBJ}__component1", f"{OBJ}__component2"]  # the halo finds its object through its core
+    assert names == [f"{OBJ}__component1", f"{OBJ}__component2"]  # direct hit and bounce, both on the pen
 
 
 def test_other_schemes_are_unchanged():
@@ -64,11 +64,12 @@ def test_other_schemes_are_unchanged():
     assert names == ["component1", "component2", OBJ]
 
 
-def test_a_part_with_no_object_keeps_its_plain_name_and_an_unclaimed_object_is_kept():
+def test_a_spot_with_no_object_keeps_its_plain_name_and_an_unclaimed_object_is_kept():
     names = [n for n, _ in class_names_for(label_set(with_object=False))]
     assert names == ["component1", "component2"]
     ls = label_set()
-    ls.object_boxes[0].laser_ids = []  # an object nobody hits
+    ls.object_boxes[0].laser_ids = []  # an object nobody hits, and no spot is inside it
+    ls.object_boxes[0].box = (200, 200, 50, 50)
     assert [n for n, _ in class_names_for(ls)] == ["component1", "component2", OBJ]
 
 

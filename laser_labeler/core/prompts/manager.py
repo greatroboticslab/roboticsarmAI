@@ -58,6 +58,15 @@ def _saved_version(parts_dir: Path) -> str | None:
     return version if isinstance(version, str) else None
 
 
+NAMING_RULE = """## Naming objects (this overrides any earlier line that says a value must be on the lists)
+
+The lists above are what the project already uses, not a limit. For the object of each box: if a listed object genuinely
+fits, use it exactly. If none fits, do not force the nearest-sounding one and do not ask a question just because the
+name is missing from the list: name what you see with one plain lowercase singular word (letters only, for example
+"bottlecap"). {added} Only answer "unknown" when you cannot tell what the object is at all. Material and color: prefer
+the listed values, otherwise use one plain lowercase word."""
+
+
 def build_system_prompt(
     mode: str,
     taxonomy: Taxonomy,
@@ -65,6 +74,7 @@ def build_system_prompt(
     table_rule: str = "only_if_no_object_hit",
     color_placeholder: str = "na",
     parts_dir: Path = DEFAULT_PARTS_DIR,
+    taxonomy_match: str = "all",
 ) -> PromptBuild:
     parts = list_parts(mode, Path(parts_dir))
     if not parts:
@@ -77,5 +87,9 @@ def build_system_prompt(
     text = "\n\n".join(p.read_text(encoding="utf-8").strip() for p in parts)
     for key, value in values.items():
         text = text.replace(key, value)
+    if taxonomy_match != "all":
+        text += "\n\n" + NAMING_RULE.format(
+            added="The app adds a new name to the project's lists by itself." if taxonomy_match == "off"
+            else "The app will ask the reviewer to confirm a new name.")
     version = _saved_version(Path(parts_dir)) or "draft-" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
     return PromptBuild(text, version, tuple(p.name for p in parts))

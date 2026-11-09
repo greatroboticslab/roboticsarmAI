@@ -183,6 +183,7 @@ def test_answering_every_question_resumes_the_image(env):
 
 
 def test_answer_sets_the_field_and_can_extend_the_taxonomy(env):
+    env.settings["labeling"]["taxonomy_match"] = "all"
     env.label(env.path, "a", [env.good(material="velvet")])
     ls = env.service.load("a")
     q = next(q for q in ls.questions if q.field_name is None and "material" in q.text)
@@ -194,6 +195,7 @@ def test_answer_sets_the_field_and_can_extend_the_taxonomy(env):
 
 
 def test_field_answer_validation(env):
+    env.settings["labeling"]["taxonomy_match"] = "all"
     env.label(env.path, "a", [env.good(general_object="spoon", material="metal")])
     # build a field question by hand on the saved label set
     ls = env.service.load("a")
@@ -358,3 +360,56 @@ def test_add_addendum_appends(tmp_path):
     items = add_addendum(path, ["two"], "approved", "note")
     assert [i["changes"] for i in items] == [["one"], ["two"]] and items[1]["note"] == "note"
     assert json.loads(path.read_text())[1]["status"] == "approved"
+
+
+def test_taxonomy_off_adds_new_words_when_a_label_is_approved(env):
+    env.settings["labeling"]["taxonomy_match"] = "off"
+    env.label(env.path, "a", [env.good(general_object="spaceship", material="velvet")])
+    assert env.db.get("a").status == "pending"  # off: no taxonomy question
+    assert env.service.taxonomy_problems(env.service.load("a")) == []
+    env.service.approve("a")
+    tax = env.service.taxonomy()
+    assert "spaceship" in tax.objects and "velvet" in tax.materials
+
+
+def test_ticking_add_to_taxonomy_always_adds(env):
+    env.label(env.path, "a", [env.good()])  # default mode: material is not matched
+    ls = env.service.load("a")
+    from core.models import Question
+    ls.questions = [Question("qm", "Which material?", "o1", "material", ["glass"], True)]
+    from core.reports.sidecar import write_sidecar
+    write_sidecar(ls, env.data / "sidecars")
+    env.service.answer_question("a", "qm", "velvet", add_to_taxonomy=True)
+    assert "velvet" in env.service.taxonomy().materials
+
+
+def test_the_run_saves_new_words_to_the_yaml_files(env):
+    from core.labeler.factory import build_label_fn
+    env.settings["labeling"]["taxonomy_match"] = "off"
+    tax = load_taxonomy(env.taxonomy_dir)
+    fn = build_label_fn(env.settings, ScriptedProvider([env.good(general_object="spaceship")]), tax, env.data,
+                        taxonomy_dir=env.taxonomy_dir)
+    env.db.add_images([NewImage("a", env.path.name, str(env.path))])
+    run_queue(env.db, fn, sidecar_dir=env.data / "sidecars")
+    assert "spaceship" in (env.taxonomy_dir / "objects.yaml").read_text()
+    assert "spaceship" in load_taxonomy(env.taxonomy_dir).objects
+
+
+def test_clear_taxonomy_questions_frees_stuck_images_and_adds_the_words(env):
+    env.settings["labeling"]["taxonomy_match"] = "all"  # how the old runs were made
+    env.label(env.path, "a", [env.good(general_object="spaceship", material="velvet")])
+    assert env.db.get("a").status == "needs_input"
+    env.label(env.blank, "b", [env.good(general_object="unknown")])
+    freed, added = env.service.clear_taxonomy_questions()
+    assert freed == 1 and "object spaceship" in added and "material velvet" in added
+    assert env.db.get("a").status == "pending"
+    tax = env.service.taxonomy()
+    assert "spaceship" in tax.objects and "velvet" in tax.materials and "unknown" not in tax.objects
+    assert all(q.answer == "added to taxonomy" for q in env.service.load("a").questions if q.id.startswith("qt_"))
+    assert env.service.clear_taxonomy_questions() == (0, [])  # nothing left to do
+
+
+def test_local_images_are_reported_so_they_are_not_sent_to_roboflow(env):
+    env.label(env.path, "a", [env.good()])
+    env.service.approve("a")
+    assert env.service.local_image_ids() == ["a"]  # queued from a file, not downloaded from Roboflow

@@ -2,7 +2,7 @@
 
     Object: obj_<object>_<material>_<color>_<incidence>
     Laser:  las_<event>
-    Parts of one laser spot (label scheme "components"): component1, component2, component3
+    By how the light got there (label schemes "components" and "merged"): component1 = direct hit, component2 = bounce
     Merged (label scheme "merged"): <object class>__<component>, e.g. obj_pen_rubber_red_first__component1
 
 Older exports also had a sub-object, obj_<object>-<sub-object>_<material>_<color>_<incidence>. Those names still decode
@@ -21,11 +21,10 @@ OBJECT_PREFIX = "obj"
 LASER_PREFIX = "las"
 MERGE_SEP = "__"
 
-COMPONENT_NAMES = ("component1", "component2", "component3")
+COMPONENT_NAMES = ("component1", "component2")
 COMPONENT_MEANING = {
-    "component1": "the bright core of the laser spot",
-    "component2": "the halo or glow around the core",
-    "component3": "the visible beam line leading to the spot",
+    "component1": "direct hit: the beam lands on the object",
+    "component2": "bounce: light reflected, refracted or scattered off something",
 }
 
 _TOKEN = re.compile(r"^[a-z0-9]+$")
@@ -69,6 +68,12 @@ def check_token(value: str, label: str) -> str:
             "(no '-', '_', spaces or uppercase; write multi-word names as one word)"
         )
     return value
+
+
+def normalise_token(value, default: str = "other") -> str:
+    """Make a free-text model value a legal token: lowercase letters and digits only ("Dark Blue" -> "darkblue")."""
+    cleaned = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+    return cleaned or default
 
 
 def check_event(value: str) -> str:

@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
+from core.schema import scheme_labels
+
 LABELED, UNLABELED, UNKNOWN = "labeled", "unlabeled", "unknown"
+OLDER = "older"  # has labels, but none written the way the current labeling scheme writes them
 
 
 @dataclass
@@ -18,22 +21,30 @@ class Entry:
     remote: object = None  # the RemoteImage for Roboflow entries
 
 
-def label_state(entry: Entry) -> str:
-    """Local files and images whose labels Roboflow did not report are `unknown` (the user is asked)."""
+def label_state(entry: Entry, scheme: str | None = None) -> str:
+    """Local files and images whose labels Roboflow did not report are `unknown` (the user is asked).
+
+    Without a scheme any label counts as labeled. With one (full | components | merged) only labels written the way
+    that scheme writes them count: an image with labels of another kind is `older`, and still needs labeling."""
     if entry.labels is None:
         return UNKNOWN
-    return LABELED if entry.labels else UNLABELED
+    if scheme is None:
+        return LABELED if entry.labels else UNLABELED
+    state = scheme_labels.labels_state(entry.labels, scheme)
+    return {scheme_labels.CURRENT: LABELED, scheme_labels.NONE: UNLABELED, scheme_labels.OLDER: OLDER}[state]
 
 
 def filter_entries(entries: Iterable[Entry], *, only_unlabeled: bool = False, split: str = "", tag: str = "",
-                   text: str = "", queued: Iterable[str] = (), hide_queued: bool = True) -> list[Entry]:
-    """Entries to show. "Unlabeled only" keeps unlabeled images and ones of unknown state (never silently drops them)."""
+                   text: str = "", queued: Iterable[str] = (), hide_queued: bool = True,
+                   scheme: str | None = None) -> list[Entry]:
+    """Entries to show. "Unlabeled only" keeps unlabeled images and ones of unknown state (never silently drops them);
+    with a `scheme` it also keeps images labeled only in an older style, and drops those labeled in the current one."""
     queued_ids, needle = set(queued), text.strip().lower()
     out = []
     for e in entries:
         if hide_queued and e.key in queued_ids:
             continue
-        if only_unlabeled and label_state(e) == LABELED:
+        if only_unlabeled and label_state(e, scheme) == LABELED:
             continue
         if split and e.split != split:
             continue

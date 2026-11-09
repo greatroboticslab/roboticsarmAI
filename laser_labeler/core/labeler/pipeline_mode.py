@@ -26,7 +26,8 @@ def _user_message(ctx: LabelContext, candidates) -> Message:
              f"{ctx.shown.shape[1]}x{ctx.shown.shape[0]} px.",
              "Image 1 is the whole image with each candidate laser spot boxed and labeled."]
     for n, cand in enumerate(candidates, start=2):
-        crop = crop_zoom(ctx.rgb, expand_box(cand.box, 12, ctx.image.width, ctx.image.height), pad_fraction=1.0)
+        crop = crop_zoom(ctx.rgb, expand_box(cand.box, 12, ctx.image.width, ctx.image.height), pad_fraction=1.0,
+                         target=ctx.crop_px)
         images.append(ImagePart(encode_png(crop.image)))
         lines.append(f"Image {n} is a zoomed crop around {cand.id} (peak brightness {cand.peak:.2f}, "
                      f"{cand.area} px core, {cand.saturated_fraction:.0%} saturated).")
@@ -82,7 +83,7 @@ def run_pipeline(ctx: LabelContext, provider: VisionProvider, system_prompt: str
     for message in messages:
         transcript.add_message(message)
     ids = [c.id for c in candidates]
-    schema = pipeline_schema(ids, ctx.taxonomy) if structured else None
+    schema = pipeline_schema(ids, ctx.taxonomy, ctx.taxonomy_match == "all") if structured else None
     first = call_model(provider, messages, transcript, None, guard, schema)
     reply, repairs = repair_loop(provider, messages, transcript, first,
                                  lambda text: parse_pipeline_reply(text, ids), max_repairs, guard, schema)

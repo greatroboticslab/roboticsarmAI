@@ -73,3 +73,16 @@ def test_no_keyring_backend_gives_clear_error(monkeypatch):
     monkeypatch.setattr(keyring, "get_keyring", lambda: Fail())
     with pytest.raises(secrets.SecretStoreError):
         secrets.get_secret("x")
+
+
+def test_reply_limit_is_validated(tmp_path):
+    import pytest as _pytest
+    from config.settings import SettingsError, validate_settings
+    settings = load_settings()
+    assert settings["provider"]["reply_limit"] == 0
+    for bad in (-1, 40000, "many", True):
+        settings["provider"]["reply_limit"] = bad
+        with _pytest.raises(SettingsError):
+            validate_settings(settings)
+    settings["provider"]["reply_limit"] = 1200
+    validate_settings(settings)

@@ -186,3 +186,26 @@ def test_download_refuses_non_https_and_unusable_ids(tmp_path):
         safe_stem("..")
     with pytest.raises(RoboflowError):
         download_image(RemoteImage("abc"), tmp_path, KEY, file_opener())  # no url, no workspace
+
+
+# ---------------- unlabeled means "not labeled in the current scheme" when a scheme is given
+def test_is_unlabeled_by_scheme():
+    from core.roboflow.images import RemoteImage, is_unlabeled
+    assert is_unlabeled(RemoteImage("a", labels=["component1"]), "components") is False
+    assert is_unlabeled(RemoteImage("a", labels=["component1"]), "full") is True          # an older kind of label
+    assert is_unlabeled(RemoteImage("a", labels=["component1"])) is False                 # no scheme: any label counts
+    assert is_unlabeled(RemoteImage("a", labels=[]), "full") is True
+    assert is_unlabeled(RemoteImage("a"), "full") is None
+
+
+def test_list_images_only_unlabeled_with_a_scheme():
+    from core.roboflow.images import list_images
+    rows = [{"id": "x", "labels": ["las_first-incidence"]}, {"id": "y", "labels": ["component1"]},
+            {"id": "z", "labels": []}, {"id": "w"}]
+
+    def opener(req, timeout=None):
+        import io, json
+        return io.BytesIO(json.dumps({"results": rows if json.loads(req.data)["offset"] == 0 else [], "total": 4}).encode())
+
+    got = [i.id for i in list_images("ws", "pr", "k", only_unlabeled=True, scheme="full", opener=opener)]
+    assert got == ["y", "z", "w"]

@@ -38,7 +38,5 @@ def grow_laser_boxes(lasers: list[LaserBox], objects: list[ObjectBox], fraction:
     if fraction <= 0:
         return
     for laser in lasers:
-        if laser.component is not None:
-            continue
         hit = next((o for o in objects if laser.id in o.laser_ids), None)
         laser.box = grown_box(laser.box, hit.box if hit else None, fraction, width, height)

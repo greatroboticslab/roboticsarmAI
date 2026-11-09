@@ -27,8 +27,12 @@ def data_dir_for(settings: dict, override: str | None = None) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
+def project_taxonomy_dir() -> Path:
+    return PROJECT_ROOT / "taxonomy"
+
+
 def load_project_taxonomy(directory: str | None = None):
-    return load_taxonomy(directory or PROJECT_ROOT / "taxonomy")
+    return load_taxonomy(directory or project_taxonomy_dir())
 
 
 def make_provider(settings: dict, overrides: dict | None = None) -> VisionProvider:

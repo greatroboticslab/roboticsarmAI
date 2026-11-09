@@ -49,12 +49,12 @@ def test_box_stays_inside_the_image():
     assert x >= 0 and y >= 0 and x + w <= 120 and y + h <= 120
 
 
-def test_zero_fraction_and_component_parts_are_left_alone():
-    tight, part = laser(), laser(component="component2", id="l2")
-    grow_laser_boxes([tight, part], [obj((50, 60, 240, 150), ("l1", "l2"))], 0, 600, 600)
-    assert tight.box == (100, 100, 20, 20)
-    grow_laser_boxes([tight, part], [obj((50, 60, 240, 150), ("l1", "l2"))], 0.33, 600, 600)
-    assert tight.box != (100, 100, 20, 20) and part.box == (100, 100, 20, 20)
+def test_zero_fraction_leaves_boxes_alone_and_every_spot_grows_otherwise():
+    tight, bounce = laser(), laser(component="component2", id="l2")
+    grow_laser_boxes([tight, bounce], [obj((50, 60, 240, 150), ("l1", "l2"))], 0, 600, 600)
+    assert tight.box == (100, 100, 20, 20) and bounce.box == (100, 100, 20, 20)
+    grow_laser_boxes([tight, bounce], [obj((50, 60, 240, 150), ("l1", "l2"))], 0.33, 600, 600)
+    assert tight.box != (100, 100, 20, 20) and bounce.box != (100, 100, 20, 20)
 
 
 def test_setting_is_validated():

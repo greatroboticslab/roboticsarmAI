@@ -1,5 +1,8 @@
 """Upload approved labels to existing Roboflow images (spec sections 9.3, 12).
 
+Image files are never uploaded: every request below changes the labels or tags of an image that is already on
+Roboflow, found by its Roboflow image id. Images that came from a local file have no such id and are left out.
+
 Safety rules: dry run by default; only approved/edited sets; overwrite off unless
 the plan says so; every real upload is appended to an audit log (never the key).
 Only class names and boxes are sent. Metrics and links never leave the sidecar.
@@ -27,6 +30,10 @@ from core.roboflow.http import (RoboflowHTTPError, build_url, quote_seg, request
 from core.schema.coco_export import EXPORTABLE_STATUSES, build_coco, class_names_for
 
 ANNOTATION_NAME = "_annotations.coco.json"  # the extension tells Roboflow the format
+
+
+LOCAL_IMAGE_REASON = ("this image came from a local file, so it has no Roboflow image to update (the app never "
+                      "uploads image files); queue it from Roboflow instead to send its labels")
 
 
 @dataclass
@@ -58,11 +65,13 @@ class UploadPlan:
         ds = "Roboflow default (adds the image to the dataset)" if self.add_to_dataset is None \
             else ("yes" if self.add_to_dataset else "no")
         lines = [f"Upload plan for {self.workspace}/{self.project}",
+                 "  only labels and tags are sent, to images already on Roboflow; no image file is uploaded",
                  f"  overwrite existing annotations: {'YES' if self.overwrite else 'no'}",
                  f"  add to dataset: {ds}",
                  f"  images to upload: {len(self.items)}, excluded: {len(self.excluded)}"]
         for n, item in enumerate(self.items, 1):
             lines.append(f"[{n}] {item.image_id}  {item.image_name}  ({item.status})")
+            lines.append(f"      updates the labels of the existing Roboflow image {item.image_id}")
             lines += [f"      box {name}  x,y,w,h = {box}" for name, box in item.boxes]
             lines.append(f"      tags: {', '.join(item.tags) or '(none)'}")
             lines.append("      existing annotation: " + _overwrite_note(item, self.overwrite))
@@ -99,11 +108,16 @@ def _plan_item(ls: ImageLabelSet, placeholder: str, remote: Mapping[str, Any]) -
 def build_upload_plan(label_sets: Iterable[ImageLabelSet], *, workspace: str, project: str,
                       color_placeholder: str = "na", overwrite: bool = False,
                       remote_labels: Mapping[str, list[str] | None] | None = None,
-                      add_to_dataset: bool | None = None) -> UploadPlan:
+                      add_to_dataset: bool | None = None,
+                      local_ids: Iterable[str] = ()) -> UploadPlan:
     """Pure: decide what would be sent. `remote_labels` (image id -> its current labels,
     from list_images) lets the plan say which images already have annotations."""
     plan = UploadPlan(workspace, project, overwrite, add_to_dataset)
+    local = set(local_ids)
     for ls in label_sets:
+        if ls.image_id in local:
+            plan.excluded[ls.image_id] = LOCAL_IMAGE_REASON
+            continue
         if ls.status not in EXPORTABLE_STATUSES:
             plan.excluded[ls.image_id] = f"status is {ls.status}, only approved/edited are uploaded"
             continue

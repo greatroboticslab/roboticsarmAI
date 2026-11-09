@@ -28,7 +28,10 @@ def build_provider(provider_settings: dict[str, Any], api_key: str | None,
         from core.providers.openai_compat import OpenAICompatProvider
         return OpenAICompatProvider(model, api_key, provider_settings.get("base_url") or None,
                                     temperature, client,
-                                    structured_output=bool(provider_settings.get("structured_output")))
+                                    structured_output=bool(provider_settings.get("structured_output")),
+                                    timeout=float(provider_settings.get("timeout_s", 300) or 0) or None,
+                                    disable_thinking=bool(provider_settings.get("disable_thinking")),
+                                    reply_limit=int(provider_settings.get("reply_limit") or 0) or None)
     if kind == "gemini":
         from core.providers.gemini import GeminiProvider
         return GeminiProvider(model, api_key, temperature, client)

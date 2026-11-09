@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterator
 from core.roboflow.auth import RoboflowError
 from core.roboflow.http import (build_url, quote_seg, request_bytes, request_json,
                                 with_backoff)
+from core.schema.scheme_labels import CURRENT, labels_state
 
 DEFAULT_FIELDS = ("id", "name", "split", "tags", "labels", "created")
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
@@ -69,14 +70,19 @@ def parse_image(item: Any, workspace: str = "", project: str = "") -> RemoteImag
         url=url if isinstance(url, str) else None, workspace=workspace, project=project)
 
 
-def is_unlabeled(image: RemoteImage) -> bool | None:
+def is_unlabeled(image: RemoteImage, scheme: str | None = None) -> bool | None:
     """True/False from the `labels` field; None when the server did not report it.
+
+    With a `scheme` (full | components | merged) "labeled" means labeled in that system: an image whose labels are
+    all of an older kind counts as unlabeled (see core.schema.scheme_labels).
 
     Caveat: an image saved as "no objects" also has no labels, and looks unlabeled.
     """
     if image.labels is None:
         return None
-    return len(image.labels) == 0
+    if scheme is None:
+        return len(image.labels) == 0
+    return labels_state(image.labels, scheme) != CURRENT
 
 
 def _search_page(workspace: str, project: str, api_key: str, body: dict, opener: Callable,
@@ -90,12 +96,13 @@ def _search_page(workspace: str, project: str, api_key: str, body: dict, opener:
 
 
 def list_images(workspace: str, project: str, api_key: str, *, only_unlabeled: bool = False,
-                tag: str | None = None, split: str | None = None, page_size: int = 100,
+                scheme: str | None = None, tag: str | None = None, split: str | None = None, page_size: int = 100,
                 limit: int | None = None, fields: tuple[str, ...] = DEFAULT_FIELDS,
                 opener: Callable = urllib.request.urlopen, timeout: float = 30,
                 sleep: Callable[[float], None] = time.sleep) -> Iterator[RemoteImage]:
     """Yield images page by page. `only_unlabeled` keeps images whose labels are empty
-    or unknown (use is_unlabeled to tell them apart); `split` is filtered client-side."""
+    or unknown (use is_unlabeled to tell them apart); with a `scheme` it keeps every image that is not labeled in
+    that labeling system (empty, older style, or unknown). `split` is filtered client-side."""
     offset, yielded, seen = 0, 0, set()
     while limit is None or yielded < limit:
         body: dict[str, Any] = {"offset": offset, "limit": page_size, "fields": list(fields)}
@@ -109,7 +116,7 @@ def list_images(workspace: str, project: str, api_key: str, *, only_unlabeled: b
                 continue
             seen.add(image.id)
             fresh += 1
-            if (split and image.split != split) or (only_unlabeled and is_unlabeled(image) is False):
+            if (split and image.split != split) or (only_unlabeled and is_unlabeled(image, scheme) is False):
                 continue
             yield image
             yielded += 1
@@ -121,7 +128,7 @@ def list_images(workspace: str, project: str, api_key: str, *, only_unlabeled: b
 
 
 def count_images(workspace: str, project: str, api_key: str, *, only_unlabeled: bool = False,
-                 tag: str | None = None, split: str | None = None,
+                 scheme: str | None = None, tag: str | None = None, split: str | None = None,
                  opener: Callable = urllib.request.urlopen, timeout: float = 30,
                  sleep: Callable[[float], None] = time.sleep) -> int:
     """Number of matching images. Uses the search `total` when no client-side filter
@@ -133,7 +140,7 @@ def count_images(workspace: str, project: str, api_key: str, *, only_unlabeled: 
         _, total = _search_page(workspace, project, api_key, body, opener, timeout, sleep)
         if total is not None:
             return total
-    return sum(1 for _ in list_images(workspace, project, api_key, only_unlabeled=only_unlabeled,
+    return sum(1 for _ in list_images(workspace, project, api_key, only_unlabeled=only_unlabeled, scheme=scheme,
                                       tag=tag, split=split, opener=opener, timeout=timeout,
                                       sleep=sleep))
 

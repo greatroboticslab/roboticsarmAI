@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Any, Callable
 
 from core.providers.base import (
-    AuthError, ImagePart, Message, ProviderError, ProviderReply, RateLimitError,
+    AuthError, ContextTooLong, ImagePart, Message, ProviderError, ProviderReply, RateLimitError,
     ToolCall, ToolSpec, TransientError, Usage, with_retries,
 )
 
@@ -101,7 +102,23 @@ def _retry_after(exc: Any) -> float | None:
         return None
 
 
-def map_error(exc: Exception, secret: str | None = None) -> ProviderError:
+_OLLAMA_CONTEXT = re.compile(r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)", re.I)
+_OPENAI_CONTEXT = re.compile(r"maximum context length is (\d+) tokens.*?(?:resulted in|requested|contain\w*) (\d+) tokens", re.I | re.S)
+
+
+def _context_error(msg: str, status: int | None = None) -> ContextTooLong | None:
+    """A "request too long for the context window" error, with the numbers when the server gave them."""
+    if m := _OLLAMA_CONTEXT.search(msg):
+        return ContextTooLong(msg, int(m.group(1)), int(m.group(2)))
+    if m := _OPENAI_CONTEXT.search(msg):
+        return ContextTooLong(msg, int(m.group(2)), int(m.group(1)))
+    lower = msg.lower()
+    if status == 400 and any(w in lower for w in ("context size", "context length", "context window")):
+        return ContextTooLong(msg)
+    return None
+
+
+def map_error(exc: Exception, secret: str | None = None, timeout: float | None = None) -> ProviderError:
     """Translate an openai SDK exception into our error hierarchy."""
     import openai
 
@@ -111,8 +128,14 @@ def map_error(exc: Exception, secret: str | None = None) -> ProviderError:
     status = getattr(exc, "status_code", None)
     if status in (401, 403):
         return AuthError(msg)
+    too_long = _context_error(msg, status)
+    if too_long is not None:
+        return too_long
     if status == 429:
         return RateLimitError(msg, _retry_after(exc))
+    if isinstance(exc, openai.APITimeoutError):  # a slow model: retrying would only multiply the wait
+        waited = f" after {timeout:g} seconds" if timeout else ""
+        return ProviderError(f"Request timed out{waited}: {msg}")
     if isinstance(exc, openai.APIConnectionError) or (isinstance(status, int) and status >= 500):
         return TransientError(msg)
     return ProviderError(msg)
@@ -127,8 +150,12 @@ class OpenAICompatProvider:
     def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None,
                  temperature: float | None = 0.0, client: Any = None,
                  sleep: Callable[[float], None] | None = None, attempts: int = 5,
-                 structured_output: bool = False) -> None:
+                 structured_output: bool = False, timeout: float | None = None,
+                 disable_thinking: bool = False, reply_limit: int | None = None) -> None:
+        self.reply_limit = reply_limit or None  # cap on the reply length; None = the server decides
         self.structured_output = structured_output  # send response_format=json_schema when asked
+        self.timeout = timeout  # seconds per request; None keeps the SDK default
+        self.disable_thinking = disable_thinking  # send reasoning_effort="none" (Ollama turns thinking off)
         self.model = model
         self.base_url = base_url
         self.temperature = temperature
@@ -148,6 +175,7 @@ class OpenAICompatProvider:
                 api_key=self._api_key or PLACEHOLDER_KEY,
                 base_url=self.base_url or None,
                 max_retries=0,  # retries are handled by with_retries
+                **({"timeout": self.timeout} if self.timeout else {}),
             )
         return self._client
 
@@ -156,6 +184,10 @@ class OpenAICompatProvider:
         kwargs: dict[str, Any] = {"model": self.model, "messages": to_openai_messages(messages)}
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
+        if self.disable_thinking:
+            kwargs["reasoning_effort"] = "none"
+        if self.reply_limit:
+            kwargs["max_tokens"] = self.reply_limit
         if tools:
             kwargs["tools"] = to_openai_tools(tools)
         elif json_schema and self.structured_output:  # tools and a schema do not mix on most servers
@@ -169,7 +201,7 @@ class OpenAICompatProvider:
         except ProviderError:
             raise
         except Exception as exc:  # noqa: BLE001 - mapped to our hierarchy
-            raise map_error(exc, self._api_key) from None
+            raise map_error(exc, self._api_key, self.timeout) from None
 
     def chat(self, messages: list[Message], tools: list[ToolSpec] | None = None,
              json_schema: dict[str, Any] | None = None) -> ProviderReply:

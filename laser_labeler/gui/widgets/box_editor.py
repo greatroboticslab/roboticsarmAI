@@ -5,6 +5,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QComboBox, QFormLayout, QLabel, QLineEdit, QSpinBox, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget)
 
+from core.labeler.components import component_for_kind
 from core.models import INCIDENCES, LASER_KINDS, LaserBox, ObjectBox
 from core.schema.class_names import COMPONENT_MEANING, COMPONENT_NAMES
 from core.schema.taxonomy import Taxonomy
@@ -40,7 +41,7 @@ class BoxEditor(QWidget):
         self.kind = QComboBox()
         self.kind.addItems(LASER_KINDS)
         self.component = QComboBox()
-        self.component.addItem("Not a part: class comes from the event", None)
+        self.component.addItem("Not set: class comes from the event (las_<event>)", None)
         for name in COMPONENT_NAMES:
             self.component.addItem(f"{name}: {COMPONENT_MEANING[name]}", name)
         self.order = QSpinBox()
@@ -70,7 +71,7 @@ class BoxEditor(QWidget):
             combo.currentTextChanged.connect(lambda text, n=name: self._set_attr(n, text))
         self.incidence.currentTextChanged.connect(lambda text: self._set_attr("incidence", text))
         self.finish.textEdited.connect(lambda text: self._set_attr("finish", text.strip() or None))
-        self.kind.currentTextChanged.connect(lambda text: self._set_attr("kind", text))
+        self.kind.currentTextChanged.connect(self._kind_changed)
         self.component.currentIndexChanged.connect(lambda _i: self._set_attr("component", self.component.currentData()))
         self.order.valueChanged.connect(lambda v: self._set_attr("order", int(v)))
         self.metrics.itemChanged.connect(self._metric_changed)
@@ -106,8 +107,7 @@ class BoxEditor(QWidget):
             self.kind.setCurrentText(box.kind)
             self.component.setCurrentIndex(max(self.component.findData(box.component), 0))
             self.order.setValue(box.order)
-            self.info.setText((f"Part of {box.from_id}." if box.is_part else
-                               f"Follows {box.from_id}." if box.from_id else "Starts the beam path.")
+            self.info.setText((f"Follows {box.from_id}." if box.from_id else "Starts the beam path.")
                               + (f"\nNote: {box.notes}" if box.notes else ""))
             self._fill_metrics(box)
         else:
@@ -136,6 +136,18 @@ class BoxEditor(QWidget):
             return
         setattr(self._box, name, value)
         self.edited.emit()
+
+    def _kind_changed(self, text: str) -> None:
+        """With a component set, the event decides it: a direct hit is component1, a bounce is component2."""
+        if self._loading or not isinstance(self._box, LaserBox):
+            return
+        self._set_attr("kind", text)
+        if self._box.component is not None:
+            new = component_for_kind(text)
+            self._loading = True
+            self.component.setCurrentIndex(max(self.component.findData(new), 0))
+            self._loading = False
+            self._set_attr("component", new)
 
     def _general_changed(self, text: str) -> None:
         if self._loading or not isinstance(self._box, ObjectBox):

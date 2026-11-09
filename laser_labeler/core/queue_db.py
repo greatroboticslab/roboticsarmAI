@@ -243,6 +243,31 @@ class QueueDB:
             count += 1
         return count
 
+    def remove(self, image_ids: Iterable[str]) -> int:
+        """Take images out of the queue. Only the queue rows go: image files and saved results stay on disk.
+        Returns how many rows were removed."""
+        ids = list(image_ids)
+        removed = 0
+        with self._lock:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                removed += self._db.execute(
+                    f"DELETE FROM images WHERE image_id IN ({','.join('?' * len(chunk))})", chunk).rowcount
+        return removed
+
+    def clear(self, statuses: Sequence[str] | None = None) -> int:
+        """Remove every image in these statuses (default: everything not uploaded yet). `uploaded` rows are only
+        removed when asked for by name. Returns how many rows were removed."""
+        wanted = [s for s in STATUSES if s != "uploaded"] if statuses is None else list(statuses)
+        for s in wanted:
+            if s not in STATUSES:
+                raise ValueError(f"unknown status {s!r}")
+        if not wanted:
+            return 0
+        with self._lock:
+            return self._db.execute(f"DELETE FROM images WHERE status IN ({','.join('?' * len(wanted))})",
+                                    wanted).rowcount
+
     def recover_interrupted(self) -> int:
         """After a crash, pause or reboot: anything left `labeling` goes back to `queued`."""
         with self._lock:

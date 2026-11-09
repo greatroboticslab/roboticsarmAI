@@ -28,6 +28,9 @@ class UploadDialog(QDialog):
         self.busy = False
         self.dry_run = QCheckBox("Dry run: show what would be sent, send nothing")
         self.dry_run.setChecked(True)
+        self.note = QLabel("Only labels are sent, to images that are already on Roboflow; no image is uploaded again. "
+                           "Tick Overwrite to replace labels an image already has (otherwise Roboflow refuses with 409).")
+        self.note.setWordWrap(True)
         self.overwrite = QCheckBox("Overwrite annotations that already exist on Roboflow")
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
@@ -41,7 +44,7 @@ class UploadDialog(QDialog):
         buttons.addWidget(self.go)
         buttons.addWidget(self.close_btn)
         col = QVBoxLayout(self)
-        for widget in (self.dry_run, self.overwrite, self.text, self.status):
+        for widget in (self.note, self.dry_run, self.overwrite, self.text, self.status):
             col.addWidget(widget)
         col.addLayout(buttons)
         self.dry_run.toggled.connect(self._refresh_button)

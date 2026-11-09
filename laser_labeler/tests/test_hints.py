@@ -53,3 +53,32 @@ def test_context_size_hint_names_the_ollama_fix_only_for_local_servers():
     err = "Error code: 400 - request (4638 tokens) exceeds the available context size (4096 tokens), try increasing it"
     assert "OLLAMA_CONTEXT_LENGTH" in failure_hint(err, "openai_compat", "qwen3-vl:4b")
     assert "OLLAMA_CONTEXT_LENGTH" not in failure_hint(err, "gemini", "g")
+
+
+def test_timeout_gets_a_speed_hint():
+    hint = failure_hint("ProviderError: Request timed out: APITimeoutError: Request timed out.", "openai_compat", "qwen3-vl:4b")
+    assert "ollama ps" in hint and "Turn off thinking" in hint
+
+
+def test_ran_out_of_tokens_gets_its_own_hint():
+    hint = failure_hint("ReplyTruncated: The model ran out of tokens: its reply was cut off after 596 tokens, with the "
+                        "request at 3500 tokens.", "openai_compat", "qwen3-vl:4b")
+    assert "Spots shown per image" in hint and "Turn off thinking" in hint and "video memory" in hint
+
+
+def test_ran_out_of_tokens_hint_does_the_arithmetic_and_blames_a_long_reply():
+    hint = failure_hint("failed: The model ran out of tokens: its reply was cut off after 2009 tokens, with the request "
+                        "at 6183 tokens. Together that is 8192 tokens, so ...", "openai_compat", "qwen3-vl:4b")
+    assert "6183 + reply 2009 = 8192" in hint and "thinking or rambling" in hint
+    assert "Longest reply allowed" in hint
+
+
+def test_a_short_cut_off_reply_does_not_blame_thinking_first():
+    hint = failure_hint("The model ran out of tokens: its reply was cut off after 300 tokens, with the request at 3796 "
+                        "tokens.", "openai_compat", "m")
+    assert "3796 + reply 300 = 4096" in hint and "alone used a large part" not in hint
+
+
+def test_a_timeout_hint_says_the_run_moved_on_and_warns_about_bigger_windows():
+    hint = failure_hint("ProviderError: Request timed out after 300 seconds: APITimeoutError", "openai_compat", "m")
+    assert "16k" in hint and "Longest reply allowed" in hint and "smaller model" in hint

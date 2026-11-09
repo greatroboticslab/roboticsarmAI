@@ -8,7 +8,7 @@ from typing import Callable
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QAbstractButton, QButtonGroup, QComboBox, QDoubleSpinBox, QHBoxLayout, QInputDialog,
-                             QLabel, QListWidget, QListWidgetItem, QMessageBox, QProgressDialog, QPushButton,
+                             QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressDialog, QPushButton,
                              QSpinBox, QSplitter, QStackedWidget, QTabWidget, QVBoxLayout, QWidget, QApplication)
 
 from config import credentials
@@ -18,10 +18,10 @@ from core.queue_db import QueueRow
 from core.reports.sidecar import read_sidecar
 from core.providers.hints import failure_hint
 from core.review.reasons import reason_line
-from core.review.service import (ReviewError, add_laser_box, add_object_box, delete_box)
+from core.review.service import (ReviewError, add_laser_box, add_object_box, apply_scheme, delete_box)
 from core.roboflow.upload import UploadSummary, build_upload_plan, upload_annotations
 from gui.context import AppContext
-from gui.tabs.label_run_tab import boxes_of
+from gui.tabs.label_run_tab import boxes_of, laser_title
 from gui.widgets.box_editor import BoxEditor
 from gui.widgets.conversation_viewer import ConversationViewer
 from gui.widgets.image_canvas import ImageCanvas
@@ -52,6 +52,7 @@ class ReviewTab(QWidget):
         self._question_id = ""  # a hit-point question waiting for a click on the image
         self._loading = False
         self.confirm_taxonomy: Callable[[list[str]], bool] = self._ask_taxonomy  # replaced in tests
+        self.confirm_clear: Callable[[int], bool] = self._ask_clear  # replaced in tests
         self._build()
         self._connect()
         self.reload()
@@ -83,6 +84,9 @@ class ReviewTab(QWidget):
         self.threshold.setValue(0.9)
         self.bulk_btn = QPushButton("Approve all ready images at or above")
         self.upload_btn = QPushButton("Upload approved...")
+        self.clear_tax_btn = QPushButton("Clear 'not in taxonomy' questions...")
+        self.clear_tax_btn.setToolTip("For images stuck on 'X is not in taxonomy': add each named object and material to "
+                                      "your lists, mark those questions answered and send the images back to ready.")
         left = QWidget()
         lc = QVBoxLayout(left)
         lc.setContentsMargins(0, 0, 0, 0)
@@ -103,6 +107,7 @@ class ReviewTab(QWidget):
         bulk.addWidget(self.bulk_btn, 1)
         bulk.addWidget(self.threshold)
         lc.addLayout(bulk)
+        lc.addWidget(self.clear_tax_btn)
         lc.addWidget(self.upload_btn)
 
         self.header = QLabel("Choose an image from the list.")
@@ -123,8 +128,12 @@ class ReviewTab(QWidget):
             modes.addWidget(b)
             self.mode_buttons[key] = b
         self.mode_buttons["view"].setChecked(True)
-        self.delete_btn, self.fit_btn = QPushButton("Delete selected box"), QPushButton("Fit")
+        self.delete_btn, self.fit_btn = QPushButton("Delete selected box (Del)"), QPushButton("Fit")
+        self.scheme_btn = QPushButton("Use current label scheme")
+        self.scheme_btn.setToolTip("Switch this image to the label scheme in AI settings (full, components or merged) "
+                                   "without calling the model. Images keep the scheme they were labeled with.")
         modes.addWidget(self.delete_btn)
+        modes.addWidget(self.scheme_btn)
         modes.addWidget(self.fit_btn)
         modes.addStretch(1)
         self.approve_btn, self.reject_btn = QPushButton("Approve (A)"), QPushButton("Reject (R)")
@@ -158,6 +167,8 @@ class ReviewTab(QWidget):
         cc.addLayout(actions)
 
         self.boxes = QListWidget()
+        self.boxes.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.boxes.customContextMenuRequested.connect(self._box_menu)
         self.boxes.setMaximumHeight(120)
         self.editor = BoxEditor()
         self.apply_btn, self.revert_btn = QPushButton("Apply changes"), QPushButton("Discard changes")
@@ -201,6 +212,8 @@ class ReviewTab(QWidget):
                              ("P", self.previous_image), ("Left", self.previous_image), ("E", self.toggle_edit)):
             shortcut = QShortcut(QKeySequence(key), self, activated=handler)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        QShortcut(QKeySequence("Delete"), self, activated=self.delete_selected).setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.apply_changes).setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
     def _connect(self) -> None:
@@ -213,10 +226,12 @@ class ReviewTab(QWidget):
         self.prev_page.clicked.connect(lambda: self._set_page(self.page - 1))
         self.next_page.clicked.connect(lambda: self._set_page(self.page + 1))
         self.bulk_btn.clicked.connect(self.bulk_approve)
+        self.clear_tax_btn.clicked.connect(self.clear_taxonomy_questions)
         self.upload_btn.clicked.connect(self.open_upload)
         for key, button in self.mode_buttons.items():
             button.clicked.connect(lambda _c, k=key: self.set_mode(k))
         self.delete_btn.clicked.connect(self.delete_selected)
+        self.scheme_btn.clicked.connect(self.use_current_scheme)
         self.fit_btn.clicked.connect(self.canvas.fit)
         self.approve_btn.clicked.connect(self.approve)
         self.reject_btn.clicked.connect(self.reject)
@@ -450,11 +465,13 @@ class ReviewTab(QWidget):
         self.boxes.blockSignals(True)
         self.boxes.clear()
         for b in sorted(ls.laser_boxes, key=lambda x: x.order):
-            item = QListWidgetItem(f"laser {b.id}: {b.component or b.kind}")
+            item = QListWidgetItem(f"laser {b.id}: {laser_title(ls, b)}")
             item.setData(Qt.ItemDataRole.UserRole, b.id)
             self.boxes.addItem(item)
+        carried = ls.merged_object_ids()
         for o in ls.object_boxes:
-            item = QListWidgetItem(f"object {o.id}: {o.general_object}, {o.material}, {o.color}")
+            item = QListWidgetItem(f"object {o.id}: {o.general_object}, {o.material}, {o.color}"
+                                   + (" (named inside its laser box's label)" if o.id in carried else ""))
             item.setData(Qt.ItemDataRole.UserRole, o.id)
             self.boxes.addItem(item)
         for i in range(self.boxes.count()):
@@ -530,6 +547,25 @@ class ReviewTab(QWidget):
         self._mark_dirty()
         self._refresh_all(keep_box=new.id)
         self.canvas.select(new.id)
+
+    def use_current_scheme(self) -> None:
+        if self.draft is None:
+            return
+        wanted = self.ctx.settings()["labeling"].get("scheme", "full")
+        if apply_scheme(self.draft, wanted):
+            self._mark_dirty()
+            self._refresh_all(keep_box="")
+            self.message.setText(f"Switched this image to the '{wanted}' scheme. Press Apply changes to save it.")
+
+    def _box_menu(self, pos) -> None:
+        """Right-click a box in the list to delete it."""
+        item = self.boxes.itemAt(pos)
+        if item is None or self.draft is None:
+            return
+        self.canvas.select(item.data(Qt.ItemDataRole.UserRole))
+        menu = QMenu(self)
+        menu.addAction("Delete this box", self.delete_selected)
+        menu.exec(self.boxes.viewport().mapToGlobal(pos))
 
     def delete_selected(self) -> None:
         box_id = self.canvas.selected()
@@ -798,6 +834,28 @@ class ReviewTab(QWidget):
             self._show_nothing()
         return ids
 
+    def _ask_clear(self, count: int) -> bool:
+        return QMessageBox.question(
+            self, "Clear taxonomy questions",
+            f"{count} image(s) are waiting on questions. For each 'not in taxonomy' question the object and material "
+            "will be added to your lists and the question marked answered. Continue?") == QMessageBox.StandardButton.Yes
+
+    def clear_taxonomy_questions(self) -> tuple[int, list[str]]:
+        if not self._leave_ok():
+            return 0, []
+        waiting = len(self.ctx.db.list(["needs_input"]))
+        if not waiting:
+            self.message.setText("No images are waiting on questions.")
+            return 0, []
+        if not self.confirm_clear(waiting):
+            return 0, []
+        freed, added = self.ctx.service().clear_taxonomy_questions()
+        self.message.setText(f"{freed} image(s) are ready again; added {len(added)} word(s) to your lists"
+                             + (f": {', '.join(added[:8])}{'...' if len(added) > 8 else ''}." if added else "."))
+        self._emit_quietly()
+        self.reload()
+        return freed, added
+
     # ------------------------------------------------------------------ upload
     def open_upload(self) -> UploadDialog | None:
         if not self._leave_ok():
@@ -818,7 +876,8 @@ class ReviewTab(QWidget):
 
         def plan_fn(overwrite: bool):
             return build_upload_plan(service.approved_sets(), workspace=rf["workspace"], project=rf["project"],
-                                     color_placeholder=placeholder, overwrite=overwrite)
+                                     color_placeholder=placeholder, overwrite=overwrite,
+                                     local_ids=service.local_image_ids())
 
         def send_fn(plan, dry_run: bool) -> UploadSummary:
             key = self._key_fn()
@@ -865,5 +924,8 @@ class ReviewTab(QWidget):
         self.revert_btn.setEnabled(have and self.dirty)
         for w in (self.delete_btn, *self.mode_buttons.values()):
             w.setEnabled(have)
+        wanted = self.ctx.settings()["labeling"].get("scheme", "full")
+        self.scheme_btn.setText(f"Switch to '{wanted}' scheme")
+        self.scheme_btn.setEnabled(have and self.draft.scheme != wanted)
         self.prev_btn.setEnabled(bool(self.rows))
         self.next_btn.setEnabled(bool(self.rows))

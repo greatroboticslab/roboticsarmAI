@@ -150,3 +150,38 @@ def test_list_filters_and_sorts(db):
     for bad in (lambda: db.list(sort="x"), lambda: db.list("nope")):
         with pytest.raises(ValueError):
             bad()
+
+
+# ------------------------------------------------------------------ removing images
+def test_remove_deletes_only_the_named_rows(db):
+    db.add_images(images(4))
+    assert db.remove(["img2", "img4", "nope"]) == 2
+    assert [r.image_id for r in db.list()] == ["img1", "img3"]
+    assert db.remove([]) == 0
+
+
+def test_clear_by_status_and_default_keeps_uploaded(db):
+    db.add_images(images(5))
+    labeled(db, "img1")                   # pending
+    labeled(db, "img2", status="failed", notes="boom")
+    db.set_status("img1", "approved")
+    db.set_status("img1", "uploaded")
+    assert db.clear(["failed"]) == 1 and db.get("img2") is None
+    assert db.clear(["queued"]) == 3 and db.counts()["queued"] == 0
+    db.add_images(images(1, 9))
+    assert db.clear() == 1                # default: everything not uploaded
+    assert db.get("img1") is not None and db.get("img1").status == "uploaded"
+    assert db.clear(["uploaded"]) == 1 and db.list() == []
+
+
+def test_clear_rejects_unknown_status_and_empty_list_is_a_no_op(db):
+    db.add_images(images(2))
+    with pytest.raises(ValueError):
+        db.clear(["bogus"])
+    assert db.clear([]) == 0 and len(db.list()) == 2
+
+
+def test_removed_images_can_be_added_again(db):
+    db.add_images(images(1))
+    db.remove(["img1"])
+    assert db.add_images(images(1)) == 1 and db.get("img1").status == "queued"

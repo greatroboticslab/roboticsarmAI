@@ -1,11 +1,4 @@
-# Objects the laser can land on. One word each, lowercase letters/digits only: no "-", "_" or spaces.
-# (If it is a pen, just say pen: there are no sub-objects.)
-objects:
-  - pen
-  - table
-  - cup
-  - bottle
-  - mirror
-  - lens
-  - paper
-  - tool
+objects: [pen, table, cup, bottle, mirror, lens, paper, tool, watch, box, stapler,
+  breadboard, mouse, stressball, tape, cloth, key, duck, tube, glasses, bag, stone,
+  book, bracket, scissors, cable, object, tray, spool, wallet, case, sponge, dispenser,
+  plant]

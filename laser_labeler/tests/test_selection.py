@@ -66,3 +66,35 @@ def test_collect_files_recurses_filters_types_and_dedupes_ids(tmp_path):
     again = new_images_for(db, files)  # the same files later get the same ids, so nothing is added twice
     assert [i.image_id for i in again] == [i.image_id for i in items] and db.add_images(again) == 0
     db.close()
+
+
+# ---------------- labeled in the CURRENT labeling system
+from core.selection import OLDER  # noqa: E402
+
+
+def scheme_entries():
+    return [Entry("none", "a.png", labels=[]),
+            Entry("las", "b.png", labels=["las_first-incidence", "obj_pen_rubber_red_first"]),
+            Entry("comp", "c.png", labels=["component1"]),
+            Entry("old", "d.png", labels=["component1", "component3"]),
+            Entry("objs", "e.png", labels=["obj_pen_rubber_red_first"]),
+            Entry("merged", "f.png", labels=["obj_pen_rubber_red_first__component2"]),
+            Entry("unk", "g.png", labels=None)]
+
+
+def test_label_state_by_scheme():
+    got = {s: [label_state(e, s) for e in scheme_entries()] for s in ("full", "components", "merged")}
+    assert got["full"] == [UNLABELED, LABELED, OLDER, OLDER, OLDER, OLDER, UNKNOWN]
+    assert got["components"] == [UNLABELED, OLDER, LABELED, OLDER, OLDER, OLDER, UNKNOWN]
+    assert got["merged"] == [UNLABELED, OLDER, LABELED, OLDER, OLDER, LABELED, UNKNOWN]
+
+
+def test_without_a_scheme_any_label_still_counts_as_labeled():
+    assert [label_state(e) for e in scheme_entries()][:2] == [UNLABELED, LABELED] and label_state(scheme_entries()[4]) == LABELED
+
+
+def test_unlabeled_only_with_a_scheme_keeps_older_and_unknown_and_drops_current():
+    assert keys(filter_entries(scheme_entries(), only_unlabeled=True, scheme="components")) == [
+        "none", "las", "old", "objs", "merged", "unk"]
+    assert keys(filter_entries(scheme_entries(), only_unlabeled=True, scheme="merged")) == ["none", "las", "old", "objs", "unk"]
+    assert len(filter_entries(scheme_entries(), scheme="merged")) == 7  # "All images" shows everything

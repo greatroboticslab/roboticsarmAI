@@ -62,13 +62,32 @@ def validate_settings(settings: dict[str, Any]) -> None:
         raise SettingsError(f"labeling.table_rule must be one of {RULES}")
     if settings["labeling"].get("scheme", "full") not in ("full", "components", "merged"):
         raise SettingsError("labeling.scheme must be 'full', 'components' or 'merged'")
+    if settings["labeling"].get("taxonomy_match", "object") not in ("off", "object", "all"):
+        raise SettingsError("labeling.taxonomy_match must be 'off', 'object' or 'all'")
     fraction = settings["labeling"].get("laser_box_object_fraction", 0.0)
     if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 <= fraction <= 0.5:
         raise SettingsError("labeling.laser_box_object_fraction must be a number from 0 to 0.5")
+    cap = settings["provider"].get("reply_limit", 0)
+    if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not 0 <= cap <= 32768:
+        raise SettingsError("provider.reply_limit must be a number of tokens from 0 to 32768 (0 = no limit)")
+    timeout = settings["provider"].get("timeout_s", 300)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 <= timeout <= 3600:
+        raise SettingsError("provider.timeout_s must be a number of seconds from 0 to 3600")
+    for key, low, high in (("max_candidates", 1, 12), ("crop_px", 64, 1024)):
+        value = settings["run"].get(key, low)
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise SettingsError(f"run.{key} must be a whole number from {low} to {high}")
     if settings["provider"]["run_mode"] not in ("pipeline", "agent"):
         raise SettingsError("provider.run_mode must be 'pipeline' or 'agent'")
     if settings["provider"]["provider"] not in ("openai_compat", "gemini", "anthropic"):
         raise SettingsError("provider.provider must be openai_compat, gemini or anthropic")
+    profiles = settings["provider"].get("profiles", {})
+    if not isinstance(profiles, dict):
+        raise SettingsError("provider.profiles must be a mapping of provider name to its saved model and prices")
+    for name, profile in profiles.items():
+        if name not in ("openai_compat", "gemini", "anthropic") or not isinstance(profile, dict) \
+                or not isinstance(profile.get("model", ""), str):
+            raise SettingsError(f"provider.profiles.{name}: expected a provider name with a 'model' text and optional prices")
     if settings["provider"]["daily_cost_cap_usd"] < 0:
         raise SettingsError("provider.daily_cost_cap_usd cannot be negative")
 

@@ -107,7 +107,20 @@ def test_provider_error_gives_failed_status(image, settings, tmp_path):
     assert result.status == "failed" and "server down" in result.notes
 
 
+def test_by_default_only_the_object_is_matched(image, settings, tmp_path):
+    result, _ = run(image, settings, tmp_path, [good_reply(material="Unobtainium")])
+    assert result.status != "needs_input" and result.object_boxes[0].material == "unobtainium"  # taken as said, made a token
+    assert not any("taxonomy" in q.text for q in result.questions)
+
+
+def test_an_object_off_the_list_still_asks_by_default(image, settings, tmp_path):
+    result, _ = run(image, settings, tmp_path, [good_reply(general_object="Spaceship")])
+    question = next(q for q in result.questions if "spaceship" in q.text)
+    assert question.allow_taxonomy_add and result.object_boxes[0].general_object == "spaceship"
+
+
 def test_value_outside_taxonomy_parks_a_question(image, settings, tmp_path):
+    settings["labeling"]["taxonomy_match"] = "all"
     result, _ = run(image, settings, tmp_path, [good_reply(material="unobtainium")])
     assert result.status == "needs_input"
     question = next(q for q in result.questions if "unobtainium" in q.text)
@@ -234,3 +247,178 @@ def test_spend_cap_stops_the_run(image, settings, tmp_path):
     run(image, settings, tmp_path, [good_reply()], guard=guard)  # 100 tokens = $100 > cap
     with pytest.raises(SpendCapExceeded):
         run(image, settings, tmp_path, [good_reply()], guard=guard)
+
+
+# ---------------- taxonomy match: off, and reusing a listed word
+def test_match_entry_finds_the_listed_word():
+    from core.schema.taxonomy import match_entry
+    objects = ["pen", "cup", "bottle", "box"]
+    assert match_entry("Pen", objects) == "pen" and match_entry("pens", objects) == "pen"
+    assert match_entry("Ballpoint pen", objects) == "pen" and match_entry("tall glass bottles", objects) == "bottle"
+    assert match_entry("boxes", objects) == "box"
+    assert match_entry("pen holder", objects) is None  # the noun is "holder", not pen
+    assert match_entry("", objects) is None and match_entry("spaceship", objects) is None
+
+
+def test_off_adds_a_new_object_without_asking_and_reuses_it_next_time(image, settings, tmp_path):
+    import copy
+    tax, added = copy.deepcopy(TAX), []
+    settings["labeling"]["taxonomy_match"] = "off"
+    kwargs = dict(taxonomy=tax, settings=settings, data_dir=tmp_path / "data", mode="pipeline",
+                  on_taxonomy_add=lambda kind, value: added.append((kind, value)))
+    first = label_image(image, provider=ScriptedProvider([good_reply(general_object="Space Ship", material="Velvet")]),
+                        **kwargs)
+    assert first.status == "pending" and not first.questions
+    assert (first.object_boxes[0].general_object, first.object_boxes[0].material) == ("spaceship", "velvet")
+    assert added == [("object", "spaceship"), ("material", "velvet")] and "spaceship" in tax.objects
+    again = label_image(image, provider=ScriptedProvider([good_reply(general_object="spaceships", material="velvet")]),
+                        **{**kwargs, "image_id": "second"})
+    assert again.object_boxes[0].general_object == "spaceship" and len(added) == 2  # reused, nothing new added
+    assert "added object 'spaceship'" in Path(first.transcript_path).read_text()  # the conversation says what was added
+
+
+def test_a_listed_word_is_reused_in_every_mode_but_all(image, settings, tmp_path):
+    for mode in ("off", "object"):
+        settings["labeling"]["taxonomy_match"] = mode
+        result, _ = run(image, settings, tmp_path / mode, [good_reply(general_object="Ballpoint Pens")])
+        assert result.object_boxes[0].general_object == "pen" and not any("taxonomy" in q.text for q in result.questions)
+
+
+# ---------------- an object box must hold the laser spot that hits it
+def test_an_object_box_that_misses_its_laser_spot_is_replaced_and_flagged(image, settings, tmp_path):
+    far = {**FINAL, "object_boxes": [{**FINAL["object_boxes"][0], "box": [300, 220, 200, 30]}]}  # nowhere near the spot
+    result, _ = run(image, settings, tmp_path, [tool("detect_laser"), text(far)], mode="agent")
+    obj = result.object_boxes[0]
+    laser = result.laser_boxes[0]
+    cx, cy = laser.box[0] + laser.box[2] / 2, laser.box[1] + laser.box[3] / 2
+    assert obj.box[0] <= cx <= obj.box[0] + obj.box[2] and obj.box[1] <= cy <= obj.box[1] + obj.box[3]
+    assert obj.confidence <= 0.3 and "did not contain its laser spot" in obj.notes
+    assert result.status == "needs_input" and any(q.target_id == obj.id for q in result.questions)
+
+
+def test_a_box_holding_its_spot_is_left_alone(image, settings, tmp_path):
+    settings["labeling"]["laser_box_object_fraction"] = 0
+    result, _ = run(image, settings, tmp_path, [tool("detect_laser"), text(FINAL)], mode="agent")
+    assert result.object_boxes[0].box == (100, 80, 80, 60) and "did not contain" not in result.object_boxes[0].notes
+
+
+# ---------------- the model may name a new object
+def test_structured_schema_only_limits_objects_when_everything_is_matched():
+    from core.labeler.schemas import pipeline_schema
+    def surface(strict):
+        schema = pipeline_schema(["c1"], TAX, strict)
+        return schema["properties"]["candidates"]["items"]["properties"]["object"]["anyOf"][1]["properties"]
+    assert "enum" in surface(True)["general_object"] and "enum" in surface(True)["material"]
+    assert surface(False)["general_object"] == {"type": "string"} and surface(False)["material"] == {"type": "string"}
+
+
+def test_the_prompt_lets_the_model_name_a_new_object_unless_everything_is_matched():
+    from core.prompts.manager import build_system_prompt
+    strict = build_system_prompt("pipeline", TAX, taxonomy_match="all").text
+    assert "Naming objects" not in strict
+    for mode, sentence in (("off", "adds a new name to the project's lists by itself"),
+                           ("object", "ask the reviewer to confirm a new name")):
+        text_ = build_system_prompt("pipeline", TAX, taxonomy_match=mode).text
+        assert "Naming objects" in text_ and sentence in text_ and "do not ask a question just because" in text_
+
+
+def test_structured_run_sends_a_free_text_schema_when_not_matching_everything(image, settings, tmp_path):
+    settings["provider"]["structured_output"] = True
+    _, provider = run(image, settings, tmp_path, [good_reply(general_object="spaceship")])
+    schema = provider.schemas[0]
+    assert schema is not None
+    assert "enum" not in str(schema["properties"]["candidates"]["items"]["properties"]["object"]["anyOf"][1]["properties"]["general_object"])
+
+
+def test_off_mode_does_not_add_unknown_as_an_object_but_asks(image, settings, tmp_path):
+    import copy
+    tax, added = copy.deepcopy(TAX), []
+    settings["labeling"]["taxonomy_match"] = "off"
+    result = label_image(image, provider=ScriptedProvider([good_reply(general_object="unknown")]), taxonomy=tax,
+                         settings=settings, data_dir=tmp_path / "data", mode="pipeline",
+                         on_taxonomy_add=lambda k, v: added.append((k, v)))
+    assert "unknown" not in tax.objects and ("object", "unknown") not in added
+    assert result.status == "needs_input" and any("could not tell what this object is" in q.text for q in result.questions)
+
+
+# ---------------- a reply cut off by the token limit is reported as that, not repaired
+def test_a_truncated_reply_stops_with_a_clear_message_and_is_not_repaired(image, settings, tmp_path):
+    from core.providers.base import ProviderReply, Usage
+    cut = ProviderReply(text='{"status": "ok", "candidates": [{"id": "c1", "is_la', stop_reason="length",
+                        usage=Usage(3500, 596))
+    result, provider = run(image, settings, tmp_path, [cut, good_reply()])
+    assert result.status == "failed"
+    assert "ran out of tokens" in result.notes and "cut off after 596 tokens" in result.notes and "3500" in result.notes
+    assert "Together that is 4096 tokens" in result.notes  # the sum is spelled out so the window size is obvious
+    assert len(provider.calls) == 1  # no repair request that would only make the context longer
+
+
+# ---------------- the request shrinks itself to fit a small context window
+def _window_fake(limit_images_px, replies_ok, calls):
+    """Provider that refuses (like Ollama) any request whose images are too many or too big."""
+    from core.providers.base import ContextTooLong
+    import io
+    from PIL import Image as PILImage
+
+    def make(messages):
+        user = next(m for m in messages if m.role == "user")
+        sizes = [max(PILImage.open(io.BytesIO(i.data)).size) for i in user.images]
+        calls.append(sizes)
+        tokens = 2000 + sum((s // 16) ** 2 for s in sizes)
+        if tokens > limit_images_px:
+            raise ContextTooLong(f"request ({tokens} tokens) exceeds the available context size ({limit_images_px} tokens)",
+                                 tokens, limit_images_px)
+        return replies_ok
+    return make
+
+
+def test_context_error_is_parsed_with_its_numbers():
+    from core.providers.openai_compat import _context_error
+    e = _context_error("BadRequestError: Error code: 400 - request (4948 tokens) exceeds the available context size "
+                       "(4096 tokens), try increasing it", 400)
+    assert (e.request_tokens, e.window) == (4948, 4096)
+    e = _context_error("This model's maximum context length is 4096 tokens. However, your messages resulted in 5100 tokens.", 400)
+    assert (e.request_tokens, e.window) == (5100, 4096)
+    assert _context_error("something else", 400) is None
+
+
+def test_shrink_steps_stop_at_a_floor():
+    from core.labeler.fit import RequestSize, shrink
+    size, steps = RequestSize(1024, 6, 384), 0
+    while (nxt := shrink(size)) is not None:
+        assert nxt != size and nxt.max_image_px <= size.max_image_px and nxt.crop_px <= size.crop_px
+        size, steps = nxt, steps + 1
+    assert size == RequestSize(384, 1, 128) and 2 <= steps <= 10
+
+
+def test_an_oversized_request_is_retried_smaller_and_remembered(image, settings, tmp_path):
+    from core.labeler.fit import FitMemory
+    calls, fit = [], FitMemory()
+    settings["labeling"]["laser_box_object_fraction"] = 0
+    ok = good_reply()
+    provider = ScriptedProvider([_window_fake(2600, ok, calls)] * 8)
+    result, _ = label_image_unsaved_for_test(image, settings, tmp_path, provider, fit)
+    assert result.status != "failed" and len(calls) >= 2 and calls[-1] != calls[0]
+    assert "did not fit the model's context window" in result.notes and "shrunk to" in result.notes
+    assert fit.size is not None and fit.size.max_image_px <= 1024
+    before = len(calls)
+    second, _ = label_image_unsaved_for_test(image, settings, tmp_path / "again", provider, fit)
+    assert second.status != "failed" and len(calls) == before + 1  # the second image went straight in at the size that fitted
+
+
+def test_auto_fit_can_be_turned_off_and_a_floor_still_fails_clearly(image, settings, tmp_path):
+    settings["run"]["auto_fit_context"] = False
+    calls = []
+    result, _ = label_image_unsaved_for_test(image, settings, tmp_path,
+                                             ScriptedProvider([_window_fake(100, good_reply(), calls)] * 4), None)
+    assert result.status == "failed" and len(calls) == 1 and "context size" in result.notes
+    settings["run"]["auto_fit_context"] = True
+    calls.clear()
+    result, _ = label_image_unsaved_for_test(image, settings, tmp_path / "b",
+                                             ScriptedProvider([_window_fake(100, good_reply(), calls)] * 12), None)
+    assert result.status == "failed" and 2 <= len(calls) <= 8  # it tried smaller sizes, then gave up
+
+
+def label_image_unsaved_for_test(image, settings, tmp_path, provider, fit):
+    from core.labeler.label_image import label_image_unsaved
+    return label_image_unsaved(image, provider=provider, taxonomy=TAX, settings=settings, mode="pipeline", fit=fit)

@@ -84,6 +84,13 @@ class AuthError(ProviderError):
     """Bad or missing key. Not retried."""
 
 
+class ContextTooLong(ProviderError):
+    """The request does not fit the model's context window. Retrying the same request cannot work."""
+    def __init__(self, message: str, request_tokens: int | None = None, window: int | None = None) -> None:
+        super().__init__(message)
+        self.request_tokens, self.window = request_tokens, window
+
+
 class RateLimitError(ProviderError):
     def __init__(self, message: str, retry_after: float | None = None) -> None:
         super().__init__(message)

@@ -188,3 +188,86 @@ def test_requeue_specific_image(cli, folder):
     cli("run")
     assert "re-queued 1" in cli("requeue", "a")[1]
     assert Path(folder / "a.png").is_file()  # re-labeling never touches the original image
+
+
+# ---------------- queue clear
+def _queued(tmp_path, n=3):
+    database = QueueDB(tmp_path / "data" / "queue.db")
+    database.add_images([NewImage(f"i{k}", f"i{k}.png", f"/x/i{k}.png") for k in range(n)])
+    database.close()
+
+
+def test_cli_clear_needs_yes_when_nobody_can_answer(tmp_path, monkeypatch, capsys):
+    _queued(tmp_path)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: False})())
+    assert main(["queue", "--data-dir", str(tmp_path / "data"), "clear"]) == 1
+    assert "--yes" in capsys.readouterr().err
+    assert QueueDB(tmp_path / "data" / "queue.db").counts()["queued"] == 3
+
+
+def test_cli_clear_removes_what_was_asked(tmp_path, capsys):
+    _queued(tmp_path)
+    assert main(["queue", "--data-dir", str(tmp_path / "data"), "clear", "--yes", "--status", "queued"]) == 0
+    assert "removed 3" in capsys.readouterr().out
+    assert main(["queue", "--data-dir", str(tmp_path / "data"), "clear", "--yes"]) == 0
+    assert "nothing to remove" in capsys.readouterr().out
+    assert main(["queue", "--data-dir", str(tmp_path / "data"), "clear", "--yes", "--status", "bogus"]) == 1
+
+
+# ---------------- waiting out a provider limit on the command line
+def _limit_reply(retry_after=None):
+    from core.providers.base import RateLimitError
+
+    def reply(messages):
+        raise RateLimitError("429 quota exceeded", retry_after)
+    return reply
+
+
+def test_wait_on_limit_sleeps_then_carries_on(cli, folder, monkeypatch):
+    slept = []
+    monkeypatch.setattr(cmd_queue.time, "sleep", lambda s: slept.append(s))
+    cli("add", str(folder))
+    cli.replies += [_limit_reply(), cli.good(), cli.good()]
+    code, out = cli("run", "--wait-on-limit")
+    assert code == 0 and "labeled 2" in out and "Waiting 1 min" in out
+    assert slept == [60.0]
+
+
+def test_wait_on_limit_gives_up_after_many_hits(cli, folder, monkeypatch):
+    monkeypatch.setattr(cmd_queue.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cmd_queue, "MAX_AUTO_RETRIES", 2)
+    cli("add", str(folder))
+    cli.replies += [_limit_reply() for _ in range(6)]
+    code, out = cli("run", "--wait-on-limit")
+    assert code == 3 and "still there after 2 tries" in out and cli("status")[1].split("queued")[1].split()[0] == "2"
+
+
+def test_without_wait_on_limit_a_non_interactive_run_stops(cli, folder, monkeypatch):
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: False})())
+    cli("add", str(folder))
+    cli.replies += [_limit_reply(), cli.good()]
+    code, out = cli("run")
+    assert code == 3 and "rate limit" in out
+
+
+# ---------------- add-roboflow --unlabeled follows the current labeling scheme
+def test_add_roboflow_unlabeled_uses_the_current_scheme_and_notes_older_labels(cli, tmp_path, monkeypatch):
+    seen = {}
+    images = [RemoteImage("old1", "old1.jpg", labels=["component1", "component3"]), RemoteImage("new1", "new1.jpg", labels=[])]
+
+    def fake_list(ws, proj, key, **kw):
+        seen.update(kw)
+        return iter(images)
+
+    def fake_download(img, folder, key):
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{img.id}.jpg"
+        path.write_bytes(b"x")
+        return path
+
+    monkeypatch.setattr(cmd_queue, "list_images", fake_list)
+    monkeypatch.setattr(cmd_queue, "download_image", fake_download)
+    code, out = cli("add-roboflow", "--workspace", "ws", "--project", "pr", "--unlabeled")
+    assert code == 0 and "added 2" in out
+    assert seen["only_unlabeled"] is True and seen["scheme"] == "full"
+    assert "1 added image(s) already have labels in an older style" in out and "--overwrite" in out

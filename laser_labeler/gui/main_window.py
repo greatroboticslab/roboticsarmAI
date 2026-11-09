@@ -130,6 +130,10 @@ class MainWindow(QMainWindow):
             self.spend_label.setText(f"status unavailable: {exc}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        for i in range(self.tabs.count()):
+            stop = getattr(self.tabs.widget(i), "shutdown", None)
+            if callable(stop):
+                stop()  # a labeling run (or its wait for a provider limit) must end before the queue closes
         if self.ctx is not None:
             self.ctx.close()
         super().closeEvent(event)

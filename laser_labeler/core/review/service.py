@@ -12,6 +12,7 @@ from typing import Iterable
 
 from core.camera import load_image
 from core.labeler.context import build_context
+from core.labeler.components import SCHEMES, component_for_kind
 from core.labeler.finalize import _measure_lasers
 from core.labeler.transcript import append_event
 from core.models import INCIDENCES, LASER_KINDS, ImageLabelSet, LaserBox, ObjectBox
@@ -146,8 +147,44 @@ class ReviewService:
         if row.status == "needs_input":
             raise ReviewError("This image still has questions. Answer them first, or reject it.")
         ls = self.load(image_id)
+        self._add_new_words(ls)
         self._persist(row, ls, "approved")
         return self._try_pdf(image_id)
+
+    def clear_taxonomy_questions(self) -> tuple[int, list[str]]:
+        """Images stuck on "X is not in taxonomy" questions: add each named object and material to the lists and mark
+        those questions answered. A question about an object the model could not name ("unknown") stays open, and an
+        image with no questions left goes back to `pending`. Returns (images freed, words added)."""
+        from core.labeler.finalize import NOT_A_NAME
+        freed, added = 0, []
+        for row in self.db.list(["needs_input"]):
+            if not (row.sidecar_path and Path(row.sidecar_path).is_file()):
+                continue
+            ls = self.load(row.image_id)
+            changed = False
+            for q in ls.questions:
+                if q.answer is not None or not q.id.startswith("qt_"):
+                    continue
+                obj = next((o for o in ls.object_boxes if o.id == q.target_id), None)
+                if obj is None or obj.general_object in NOT_A_NAME:
+                    continue
+                for kind, value, known in (("object", obj.general_object, self.taxonomy().objects),
+                                           ("material", obj.material, self.taxonomy().materials)):
+                    if value and value not in known and value not in NOT_A_NAME:
+                        try:
+                            add_entry(self.taxonomy_dir, kind, value)
+                            added.append(f"{kind} {value}")
+                        except (TaxonomyError, ClassNameError):
+                            pass
+                q.answer = "added to taxonomy"
+                changed = True
+            if changed:
+                status = "needs_input" if any(q.answer is None for q in ls.questions) else "pending"
+                self._persist(row, ls, status)
+                freed += status == "pending"
+                if row.transcript_path and Path(row.transcript_path).is_file():
+                    append_event(row.transcript_path, "answer", "taxonomy questions cleared: new words added to the lists")
+        return freed, added
 
     def reject(self, image_id: str) -> None:
         row = self.row(image_id)
@@ -238,21 +275,44 @@ class ReviewService:
                  "general_object": tax.objects}[field]
         if value in known:
             return []
-        if not add:
-            return [f"{field.replace('_', ' ')} '{value}' is not in your taxonomy lists."]
-        try:
-            add_entry(self.taxonomy_dir, TAXONOMY_KIND[field], value)
-        except (TaxonomyError, ClassNameError) as exc:
-            raise ReviewError(str(exc)) from None
-        return []
+        if add:  # the reviewer ticked "add to taxonomy": always honoured
+            try:
+                add_entry(self.taxonomy_dir, TAXONOMY_KIND[field], value)
+            except (TaxonomyError, ClassNameError) as exc:
+                raise ReviewError(str(exc)) from None
+            return []
+        if self._match_mode() == "off" or (field != "general_object" and self._only_object()):
+            return []  # not matched to the lists (off: a new word is added when the label is approved)
+        return [f"{field.replace('_', ' ')} '{value}' is not in your taxonomy lists."]
+
+    def _match_mode(self) -> str:
+        return self.settings["labeling"].get("taxonomy_match", "object")
+
+    def _only_object(self) -> bool:
+        return self._match_mode() != "all"
+
+    def _add_new_words(self, ls: ImageLabelSet) -> None:
+        """Taxonomy match off: a new object or material on an approved label goes onto the lists."""
+        if self._match_mode() != "off":
+            return
+        tax = self.taxonomy()
+        for o in ls.object_boxes:
+            for kind, value, known in (("object", o.general_object, tax.objects), ("material", o.material, tax.materials)):
+                if value and value not in known:
+                    try:
+                        tax = add_entry(self.taxonomy_dir, kind, value)
+                    except (TaxonomyError, ClassNameError):
+                        pass
 
     def taxonomy_problems(self, ls: ImageLabelSet) -> list[str]:
         """Values on this label set that are not in the taxonomy lists (soft problems; approval still works)."""
         tax = self.taxonomy()
         out = []
+        if self._match_mode() == "off":
+            return out
         for o in ls.object_boxes:
-            out += [f"{o.id}: {p}" for p in tax.check_object(o.general_object, o.material,
-                                                              o.color, o.incidence, self.placeholder)]
+            out += [f"{o.id}: {p}" for p in tax.check_object(o.general_object, o.material, o.color, o.incidence,
+                                                              self.placeholder, only_object=self._only_object())]
         return out
 
     def add_to_taxonomy(self, kind: str, value: str) -> Taxonomy:
@@ -307,6 +367,10 @@ class ReviewService:
                 sets.append(self.load(row.image_id))
         return sets
 
+    def local_image_ids(self) -> list[str]:
+        """Approved images that came from a local file: they have no Roboflow image id to send labels to."""
+        return [r.image_id for r in self.db.list(["approved", "edited"]) if r.source != "roboflow"]
+
     def mark_uploaded(self, image_ids: Iterable[str]) -> int:
         count = 0
         for image_id in image_ids:
@@ -353,9 +417,8 @@ def measure_boxes(ls: ImageLabelSet, image_path: str | Path, settings: dict, onl
     taxonomy_stub = Taxonomy()
     ctx = build_context(image, taxonomy_stub, max_image_px=settings["provider"]["max_image_px"],
                         color_placeholder=settings["labeling"]["color_placeholder"])
-    # Halo and beam parts are not spots: their numbers are kept as they are.
     raw = [{"id": b.id, "kind": b.kind, "box": b.box, "order": b.order, "from_id": b.from_id, "notes": b.notes}
-           for b in ls.laser_boxes if not b.is_part]
+           for b in ls.laser_boxes]
     wanted = set(only_ids) if only_ids is not None else None
     for fresh in _measure_lasers(ctx, raw):
         target = next(b for b in ls.laser_boxes if b.id == fresh.id)
@@ -367,31 +430,41 @@ def measure_boxes(ls: ImageLabelSet, image_path: str | Path, settings: dict, onl
 
 def add_laser_box(ls: ImageLabelSet, image_path: str | Path, settings: dict, box, kind: str = "first_incidence",
                   component: str | None = None) -> LaserBox:
-    """A reviewer-drawn laser box. With the components scheme it is a core (component1) unless another part is asked for."""
+    """A reviewer-drawn laser box. With the components or merged scheme its class follows its event:
+    a direct hit (first_incidence) is component1, any bounce is component2."""
     if kind not in LASER_KINDS:
         raise ReviewError(f"Laser event must be one of: {', '.join(LASER_KINDS)}.")
     if component is not None and component not in COMPONENT_NAMES:
         raise ReviewError(f"Component must be one of: {', '.join(COMPONENT_NAMES)}.")
     if component is None and settings["labeling"].get("scheme", "full") in ("components", "merged"):
-        component = "component1"
+        component = component_for_kind(kind)
     width, height = ls.image_width or 10**6, ls.image_height or 10**6
-    cores = sorted((b for b in ls.laser_boxes if not b.is_part), key=lambda b: b.order)
-    part = component in ("component2", "component3")
-    # a part belongs to the core nearest to it; a core continues the beam path
-    parent = None
-    if part and cores:
-        cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
-        parent = min(cores, key=lambda c: (c.box[0] + c.box[2] / 2 - cx) ** 2 + (c.box[1] + c.box[3] / 2 - cy) ** 2)
+    previous = max(ls.laser_boxes, key=lambda b: b.order, default=None)
     new = LaserBox(next_id("l", (b.id for b in ls.laser_boxes)), kind, clamp_box(box, width, height),  # type: ignore[arg-type]
-                   parent.order if parent else ((cores[-1].order + 1) if cores else 0),
-                   parent.id if parent else (cores[-1].id if cores and kind != "first_incidence" else None),
+                   previous.order + 1 if previous else 0,
+                   previous.id if previous and kind != "first_incidence" else None,
                    component=component)
-    if part and parent is None:
-        raise ReviewError("Draw a core (component1) first: a halo or beam belongs to a laser spot.")
     ls.laser_boxes.append(new)
-    if not part:
-        measure_boxes(ls, image_path, settings, [new.id])
+    measure_boxes(ls, image_path, settings, [new.id])
+    # it hits the smallest object box its centre is inside; under "merged" that is what puts the object in its label
+    cx, cy = new.box[0] + new.box[2] / 2, new.box[1] + new.box[3] / 2
+    inside = [o for o in ls.object_boxes if o.box[0] <= cx <= o.box[0] + o.box[2] and o.box[1] <= cy <= o.box[1] + o.box[3]]
+    if inside:
+        min(inside, key=lambda o: o.box[2] * o.box[3]).laser_ids.append(new.id)
     return new
+
+
+def apply_scheme(ls: ImageLabelSet, scheme: str) -> bool:
+    """Switch an already labeled image to `scheme` without calling the model. Returns True if anything changed.
+
+    Spots get component1 / component2 from their event under components and merged, and lose it under full."""
+    if scheme not in SCHEMES:
+        raise ReviewError(f"Label scheme must be one of: {', '.join(SCHEMES)}.")
+    before = (ls.scheme, [b.component for b in ls.laser_boxes])
+    ls.scheme = scheme
+    for b in ls.laser_boxes:
+        b.component = component_for_kind(b.kind) if scheme in ("components", "merged") else None
+    return before != (ls.scheme, [b.component for b in ls.laser_boxes])
 
 
 def add_laser_at_point(ls: ImageLabelSet, image_path: str | Path, settings: dict, x: float, y: float) -> LaserBox:
@@ -432,8 +505,6 @@ def add_object_box(ls: ImageLabelSet, image_path: str | Path, taxonomy: Taxonomy
 
 
 def delete_box(ls: ImageLabelSet, box_id: str) -> None:
-    # the halo and beam of a deleted spot go with it
-    ls.laser_boxes = [b for b in ls.laser_boxes if not (b.is_part and b.from_id == box_id)]
     ls.object_boxes = [o for o in ls.object_boxes if o.id != box_id]
     ls.laser_boxes = [b for b in ls.laser_boxes if b.id != box_id]
     for o in ls.object_boxes:

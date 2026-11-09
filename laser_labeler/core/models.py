@@ -36,8 +36,8 @@ class LaserBox:
     from_id: str | None = None  # previous laser box in the path
     metrics: dict[str, float] = field(default_factory=dict)  # section 4, raw and normalized
     notes: str = ""
-    # Label scheme "components": which part of a laser spot this box is (component1 = core, component2 = halo,
-    # component3 = beam). When set, it is the Roboflow class; `kind` stays as information about the event.
+    # Label schemes "components" and "merged": component1 = direct hit, component2 = bounce. When set it is the
+    # Roboflow class; `kind` stays as information about the event.
     component: str | None = None
 
     def __post_init__(self) -> None:
@@ -53,11 +53,6 @@ class LaserBox:
     def event_name(self) -> str:
         """Class-name form of the kind, e.g. first_incidence -> first-incidence."""
         return self.kind.replace("_", "-")
-
-    @property
-    def is_part(self) -> bool:
-        """A halo or beam box: it belongs to the core box named by from_id and is not measured as a spot."""
-        return self.component in ("component2", "component3")
 
     @property
     def class_name(self) -> str:
@@ -134,15 +129,22 @@ class ImageLabelSet:
     run_mode: str = ""  # "pipeline" or "agent": the mode that produced this set
     notes: str = ""
     scheme: str = "full"  # label scheme it was made with: full | components | merged
+    scheme_version: int = 2  # 1 = components were core/halo/beam parts (migrated on load), 2 = direct hit / bounce
 
     def __post_init__(self) -> None:
         if self.status not in STATUSES:
             raise ValueError(f"unknown status {self.status!r}")
 
     def object_for_laser(self, laser: "LaserBox") -> "ObjectBox | None":
-        """The object box a laser spot (or a part of it) lands on, if any."""
-        core = laser.from_id if laser.is_part else laser.id
-        return next((o for o in self.object_boxes if laser.id in o.laser_ids or core in o.laser_ids), None)
+        """The object box a laser spot lands on: the one that lists it, else the one its centre is inside (the
+        smallest), so a spot nobody linked still gets its object in a merged name."""
+        linked = next((o for o in self.object_boxes if laser.id in o.laser_ids), None)
+        if linked is not None:
+            return linked
+        cx, cy = laser.box[0] + laser.box[2] / 2, laser.box[1] + laser.box[3] / 2
+        inside = [o for o in self.object_boxes
+                  if o.box[0] <= cx <= o.box[0] + o.box[2] and o.box[1] <= cy <= o.box[1] + o.box[3]]
+        return min(inside, key=lambda o: o.box[2] * o.box[3]) if inside else None
 
     def laser_class_name(self, laser: "LaserBox", color_placeholder: str = "na") -> str:
         """The Roboflow class of a laser box. Under the "merged" scheme a part that lands on an object is named
@@ -170,6 +172,9 @@ class ImageLabelSet:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ImageLabelSet":
         data = dict(data)
+        if "scheme_version" not in data:
+            _migrate_parts(data)
+            data["scheme_version"] = 2
         data["laser_boxes"] = [LaserBox.from_dict(d) for d in data.get("laser_boxes", [])]
         data["object_boxes"] = [ObjectBox.from_dict(d) for d in data.get("object_boxes", [])]
         data["questions"] = [Question.from_dict(d) for d in data.get("questions", [])]
@@ -178,3 +183,26 @@ class ImageLabelSet:
     @classmethod
     def from_json(cls, text: str) -> "ImageLabelSet":
         return cls.from_dict(json.loads(text))
+
+
+def _migrate_parts(data: dict[str, Any]) -> None:
+    """Old components/merged sidecars had halo (component2) and beam (component3) boxes next to each core.
+
+    Works on the raw dict, because component3 is no longer a valid class. The halo and beam boxes are dropped,
+    questions about them move to the core they belonged to, and every remaining spot gets direct hit / bounce
+    from its kind.
+    """
+    if data.get("scheme") not in ("components", "merged"):
+        return
+    lasers = [dict(d) for d in data.get("laser_boxes", [])]
+    parts = {d["id"]: d for d in lasers if d.get("component") in ("component2", "component3") and d.get("from_id")}
+    for d in lasers:
+        if d.get("component") is not None:
+            direct = str(d.get("kind", "")).replace("-", "_") == "first_incidence"
+            d["component"] = "component1" if direct else "component2"
+    data["laser_boxes"] = [d for d in lasers if d["id"] not in parts]
+    if parts:
+        data["object_boxes"] = [{**o, "laser_ids": [i for i in o.get("laser_ids", []) if i not in parts]}
+                                for o in data.get("object_boxes", [])]
+        data["questions"] = [{**q, "target_id": parts[q["target_id"]]["from_id"]} if q.get("target_id") in parts else q
+                             for q in data.get("questions", [])]

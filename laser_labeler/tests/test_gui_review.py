@@ -42,7 +42,7 @@ def good(**changes):
 
 def label(ctx, tmp_path, names, replies):
     paths = make_images(tmp_path / "pics", names)
-    ctx.db.add_images([NewImage(p.stem, p.name, str(p)) for p in paths])
+    ctx.db.add_images([NewImage(p.stem, p.name, str(p), "roboflow") for p in paths])  # as if downloaded from Roboflow
     provider = ScriptedProvider(replies)
     settings, tax = ctx.settings(), ctx.service().taxonomy()
     run_queue(ctx.db, lambda row: label_image(row.path, provider=provider, taxonomy=tax, settings=settings,
@@ -137,6 +137,7 @@ def test_reject_and_undo(ctx, tab):
 
 
 def test_approve_with_unknown_taxonomy_value_asks_first(ctx, tab):
+    ctx.update_settings(lambda s: s["labeling"].update(taxonomy_match="all"))
     tab.select_image("a")
     pick_box(tab, "o")
     tab.editor.material.setCurrentText("unobtainium")
@@ -146,6 +147,15 @@ def test_approve_with_unknown_taxonomy_value_asks_first(ctx, tab):
     assert not tab.approve()
     assert asked and ctx.db.get("a").status == "edited"  # the edit was applied; the approval was declined
     tab.confirm_taxonomy = lambda problems: True
+    assert tab.approve() and ctx.db.get("a").status == "approved"
+
+
+def test_by_default_only_the_object_is_matched_to_the_taxonomy(ctx, tab):
+    tab.select_image("a")
+    pick_box(tab, "o")
+    tab.editor.material.setCurrentText("unobtainium")
+    assert tab.dirty and tab.problems.text() == ""  # a material off the list is not a problem any more
+    tab.confirm_taxonomy = lambda problems: pytest.fail("approval must not ask about a material")
     assert tab.approve() and ctx.db.get("a").status == "approved"
 
 
@@ -343,29 +353,30 @@ def components_tab(app, ctx, tmp_path):
     return tab
 
 
-def test_review_shows_components_and_lets_you_change_one(app, ctx, tmp_path):
+def test_review_shows_components_and_the_event_decides_them(app, ctx, tmp_path):
     tab = components_tab(app, ctx, tmp_path)
     tab.select_image("halo")
     labels = [tab.boxes.item(i).text() for i in range(tab.boxes.count())]
-    assert any("component1" in t for t in labels) and any("component2" in t for t in labels)
-    halo = pick_box(tab, "l1h")
-    assert tab.editor.component.currentData() == "component2" and "Part of l1" in tab.editor.info.text()
-    assert tab.editor.metrics.rowCount() > 0
-    tab.editor.component.setCurrentIndex(tab.editor.component.findData("component3"))
+    assert any("component1" in t for t in labels) and not any("component3" in t for t in labels)
+    spot_id = pick_box(tab, "l1")
+    assert tab.editor.component.currentData() == "component1"
+    assert tab.editor.component.count() == 3  # not set, component1, component2
+    tab.editor.kind.setCurrentText("reflection")  # a bounce, so the class follows
+    assert tab.editor.component.currentData() == "component2"
     assert tab.dirty and tab.apply_changes()
     saved = read_sidecar(ctx.data_dir / "sidecars" / "halo.json")
-    assert next(b for b in saved.laser_boxes if b.id == halo).component == "component3"
+    box = next(b for b in saved.laser_boxes if b.id == spot_id)
+    assert box.kind == "reflection" and box.component == "component2"
     assert ctx.db.get("halo").status == "edited"
-    assert any("component2 -> component3" in c["text"] for c in
+    assert any("component1 -> component2" in c["text"] for c in
                [json.loads(line) for line in (ctx.data_dir / "corrections.jsonl").read_text().splitlines()])
     tab.close()
 
 
-def test_deleting_the_core_in_review_removes_its_halo(app, ctx, tmp_path):
+def test_deleting_a_spot_in_review_removes_just_that_box(app, ctx, tmp_path):
     tab = components_tab(app, ctx, tmp_path)
     tab.select_image("halo")
-    core = pick_box(tab, "l1")
-    assert core == "l1" or core.startswith("l1")
+    assert [b.component for b in tab.draft.laser_boxes] == ["component1"]  # no halo or beam boxes any more
     tab.canvas.select("l1")
     tab.delete_btn.click()
     assert [b.id for b in tab.draft.laser_boxes] == []
@@ -411,3 +422,74 @@ def test_conversation_is_shown_for_every_kind_of_image(app, ctx, tmp_path):
     shown = tab.viewer.toPlainText()
     assert "DETECTION" in shown and "SYSTEM" in shown and "ASSISTANT" in shown and "RESULT" in shown
     tab.close()
+
+
+# ---------------------------------------------------------------- delete a box, and the merged one-label name
+def test_delete_key_and_box_list_menu_delete_a_box(app, ctx, tmp_path):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    tab = components_tab(app, ctx, tmp_path)
+    tab.select_image("halo")
+    objects = [o.id for o in tab.draft.object_boxes]
+    assert objects and "(Del)" in tab.delete_btn.text()
+    tab.canvas.select(objects[0])
+    QTest.keyClick(tab, Qt.Key.Key_Delete)
+    assert tab.draft.object_boxes == [] and tab.dirty
+    tab.close()
+
+
+def test_merged_boxes_show_one_label_with_object_and_component(app, ctx, tmp_path):
+    from gui.tabs.label_run_tab import boxes_of
+    tab = components_tab(app, ctx, tmp_path)
+    ctx.update_settings(lambda s: s["labeling"].update(scheme="merged"))
+    tab.select_image("halo")
+    tab.draft.scheme = "merged"
+    tab._fill_box_list("")
+    texts = [tab.boxes.item(i).text() for i in range(tab.boxes.count())]
+    laser = next(t for t in texts if t.startswith("laser"))
+    assert laser.startswith("laser l1: obj_pen_") and laser.endswith("__component1")
+    assert any("named inside its laser box's label" in t for t in texts if t.startswith("object"))
+    assert any(s.label.startswith("l1:obj_pen_") for s in boxes_of(tab.draft))
+    tab.close()
+
+
+def test_an_old_image_can_be_switched_to_the_merged_scheme(app, ctx, tmp_path):
+    from gui.tabs.label_run_tab import laser_title
+    tab = components_tab(app, ctx, tmp_path)  # labeled under "components"
+    ctx.update_settings(lambda s: s["labeling"].update(scheme="merged"))
+    tab.select_image("halo")
+    assert tab.draft.scheme == "components" and tab.scheme_btn.isEnabled()
+    assert "merged" in tab.scheme_btn.text()
+    tab.scheme_btn.click()
+    assert tab.draft.scheme == "merged" and tab.dirty and not tab.scheme_btn.isEnabled()
+    box = tab.draft.laser_boxes[0]
+    assert laser_title(tab.draft, box).startswith("obj_pen_") and laser_title(tab.draft, box).endswith("__component1")
+    assert tab.apply_changes()
+    saved = read_sidecar(ctx.data_dir / "sidecars" / "halo.json")
+    assert saved.scheme == "merged" and saved.laser_class_name(saved.laser_boxes[0]).startswith("obj_pen_")
+    tab.close()
+
+
+def test_clear_taxonomy_questions_button(app, ctx, tmp_path):
+    tab = components_tab(app, ctx, tmp_path)
+    assert tab.clear_tax_btn.isEnabled()
+    tab.confirm_clear = lambda count: False
+    assert tab.clear_taxonomy_questions() == (0, [])  # declined: nothing happens
+    tab.confirm_clear = lambda count: True
+    freed, added = tab.clear_taxonomy_questions()
+    assert freed == 0 and added == []  # nothing in this fixture is waiting
+    tab.close()
+
+
+def test_upload_dialog_leaves_local_file_images_out(app, ctx, tab):
+    ctx.update_settings(lambda s: s["roboflow"].update(workspace="ws", project="pr"))
+    ctx.db.add_images([NewImage("fromfile", "fromfile.png", str(next(iter(ctx.data_dir.parent.glob("*.png")), "x")))])
+    tab.threshold.setValue(0.0)
+    tab.bulk_approve()
+    ids = [r.image_id for r in ctx.db.list(["approved", "edited"])]
+    dialog = tab.open_upload()
+    assert dialog is not None
+    text = dialog.text.toPlainText()
+    assert "no image file is uploaded" in text and "updates the labels of the existing Roboflow image" in text
+    assert "fromfile" not in ids or "excluded fromfile" in text
+    dialog.close()

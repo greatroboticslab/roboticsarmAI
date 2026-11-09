@@ -188,3 +188,23 @@ def test_tags_fall_back_to_metadata_route_on_404():
     add_tags("ws", "pj", "img1", ["a"], KEY, opener=op)
     assert urllib.parse.urlparse(op.reqs[1].full_url).path == "/ws/images/img1/metadata"
     assert json.loads(op.reqs[1].data) == {"addTags": ["a"]}
+
+
+# ---------------- labels go to existing images; no image is ever uploaded
+def test_only_annotate_and_tag_routes_are_used_and_never_an_image_upload(tmp_path):
+    rec = Recorder()
+    plan = plan_of(label_set(1), label_set(2), overwrite=True)
+    upload_annotations(plan, KEY, dry_run=False, opener=rec, audit_log=tmp_path / "a.jsonl", sleep=lambda s: None)
+    paths = [urllib.parse.urlparse(r.full_url).path for r in rec.reqs]
+    assert paths and all(("/annotate/img" in p) or p.endswith("/tags") or p.endswith("/metadata") for p in paths)
+    assert not any(p.rstrip("/").endswith("/upload") or "/upload/" in p for p in paths)
+    assert all(r.get_method() == "POST" and b"\xff\xd8" not in (r.data or b"") for r in rec.reqs)  # no jpeg bytes either
+    assert any("overwrite=true" in r.full_url for r in rec.reqs)  # an existing label is replaced in place
+
+
+def test_plan_says_it_updates_existing_images_and_leaves_local_files_out():
+    plan = plan_of(label_set(1), label_set(2), local_ids=["img2"])
+    text = plan.describe()
+    assert "no image file is uploaded" in text and "updates the labels of the existing Roboflow image img1" in text
+    assert [i.image_id for i in plan.items] == ["img1"]
+    assert "local file" in plan.excluded["img2"] and "never uploads image files" in plan.excluded["img2"]
