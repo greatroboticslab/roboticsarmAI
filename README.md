@@ -35,6 +35,8 @@ A Python application that controls a Dobot robotic arm by inputting **Cartesian 
 - Move the robotic arm by specifying X, Y, Z coordinates
 - Visualize coordinates on an XY plot
 - Maintain a FIFO list of coordinates to be executed by the arm
+- **Photo Positions** (Arm tab, right-hand column): save named arm poses to photograph from, then send the arm to one (`Go To` / `Go + Snap`) or run a **Photo Tour** that visits every saved position in order and snapshots at each, as fast as the arm and cameras allow
+- Delete queued points quickly: `Delete Selected` (multi-select, or the Delete key), `Clear Queue`, or `Remove First Point`
 
 ## Setup and Installation
 This installs the **arm app** (`main.py`). Training dependencies are separate - see [Training the detectors](#training-the-detectors-yolo-vs-rf-detr-transformer).
@@ -71,6 +73,28 @@ When you start the application with `python main.py`, the GUI window will open a
 - **Editing / Removing points**: Use the list controls to remove or reorder entries before sending. If the GUI supports it, select a point and delete or edit the values.
 - **Sending to the arm**: There is a control/button to send the queued coordinate list to the robotic arm. Press it to begin execution. Monitor the GUI for status updates or errors.
 - **Start / Stop / Pause**: Use the provided start/stop/pause controls to control execution. If your GUI does not have pause, stop will typically abort execution and clear or retain the queue depending on settings.
+
+### Photo Positions (saved photo poses + Photo Tour)
+Found in the right-hand column of the **Arm** tab, under the point queue.
+
+- **Save Current Pose** stores wherever the arm is right now (live telemetry) under the name in the *Name* box (`pos_1`, `pos_2`, ... if left blank).
+- **Add Manually...** opens a dialog to type a position in, either as joints (J1 / J2 / Z / J4) or as robot X / Y / Z / J4 (the same X/Y as the live readout; solved with the same inverse kinematics as the point queue). *Fill from Current Pose* prefills the boxes.
+- Positions are stored as joint values, so one saved from the live pose replays exactly. They are written to `vision/services/photo_positions.json` (survives restarts) and shown on the plot as numbered orange triangles.
+- **Delete Selected** / **Clear All** remove positions immediately (Clear All asks first).
+- **Toggle in Tour** (also double-click or Space on a row) switches the highlighted positions in or out of the Photo Tour without deleting them; **All On** / **All Off** do the whole list. Rows show `[x]` (in tour) or `[ ]` (skipped) and switched-off positions are hollow grey on the plot. Go To / Go + Snap still work on a switched-off position. The setting is saved with the position.
+- **Go To** moves to the highlighted position; **Go + Snap** moves there and takes a photo.
+- **Photo Tour (all)** moves to every saved position in order and takes a snapshot from every enabled camera at each. The next move starts as soon as the frames are grabbed; writing the JPEGs and logging to the database happens in the background. `settle (s)` is the pause after arrival before the shutter (default 0.3). **Stop** ends the tour after the current position.
+- Tour photos are named `<position>_<tour timestamp>`, use category `photo_position`, are stamped with the arm pose at the moment of capture, and carry attributes `capture_kind=photo_position`, `photo_position`, `tour` and `joints`. They are saved locally and logged to the database but are *not* uploaded to the server.
+- The three kinds of capture are kept apart (filter by Category on the Database tab, or look at the image folder name):
+
+  | Kind | Image folder | Category |
+  |---|---|---|
+  | Normal snapshot (Camera tab / Data Collection) | `<date>_<time>_<id>` | the label you give it |
+  | Photo Position / Photo Tour | `photo_position_<name>_<date>_<time>_<id>` | `photo_position` |
+  | In-motion auto-capture ("Auto-capture on arm movement") | `robot_arm_moving_...` / `manual_jog_moving_...` | `auto_capture` |
+  | | | |
+  The tour never triggers the in-motion auto-capture; it takes its own deliberate photo at each stop.
+- The height floor (hard deck) is enforced: a position below it is skipped (the rest of the tour carries on). Tours run on the machine the arm is plugged into, not in Remote Control mode.
 
 ### Coordinate format
 - Coordinates are Cartesian triples: `X, Y, Z` (units depend on your arm configuration, commonly millimeters).

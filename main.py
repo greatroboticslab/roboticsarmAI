@@ -652,7 +652,7 @@ def trigger_arm_move_autocapture(reason: str = "") -> None:
     root.after(1000, lambda: capture_movement_snapshot(sample_id, "robot_arm_moving"))
 
 
-def _dispatch_joint_move(joints: list, reason: str = "arm move"):
+def _dispatch_joint_move(joints: list, reason: str = "arm move", autocapture: bool = True):
     """Single choke point for every DIRECT robot.movement.joint_to_joint_move()
     call in this file (the rotation sequences, the pickup+photograph
     pipeline, remote MQTT moves, and the manual "Move Joints" button —
@@ -661,8 +661,13 @@ def _dispatch_joint_move(joints: list, reason: str = "arm move"):
     "arm moving" auto-capture (see trigger_arm_move_autocapture above)
     right as the move is sent, then issues the move itself — so adding
     any other future cross-cutting move behavior only needs to change
-    this one function instead of every call site individually."""
-    trigger_arm_move_autocapture(reason)
+    this one function instead of every call site individually.
+
+    autocapture=False skips the "arm moving" photos — used by the Photo
+    Positions tour, which takes its own deliberate photo at every stop and
+    shouldn't also get two extra in-motion frames per leg."""
+    if autocapture:
+        trigger_arm_move_autocapture(reason)
     err = robot.movement.joint_to_joint_move(joints)
     if err is None:
         return None
@@ -1640,7 +1645,11 @@ def _on_telemetry_update(data: dict) -> None:
         rot_y = raw_x * np.sin(theta) + raw_y * np.cos(theta)
 
         if live_dot is None:
-            live_dot = ax.scatter(rot_x, rot_y, color='red', s=100, zorder=5, label="Live Robot Pos")
+            # animated=True: see the note in update_gui_from_feedback —
+            # keeps the dot out of the cached background so it can't
+            # leave a ghost at its old position.
+            live_dot = ax.scatter(rot_x, rot_y, color='red', s=100, zorder=5,
+                                  label="Live Robot Pos", animated=True)
             ax.legend()
             canvas.draw()  # establishes the legend; also refreshes _plot_background
         else:
@@ -2024,8 +2033,18 @@ status_label = tk.Label(status_frame, text=status_text, fg=status_color, font=("
 status_label.pack()
 
 tk.Label(frame, text="Valid Points (FIFO)").pack(pady=(10,0))
-points_listbox = tk.Listbox(frame, width=30, height=25)
+# EXTENDED = click / shift-click / ctrl-click to pick several rows, so they
+# can be deleted in one go (see remove_selected_points below).
+points_listbox = tk.Listbox(frame, width=30, height=12, selectmode=tk.EXTENDED,
+                            exportselection=False)
 points_listbox.pack(fill=tk.BOTH, expand=1)
+
+# True only while the arm is physically driving to queue row 0 (from the moment
+# add_dobot_instructions() starts a point until the arm arrives and the point
+# is taken off the queue). That row can't be deleted from under the sender;
+# every other row — including row 0 between points — can (see
+# remove_selected_points / clear_all_points).
+_queue_head_inflight = False
 
 def _renumber_points_listbox():
     """Rewrites the leading "N:" on every queue row so numbering always
@@ -2113,18 +2132,57 @@ def add_manual_point():
     except ValueError:
         messagebox.showerror("Invalid Input", "Please enter valid numeric values for X, Y, Z, and J4")
 
-# Function to remove first valid point (FIFO)
-def remove_first_point():
-    if valid_points:
-        # Remove point from data
-        valid_points.pop(0)
-        # Remove scatter plot
-        scatter = valid_scatters.pop(0)
-        scatter.remove()
-        # Remove from listbox
-        points_listbox.delete(0)
+def _remove_points_at(indices) -> int:
+    """Removes the queue rows at `indices` (data, plot marker and listbox
+    row together) and redraws the plot ONCE, however many were removed.
+    Returns how many were removed. Highest index first so earlier
+    removals don't shift later ones."""
+    removed = 0
+    for i in sorted({i for i in indices if 0 <= i < len(valid_points)}, reverse=True):
+        valid_points.pop(i)
+        scatter = valid_scatters.pop(i)
+        try:
+            scatter.remove()
+        except (ValueError, NotImplementedError):
+            pass  # already gone from the axes
+        points_listbox.delete(i)
+        removed += 1
+    if removed:
         _renumber_points_listbox()
-        canvas.draw()
+        canvas.draw_idle()   # coalesced; a full draw() per removal is what made
+                              # clearing a long queue feel slow
+    return removed
+
+
+# Function to remove first valid point (FIFO)
+def remove_first_point(force: bool = False):
+    """The "Remove First Point (FIFO)" button. While the arm is driving to
+    row 0, the button leaves it alone (the sender removes it itself the
+    moment the arm arrives); `force=True` is that internal call."""
+    if _queue_head_inflight and not force:
+        print("Remove First Point ignored: the arm is currently moving to it.")
+        return
+    _remove_points_at([0])
+
+
+def remove_selected_points():
+    """Delete every highlighted row in the queue (and its plot marker) at
+    once. The row the arm is currently driving to is skipped."""
+    selected = list(points_listbox.curselection())
+    if _queue_head_inflight:
+        selected = [i for i in selected if i != 0]
+    _remove_points_at(selected)
+
+
+def clear_all_points():
+    """Empties the whole queue and wipes every marker from the plot. The row
+    the arm is currently driving to stays until the arm gets there."""
+    _remove_points_at(range(1 if _queue_head_inflight else 0, len(valid_points)))
+
+def _set_queue_head_inflight(value: bool) -> None:
+    global _queue_head_inflight
+    _queue_head_inflight = value
+
 
 def add_dobot_instructions():
     if not valid_points:
@@ -2137,8 +2195,11 @@ def add_dobot_instructions():
     def process_next_point():
         if not valid_points:
             print("All points complete.")
+            _set_queue_head_inflight(False)
             finish_arm_operation()
             return
+
+        _set_queue_head_inflight(True)   # row 0 is now being driven to
 
         px, py, point_z, claw_state, point_j4 = valid_points[0]
         # Coordinate frame rotation to match physical desk orientation
@@ -2157,6 +2218,19 @@ def add_dobot_instructions():
         j4_display = f"{point_j4:.1f}" if point_j4 is not None else f"current ({m_j4:.1f})"
         print(f"Sending point: x={px:.2f}, y={py:.2f}, z={point_z:.2f}, "
               f"claw={claw_text}, J4={j4_display}")
+
+        # The point leaves the queue (and its marker leaves the plot) the
+        # moment the arm ARRIVES — not after the claw action and a fixed
+        # delay on top, which is what left already-visited points sitting
+        # in the list/plot for another second or so. Idempotent so the
+        # final step below can safely call it again.
+        removal = {"done": False}
+
+        def remove_visited_point():
+            if not removal["done"]:
+                removal["done"] = True
+                _set_queue_head_inflight(False)
+                remove_first_point(force=True)
 
         def execute_point():
             """Runs in background thread — move, sync, claw, then schedule next.
@@ -2177,6 +2251,7 @@ def add_dobot_instructions():
                     if other_side_controller is None or not other_side_controller.send_move(
                             {"j1": j1, "j2": j2, "j3": z_target, "j4": r_target, "claw": claw_state}):
                         raise RuntimeError("Not the active remote controller (queued or not connected).")
+                    root.after(0, remove_visited_point)
                     print(f"Point complete (relayed): claw={claw_text}")
                 else:
                     # 1. Move to target
@@ -2199,6 +2274,10 @@ def add_dobot_instructions():
                     sleep(0.06)
                     sync_manual_position_from_feedback()
 
+                    # 2c. Arrived — take it off the queue/plot right now,
+                    #     before the (slow) claw action below.
+                    root.after(0, remove_visited_point)
+
                     # 3. Fire claw after confirmed arrival
                     set_claw_dual_output(claw_state)
                     print(f"Point complete: claw={claw_text}")
@@ -2206,14 +2285,16 @@ def add_dobot_instructions():
             except Exception as e:
                 msg = str(e)
                 print(f"Sequence failed: {msg}")
+                _set_queue_head_inflight(False)
                 finish_arm_operation()
                 root.after(0, lambda msg=msg: messagebox.showerror(
                     "Robot Error", f"Point sequence failed: {msg}\n\nRemaining queued points were NOT sent."))
                 return
 
-            # 4. Remove point from GUI on the main thread, then trigger next
-            root.after(0, lambda: (remove_first_point(),
-                                   root.after(100, process_next_point)))
+            # 4. Make sure the point is off the queue (normally already done
+            #    on arrival), then trigger the next one.
+            root.after(0, lambda: (remove_visited_point(),
+                                   root.after(20, process_next_point)))
 
         threading.Thread(target=execute_point, daemon=True).start()
 
@@ -2999,9 +3080,20 @@ def add_test_points_from_list():
     # Wait for dialog to close
     dialog.wait_window()
 
-# Button to remove first point
+# Buttons to delete queued points: the oldest, the highlighted ones, or all.
+# (Click / shift-click / ctrl-click rows in the list above to highlight; the
+# Delete key also removes the highlighted rows.)
 remove_button = tk.Button(frame, text="Remove First Point (FIFO)", command=remove_first_point)
-remove_button.pack(pady=5)
+remove_button.pack(pady=(5, 2))
+
+delete_row = tk.Frame(frame)
+delete_row.pack(pady=2)
+tk.Button(delete_row, text="Delete Selected", command=remove_selected_points,
+          bg="salmon").pack(side=tk.LEFT, padx=3)
+tk.Button(delete_row, text="Clear Queue", command=clear_all_points,
+          bg="salmon").pack(side=tk.LEFT, padx=3)
+points_listbox.bind("<Delete>", lambda _e: remove_selected_points())
+points_listbox.bind("<BackSpace>", lambda _e: remove_selected_points())
 
 # Button to send coordinates to dobot
 send_button = tk.Button(frame, text="Send Instructions", command=add_dobot_instructions, bg="lightgreen")
@@ -3014,6 +3106,645 @@ error_button.pack(pady=5)
 # Button to add test points from list
 test_points_button = tk.Button(frame, text="Add Test Points", command=add_test_points_from_list, )
 test_points_button.pack(pady=5)
+
+# =====================================================================
+# PHOTO POSITIONS — saved arm poses to photograph from.
+#   * Save the arm's CURRENT pose, or type one in (joints or X/Y/Z).
+#   * "Go To" / "Go + Snap" send the arm to one saved position (and take a
+#     photo there).
+#   * "Photo Tour" visits EVERY saved position in order and takes a
+#     snapshot at each, as fast as the arm and cameras allow: the next
+#     move starts as soon as the frames are grabbed — saving the JPEGs
+#     and logging them to the database happens in the background.
+# Stored as joint values (see vision/services/photo_positions.py), so a
+# position saved from the live pose replays EXACTLY; persisted to disk so
+# they survive restarts. Markers (orange triangles) show on the plot.
+# =====================================================================
+from vision.services import photo_positions as photo_positions_store
+
+photo_positions = photo_positions_store.load()
+_photo_position_artists = []          # matplotlib artists for the plot markers
+_photo_tour_stop = threading.Event()  # set by the Stop button
+_photo_tour_running = False
+PHOTO_SETTLE_DEFAULT_S = 0.3   # pause after arrival before the shutter, so the arm/camera stop shaking
+# One worker, so database records are written in the order photos were
+# taken and never overlap; it is what lets the tour keep moving while the
+# JPEGs are written and the DB rows are inserted.
+_photo_record_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="photo-record")
+
+
+class _PositionSkipped(Exception):
+    """A saved position was refused for a safety reason (e.g. below the
+    height floor) — the tour skips just that one and carries on."""
+
+
+def _photo_position_plot_xy(p: dict) -> tuple:
+    """Plot coordinates for a position's robot-frame x/y — the inverse of
+    the queue sender's rotation (robot x = plot y, robot y = -plot x)."""
+    return (-p["y"], p["x"])
+
+
+def _redraw_photo_position_markers() -> None:
+    """Rebuilds every marker from scratch — add/delete are rare, so this is
+    simpler and can't drift out of step with the list."""
+    for artist in _photo_position_artists:
+        try:
+            artist.remove()
+        except (ValueError, NotImplementedError):
+            pass
+    _photo_position_artists.clear()
+    for i, p in enumerate(photo_positions, start=1):
+        px, py = _photo_position_plot_xy(p)
+        on = p.get("enabled", True)
+        # Orange filled triangle = in the tour; hollow grey = switched off.
+        _photo_position_artists.append(
+            ax.scatter(px, py, facecolors='darkorange' if on else 'none',
+                       edgecolors='black' if on else 'gray', s=70,
+                       marker='^', zorder=4))
+        _photo_position_artists.append(
+            ax.annotate(f"{i}", (px, py), textcoords="offset points", xytext=(6, 6),
+                        fontsize=8, color='darkorange' if on else 'gray',
+                        fontweight='bold', zorder=4))
+    canvas.draw_idle()
+
+
+def _refresh_photo_positions_listbox(select_indices=()) -> None:
+    photo_positions_listbox.delete(0, tk.END)
+    for i, p in enumerate(photo_positions, start=1):
+        on = p.get("enabled", True)
+        photo_positions_listbox.insert(tk.END, f"[{'x' if on else ' '}] {i}: {p['name']}")
+        photo_positions_listbox.itemconfig(i - 1, fg="black" if on else "gray")
+    for i in select_indices:
+        if 0 <= i < len(photo_positions):
+            photo_positions_listbox.selection_set(i)
+    n_on = len(photo_positions_store.enabled_positions(photo_positions))
+    photo_positions_count_label.config(text=f"{n_on}/{len(photo_positions)} in tour")
+    _show_photo_position_detail()
+
+
+def _show_photo_position_detail(_event=None) -> None:
+    """Joint/XY readout for the highlighted position, under the list (the
+    list itself shows just names so nothing gets cut off)."""
+    sel = photo_positions_listbox.curselection()
+    if len(sel) == 1 and sel[0] < len(photo_positions):
+        p = photo_positions[sel[0]]
+        photo_positions_detail_label.config(
+            text=f"J1 {p['j1']:.1f}  J2 {p['j2']:.1f}  Z {p['z']:.1f}  J4 {p['j4']:.1f}\n"
+                 f"X {p['x']:.1f}  Y {p['y']:.1f}   "
+                 f"({'in tour' if p.get('enabled', True) else 'OFF - skipped by tour'})")
+    else:
+        photo_positions_detail_label.config(
+            text="" if not sel else f"{len(sel)} selected")
+
+
+def _commit_photo_positions(select_indices=()) -> None:
+    """Persist + refresh list and plot after ANY change to photo_positions."""
+    try:
+        photo_positions_store.save(photo_positions)
+    except OSError as e:
+        print(f"[PHOTO POSITIONS] Could not save to disk: {e}")
+        messagebox.showwarning("Photo Positions",
+                               f"Could not save positions to disk (they still work this session):\n{e}")
+    _refresh_photo_positions_listbox(select_indices)
+    _redraw_photo_position_markers()
+
+
+def _set_photo_position_status(text: str, color: str = "gray") -> None:
+    """Thread-safe status line under the Photo Positions buttons."""
+    root.after(0, lambda: photo_positions_status_label.config(text=text, fg=color))
+
+
+def save_current_pose_as_photo_position() -> None:
+    """'Save Current' — stores wherever the arm is RIGHT NOW (live
+    telemetry), under the name typed in the name box (or pos_N)."""
+    joints = robot_data.get("joints")
+    cart = robot_data.get("cartesian")
+    if (not ROBOT_CONNECTED or not joints or len(joints) < 4 or not cart
+            or (cart == [0.0, 0.0, 0.0, 0.0] and joints == [0.0, 0.0, 0.0, 0.0])):
+        messagebox.showwarning(
+            "No Live Pose",
+            "The arm's live position isn't available (demo mode, or no telemetry received yet).\n"
+            "Use \"Add Manually...\" to type a position in instead.")
+        return
+    name = photo_position_name_var.get().strip() or photo_positions_store.next_default_name(photo_positions)
+    name = photo_positions_store.unique_name(name, photo_positions)
+    try:
+        p = photo_positions_store.make_position(
+            name, joints[0], joints[1], joints[2], joints[3], x=cart[0], y=cart[1])
+    except ValueError as e:
+        messagebox.showerror("Cannot Save Position", str(e))
+        return
+    photo_positions.append(p)
+    photo_position_name_var.set("")
+    _commit_photo_positions([len(photo_positions) - 1])
+    _set_photo_position_status(f"Saved '{p['name']}' from the current pose.", "green")
+    print(f"[PHOTO POSITIONS] Saved '{p['name']}': J1={p['j1']:.1f} J2={p['j2']:.1f} "
+          f"Z={p['z']:.1f} J4={p['j4']:.1f}")
+
+
+def add_photo_position_manually() -> None:
+    """'Add Manually...' — dialog to type a position in, either as joint
+    values or as robot X/Y/Z (the same X/Y the live readout shows), with
+    a button to prefill from the arm's current pose."""
+    dialog = tk.Toplevel(root)
+    dialog.title("Add Photo Position")
+    dialog.transient(root)
+    dialog.grab_set()
+
+    mode_var = tk.StringVar(value="joints")
+    name_var = tk.StringVar(value=photo_position_name_var.get().strip()
+                            or photo_positions_store.next_default_name(photo_positions))
+    field_vars = [tk.StringVar() for _ in range(4)]
+    field_labels = []
+
+    tk.Label(dialog, text="Name:").grid(row=0, column=0, sticky="e", padx=6, pady=(10, 4))
+    tk.Entry(dialog, textvariable=name_var, width=24).grid(row=0, column=1, columnspan=3,
+                                                           sticky="we", padx=6, pady=(10, 4))
+
+    mode_row = tk.Frame(dialog)
+    mode_row.grid(row=1, column=0, columnspan=4, pady=4)
+
+    def relabel():
+        names = (["J1 (deg)", "J2 (deg)", "Z (mm)", "J4 (deg)"] if mode_var.get() == "joints"
+                 else ["X (mm)", "Y (mm)", "Z (mm)", "J4 (deg)"])
+        for lbl, text in zip(field_labels, names):
+            lbl.config(text=text)
+
+    tk.Radiobutton(mode_row, text="Joints (J1 / J2 / Z / J4)", variable=mode_var,
+                   value="joints", command=relabel).pack(side=tk.LEFT, padx=6)
+    tk.Radiobutton(mode_row, text="Position (X / Y / Z / J4)", variable=mode_var,
+                   value="xyz", command=relabel).pack(side=tk.LEFT, padx=6)
+
+    for col in range(4):
+        lbl = tk.Label(dialog, text="")
+        lbl.grid(row=2, column=col, padx=6)
+        field_labels.append(lbl)
+        tk.Entry(dialog, textvariable=field_vars[col], width=9).grid(row=3, column=col, padx=6, pady=2)
+    relabel()
+    field_vars[2].set("200")
+
+    tk.Label(dialog, text="X/Y are robot-frame values, the same ones the live readout shows.",
+             fg="gray", font=("Arial", 8)).grid(row=4, column=0, columnspan=4, pady=(2, 0))
+
+    def fill_from_current():
+        joints = robot_data.get("joints")
+        cart = robot_data.get("cartesian")
+        if not ROBOT_CONNECTED or not joints or len(joints) < 4 or not cart:
+            messagebox.showwarning("No Live Pose", "The arm's live position isn't available.", parent=dialog)
+            return
+        if mode_var.get() == "joints":
+            values = [joints[0], joints[1], joints[2], joints[3]]
+        else:
+            values = [cart[0], cart[1], joints[2], joints[3]]
+        for var, v in zip(field_vars, values):
+            var.set(f"{v:.2f}")
+
+    def do_add():
+        try:
+            a, b, z, j4 = (float(v.get()) for v in field_vars)
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a number in all four boxes.", parent=dialog)
+            return
+        name = photo_positions_store.unique_name(
+            name_var.get().strip() or photo_positions_store.next_default_name(photo_positions),
+            photo_positions)
+        try:
+            if mode_var.get() == "joints":
+                p = photo_positions_store.make_position(name, a, b, z, j4)
+            else:
+                # Same IK solve (and the same reachability/limit errors) the
+                # queue and click-a-point flows use.
+                sols = Ikinematics(a, b, z, j4)
+                j1, j2, z_target, r_target = sols[0]
+                p = photo_positions_store.make_position(name, j1, j2, z_target, r_target, x=a, y=b)
+        except ValueError as e:
+            messagebox.showerror("Cannot Save Position", str(e), parent=dialog)
+            return
+        photo_positions.append(p)
+        photo_position_name_var.set("")
+        _commit_photo_positions([len(photo_positions) - 1])
+        _set_photo_position_status(f"Added '{p['name']}'.", "green")
+        dialog.destroy()
+
+    btns = tk.Frame(dialog)
+    btns.grid(row=5, column=0, columnspan=4, pady=12)
+    tk.Button(btns, text="Fill from Current Pose", command=fill_from_current).pack(side=tk.LEFT, padx=4)
+    tk.Button(btns, text="Add", command=do_add, bg="lightgreen", width=8).pack(side=tk.LEFT, padx=4)
+    tk.Button(btns, text="Cancel", command=dialog.destroy, bg="lightcoral", width=8).pack(side=tk.LEFT, padx=4)
+    dialog.bind("<Return>", lambda _e: do_add())
+
+
+def toggle_selected_photo_positions(_event=None):
+    """Switches the highlighted positions in/out of the Photo Tour. All
+    selected on -> they all go off; otherwise they all go on. (Go To /
+    Go + Snap still work on a switched-off position.)"""
+    if _photo_tour_running:
+        return "break"
+    selected = list(photo_positions_listbox.curselection())
+    new_state = photo_positions_store.toggle(photo_positions, selected)
+    if new_state is None:
+        return "break"
+    _commit_photo_positions(selected)
+    _set_photo_position_status(
+        f"{len(selected)} position(s) {'included in' if new_state else 'skipped by'} the tour.", "gray")
+    return "break"   # stops Tk's default handling of Space / double-click
+
+
+def set_all_photo_positions_enabled(enabled: bool) -> None:
+    """'All On' / 'All Off' for the tour toggle."""
+    if _photo_tour_running or not photo_positions:
+        return
+    photo_positions_store.set_enabled(photo_positions, range(len(photo_positions)), enabled)
+    _commit_photo_positions(list(photo_positions_listbox.curselection()))
+    _set_photo_position_status("All positions " + ("included in" if enabled else "skipped by")
+                               + " the tour.", "gray")
+
+
+def delete_selected_photo_positions() -> None:
+    """Deletes every highlighted saved position immediately (no confirm —
+    it's one click to re-save, and speed is the point)."""
+    if _photo_tour_running:
+        messagebox.showinfo("Photo Tour Running", "Stop the tour before deleting positions.")
+        return
+    selected = sorted(photo_positions_listbox.curselection(), reverse=True)
+    if not selected:
+        return
+    for i in selected:
+        photo_positions.pop(i)
+    _commit_photo_positions()
+    _set_photo_position_status(f"Deleted {len(selected)} position(s).", "gray")
+
+
+def clear_all_photo_positions() -> None:
+    """Deletes every saved position (asks first — this one wipes the lot)."""
+    if _photo_tour_running:
+        messagebox.showinfo("Photo Tour Running", "Stop the tour before deleting positions.")
+        return
+    if not photo_positions:
+        return
+    if not messagebox.askyesno("Clear All Positions",
+                                f"Delete all {len(photo_positions)} saved photo positions?"):
+        return
+    photo_positions.clear()
+    _commit_photo_positions()
+    _set_photo_position_status("All saved positions deleted.", "gray")
+
+
+def _photo_move_blocker() -> str | None:
+    """Why the arm can't be sent anywhere from this machine right now, or
+    None if it's fine."""
+    mode = control_mode_var.get()
+    if mode == "middleman_other":
+        return ("Photo positions drive the arm connected to THIS machine. In Remote Control "
+                "mode, run the tour on the Robot Side machine instead.")
+    if mode == "middleman_physical" and _physical_side_locked_out():
+        return "A remote controller is currently driving this arm — local moves are locked out."
+    if is_jogging:
+        return "The arm is currently jogging."
+    return None
+
+
+def _move_to_photo_position(p: dict) -> None:
+    """Sends the arm to saved position `p` and blocks until it has arrived.
+    Runs in a worker thread. Raises _PositionSkipped for a safety refusal
+    (this one position only) or RuntimeError for a real move failure."""
+    hard_deck_error = _hard_deck_violation(p["z"], f"Photo position '{p['name']}'")
+    if hard_deck_error:
+        raise _PositionSkipped(hard_deck_error)
+    joints = [p["j1"], p["j2"], p["z"], p["j4"]]
+    if ROBOT_CONNECTED and robot:
+        move_error = _dispatch_joint_move(joints, reason=f"photo position '{p['name']}'",
+                                          autocapture=False)
+        if move_error is not None:
+            raise RuntimeError(f"Move to '{p['name']}' failed: {move_error}")
+        err = robot.movement.sync()   # block until the arm has actually stopped
+        if err:
+            print(f"[SYNC WARNING]: {err}")
+        sleep(0.06)                   # let one fresh telemetry packet land
+        sync_manual_position_from_feedback()
+    else:
+        print(f"DEMO MODE: photo position '{p['name']}' J1={p['j1']:.1f} J2={p['j2']:.1f} "
+              f"Z={p['z']:.1f} J4={p['j4']:.1f}")
+
+
+def _photo_position_sample_id(position_name: str) -> str:
+    """Image-folder name for a photo-position snapshot:
+    photo_position_<name>_<date>_<time>_<id>. The prefix is what keeps these
+    apart on disk from the other two kinds of capture — a normal Camera-tab
+    snapshot (plain <date>_<time>_<id>) and the in-motion auto-captures
+    (robot_arm_moving_... / manual_jog_moving_...)."""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", position_name).strip("_") or "position"
+    return f"photo_position_{safe}_{new_sample_id()}"
+
+
+def _snapshot_at_position(p: dict, stamp: str) -> int:
+    """Grabs one frame set from every enabled camera RIGHT NOW (cameras in
+    parallel) and returns how many images were grabbed. This is the only
+    part that has to finish before the arm may move again — writing the
+    JPEGs and the database record are handed to the background worker."""
+    camera_names = list(list_configured_cameras(enabled_only=True).keys())
+    if not camera_names:
+        raise RuntimeError("No cameras are enabled — nothing to photograph with.")
+    sample_id = _photo_position_sample_id(p["name"])
+
+    def grab(cam):
+        return cam, capture_frames_multi(cam)
+
+    grabbed = []   # (cam, [(suffix, frame), ...])
+    errors = {}
+    with ThreadPoolExecutor(max_workers=len(camera_names)) as pool:
+        futures = [(cam, pool.submit(grab, cam)) for cam in camera_names]
+        for cam, fut in futures:
+            try:
+                grabbed.append(fut.result())
+            except Exception as e:
+                errors[cam] = str(e)
+                print(f"[PHOTO TOUR] '{cam}' unavailable at '{p['name']}': {e}")
+
+    # Pose stamped NOW (arrival pose), not whenever the background worker
+    # gets round to it.
+    arm_position = current_arm_position()
+    n_images = sum(len(frames) for _cam, frames in grabbed)
+    if not n_images:
+        raise RuntimeError("Every camera failed: " + "; ".join(f"{c}: {m}" for c, m in errors.items()))
+
+    def save_and_record():
+        pairs = []
+        for cam, frames in grabbed:
+            for view_index, (suffix, frame) in enumerate(frames):
+                try:
+                    pairs.append((cam, save_image(frame, sample_id, cam, view_index, view_label=suffix), suffix))
+                except Exception as e:
+                    print(f"[PHOTO TOUR] could not save '{cam}' frame at '{p['name']}': {e}")
+        if not pairs:
+            return
+        try:
+            _object_id, warnings = record_capture(
+                name=f"{p['name']}_{stamp}", image_paths_by_source=pairs,
+                category="photo_position", position=arm_position, export_excel=False,
+                # Queryable proof of WHICH saved position + tour a photo came
+                # from (a normal snapshot / in-motion capture carry none of this).
+                attributes={"capture_kind": "photo_position",
+                            "photo_position": p["name"], "tour": stamp,
+                            "joints": [p["j1"], p["j2"], p["z"], p["j4"]]})
+            for w in warnings:
+                print(f"[CAPTURE_PIPELINE] {w}")
+        except Exception as e:
+            print(f"[PHOTO TOUR] record_capture failed for '{p['name']}': {e}")
+
+    _photo_record_executor.submit(save_and_record)
+    return n_images
+
+
+def _after_photo_records_flushed() -> None:
+    """Queued BEHIND every pending save_and_record job, so by the time it
+    runs they've all finished: refresh the Excel report once and the
+    Database lists."""
+    def flush():
+        _schedule_excel_refresh()
+
+        def refresh_lists():
+            try:
+                refresh_objects_list()
+                refresh_images_list()
+                refresh_inventory_list()
+            except NameError:
+                pass  # Database tab not built yet — harmless
+        root.after(0, refresh_lists)
+    _photo_record_executor.submit(flush)
+
+
+def _set_photo_buttons_busy(busy: bool) -> None:
+    state = tk.DISABLED if busy else tk.NORMAL
+    for b in (photo_go_btn, photo_gosnap_btn, photo_tour_btn, photo_save_btn,
+              photo_manual_btn, photo_delete_btn, photo_clear_btn,
+              photo_toggle_btn, photo_all_on_btn, photo_all_off_btn):
+        b.config(state=state)
+    photo_stop_btn.config(state=tk.NORMAL if busy else tk.DISABLED)
+
+
+def _selected_photo_position() -> dict | None:
+    sel = photo_positions_listbox.curselection()
+    if not sel:
+        messagebox.showinfo("Photo Positions", "Select a saved position in the list first.")
+        return None
+    return photo_positions[sel[0]]
+
+
+def go_to_selected_photo_position(snap: bool) -> None:
+    """'Go To' (snap=False) / 'Go + Snap' (snap=True) for the highlighted
+    position."""
+    global _photo_tour_running
+    p = _selected_photo_position()
+    if p is None:
+        return
+    blocker = _photo_move_blocker()
+    if blocker:
+        messagebox.showwarning("Cannot Move", blocker)
+        return
+    if not try_start_arm_operation("moving to a photo position"):
+        return
+    _photo_tour_running = True
+    _set_photo_buttons_busy(True)
+    _photo_tour_stop.clear()
+
+    def worker():
+        global _photo_tour_running
+        try:
+            _set_photo_position_status(f"Moving to '{p['name']}'...", "gray")
+            _move_to_photo_position(p)
+            if snap:
+                _photo_tour_stop.wait(PHOTO_SETTLE_DEFAULT_S)
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                n = _snapshot_at_position(p, stamp)
+                _after_photo_records_flushed()
+                _set_photo_position_status(f"At '{p['name']}' — grabbed {n} image(s).", "green")
+            else:
+                _set_photo_position_status(f"At '{p['name']}'.", "green")
+        except _PositionSkipped as e:
+            _set_photo_position_status(f"Skipped: {e}", "red")
+        except Exception as e:
+            msg = str(e)
+            _set_photo_position_status(msg, "red")
+            root.after(0, lambda msg=msg: messagebox.showerror("Photo Position", msg))
+        finally:
+            _photo_tour_running = False
+            finish_arm_operation()
+            root.after(0, lambda: _set_photo_buttons_busy(False))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+
+def start_photo_tour() -> None:
+    """'Photo Tour' — visit every saved position in order, snapshotting at
+    each. Runs in a worker thread; 'Stop Tour' ends it after the current
+    position."""
+    global _photo_tour_running
+    if not photo_positions:
+        messagebox.showinfo("Photo Tour", "Save at least one photo position first.")
+        return
+    tour = [dict(p) for p in photo_positions_store.enabled_positions(photo_positions)]
+    if not tour:
+        messagebox.showinfo("Photo Tour",
+                            "Every saved position is switched off. Select some and press "
+                            "Toggle (or All On) to include them in the tour.")
+        return
+    blocker = _photo_move_blocker()
+    if blocker:
+        messagebox.showwarning("Cannot Start Tour", blocker)
+        return
+    try:
+        settle = float(photo_settle_var.get())
+        if settle < 0 or settle > 10:
+            raise ValueError
+    except ValueError:
+        messagebox.showerror("Invalid Settle Time", "Settle time must be a number from 0 to 10 seconds.")
+        return
+    if not try_start_arm_operation("a photo tour"):
+        return
+
+    # `tour` is a frozen copy of the switched-on positions: edits mid-tour don't matter.
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _photo_tour_running = True
+    _photo_tour_stop.clear()
+    _set_photo_buttons_busy(True)
+
+    def worker():
+        global _photo_tour_running
+        done = skipped = images = 0
+        problems = []
+        fatal = None
+        try:
+            for i, p in enumerate(tour, start=1):
+                if _photo_tour_stop.is_set():
+                    break
+                _set_photo_position_status(f"Tour {i}/{len(tour)}: moving to '{p['name']}'...", "gray")
+                try:
+                    _move_to_photo_position(p)
+                except _PositionSkipped as e:
+                    skipped += 1
+                    problems.append(str(e))
+                    continue
+                # Interruptible settle: Stop Tour wakes this immediately.
+                if settle and _photo_tour_stop.wait(settle):
+                    break
+                _set_photo_position_status(f"Tour {i}/{len(tour)}: photographing '{p['name']}'...", "gray")
+                try:
+                    images += _snapshot_at_position(p, stamp)
+                    done += 1
+                except RuntimeError as e:
+                    skipped += 1
+                    problems.append(f"'{p['name']}': {e}")
+        except Exception as e:
+            fatal = str(e)   # a real move failure — later positions would fail the same way
+        finally:
+            _photo_tour_running = False
+            finish_arm_operation()
+            _after_photo_records_flushed()
+            stopped = _photo_tour_stop.is_set()
+            summary = (f"Tour {'stopped' if stopped else 'finished'}: photographed {done}/{len(tour)} "
+                       f"position(s), {images} image(s)"
+                       + (f", {skipped} skipped" if skipped else "")
+                       + ". Saving to the database in the background.")
+            if fatal:
+                summary = f"Tour aborted: {fatal} (photographed {done}/{len(tour)} first)."
+            _set_photo_position_status(summary, "red" if fatal or skipped else "green")
+            for line in problems:
+                print(f"[PHOTO TOUR] {line}")
+            root.after(0, lambda: _set_photo_buttons_busy(False))
+            if fatal:
+                root.after(0, lambda msg=fatal: messagebox.showerror("Photo Tour Aborted", msg))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def stop_photo_tour() -> None:
+    _photo_tour_stop.set()
+    _set_photo_position_status("Stopping after the current position...", "orange")
+
+
+# --- UI ---
+photo_positions_frame = tk.LabelFrame(frame, text=" Photo Positions ", padx=6, pady=6)
+photo_positions_frame.pack(fill=tk.X, padx=4, pady=(10, 4))
+
+photo_name_row = tk.Frame(photo_positions_frame)
+photo_name_row.pack(fill=tk.X)
+tk.Label(photo_name_row, text="Name:", font=("Arial", 8)).pack(side=tk.LEFT)
+photo_position_name_var = tk.StringVar()
+tk.Entry(photo_name_row, textvariable=photo_position_name_var, width=16).pack(
+    side=tk.LEFT, padx=4, fill=tk.X, expand=1)
+photo_positions_count_label = tk.Label(photo_name_row, text="", fg="gray", font=("Arial", 8))
+photo_positions_count_label.pack(side=tk.RIGHT)
+
+photo_add_row = tk.Frame(photo_positions_frame)
+photo_add_row.pack(fill=tk.X, pady=(4, 2))
+photo_save_btn = tk.Button(photo_add_row, text="Save Current Pose",
+                           command=save_current_pose_as_photo_position, bg="lightgreen")
+photo_save_btn.pack(side=tk.LEFT, padx=2)
+photo_manual_btn = tk.Button(photo_add_row, text="Add Manually...", command=add_photo_position_manually)
+photo_manual_btn.pack(side=tk.LEFT, padx=2)
+
+photo_positions_listbox = tk.Listbox(photo_positions_frame, width=30, height=7,
+                                     selectmode=tk.EXTENDED, exportselection=False)
+photo_positions_listbox.pack(fill=tk.BOTH, expand=1, pady=2)
+photo_positions_listbox.bind("<<ListboxSelect>>", _show_photo_position_detail)
+photo_positions_detail_label = tk.Label(photo_positions_frame, text="", fg="gray",
+                                        font=("Arial", 8), justify=tk.LEFT, anchor="w")
+photo_positions_detail_label.pack(fill=tk.X)
+photo_positions_listbox.bind("<Delete>", lambda _e: delete_selected_photo_positions())
+photo_positions_listbox.bind("<BackSpace>", lambda _e: delete_selected_photo_positions())
+
+photo_del_row = tk.Frame(photo_positions_frame)
+photo_del_row.pack(fill=tk.X, pady=2)
+photo_delete_btn = tk.Button(photo_del_row, text="Delete Selected",
+                             command=delete_selected_photo_positions, bg="salmon")
+photo_delete_btn.pack(side=tk.LEFT, padx=2)
+photo_clear_btn = tk.Button(photo_del_row, text="Clear All",
+                            command=clear_all_photo_positions, bg="salmon")
+photo_clear_btn.pack(side=tk.LEFT, padx=2)
+
+photo_toggle_row = tk.Frame(photo_positions_frame)
+photo_toggle_row.pack(fill=tk.X, pady=2)
+photo_toggle_btn = tk.Button(photo_toggle_row, text="Toggle in Tour",
+                             command=toggle_selected_photo_positions)
+photo_toggle_btn.pack(side=tk.LEFT, padx=2)
+photo_all_on_btn = tk.Button(photo_toggle_row, text="All On",
+                             command=lambda: set_all_photo_positions_enabled(True))
+photo_all_on_btn.pack(side=tk.LEFT, padx=2)
+photo_all_off_btn = tk.Button(photo_toggle_row, text="All Off",
+                              command=lambda: set_all_photo_positions_enabled(False))
+photo_all_off_btn.pack(side=tk.LEFT, padx=2)
+photo_positions_listbox.bind("<Double-Button-1>", toggle_selected_photo_positions)
+photo_positions_listbox.bind("<space>", toggle_selected_photo_positions)
+
+photo_go_row = tk.Frame(photo_positions_frame)
+photo_go_row.pack(fill=tk.X, pady=2)
+photo_go_btn = tk.Button(photo_go_row, text="Go To",
+                         command=lambda: go_to_selected_photo_position(snap=False), bg="lightblue")
+photo_go_btn.pack(side=tk.LEFT, padx=2)
+photo_gosnap_btn = tk.Button(photo_go_row, text="Go + Snap",
+                             command=lambda: go_to_selected_photo_position(snap=True), bg="lightblue")
+photo_gosnap_btn.pack(side=tk.LEFT, padx=2)
+
+photo_tour_row = tk.Frame(photo_positions_frame)
+photo_tour_row.pack(fill=tk.X, pady=(6, 2))
+photo_tour_btn = tk.Button(photo_tour_row, text="Photo Tour (all)", command=start_photo_tour,
+                           bg="gold", font=("Arial", 9, "bold"))
+photo_tour_btn.pack(side=tk.LEFT, padx=2)
+photo_stop_btn = tk.Button(photo_tour_row, text="Stop", command=stop_photo_tour,
+                           bg="red", fg="white", state=tk.DISABLED)
+photo_stop_btn.pack(side=tk.LEFT, padx=2)
+tk.Label(photo_tour_row, text="settle (s):", font=("Arial", 8)).pack(side=tk.LEFT, padx=(8, 2))
+photo_settle_var = tk.StringVar(value=str(PHOTO_SETTLE_DEFAULT_S))
+tk.Entry(photo_tour_row, textvariable=photo_settle_var, width=4).pack(side=tk.LEFT)
+
+photo_positions_status_label = tk.Label(photo_positions_frame, text="", fg="gray",
+                                        font=("Arial", 8), wraplength=240, justify=tk.LEFT)
+photo_positions_status_label.pack(anchor=tk.W, pady=(2, 0))
+
+_refresh_photo_positions_listbox()
+_redraw_photo_position_markers()
 
 tk.Label(tab_server, text="Server Communication",
          font=("Arial", 12, "bold")).pack(pady=(10, 5))
@@ -6764,7 +7495,16 @@ def update_gui_from_feedback():
             
             # 3. Update the red tracking dot on the Matplotlib plot
             if live_dot is None:
-                live_dot = ax.scatter(rot_x, rot_y, color='red', s=100, zorder=5, label="Live Robot Pos")
+                # animated=True is what stops the "old positions still show
+                # up" ghost: a normal artist gets baked into the cached
+                # background (_plot_background) on every full canvas.draw()
+                # (adding/removing a queue point, etc.), so the red dot's
+                # position at that moment stayed painted on the plot
+                # forever while the real dot kept moving on top of it.
+                # Animated artists are skipped by full draws and only
+                # ever drawn by the blit below.
+                live_dot = ax.scatter(rot_x, rot_y, color='red', s=100, zorder=5,
+                                      label="Live Robot Pos", animated=True)
                 ax.legend()
                 canvas.draw()  # one full draw to establish the legend; also
                                 # triggers _capture_plot_background via draw_event
