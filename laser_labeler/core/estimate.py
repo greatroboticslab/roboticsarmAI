@@ -54,7 +54,10 @@ def save_seconds_per_image(data_dir: str | Path, value: float) -> None:
 
 def average_tokens(transcripts_dir: str | Path, sample: int = 25) -> tuple[float, float] | None:
     """Mean (input, output) tokens per image over the newest transcripts, or None if there are none with counts."""
-    folder = Path(transcripts_dir)
+    return _average_tokens(Path(transcripts_dir), sample)
+
+
+def _average_tokens(folder: Path, sample: int) -> tuple[float, float] | None:
     files = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:sample] if folder.is_dir() else []
     totals = []
     for path in files:
@@ -69,13 +72,20 @@ def average_tokens(transcripts_dir: str | Path, sample: int = 25) -> tuple[float
     return sum(t[0] for t in totals) / len(totals), sum(t[1] for t in totals) / len(totals)
 
 
-def estimate_run(images: int, settings: dict, data_dir: str | Path) -> RunEstimate:
+def run_stats(data_dir: str | Path) -> tuple[tuple[float, float] | None, float]:
+    """What past runs measured: (mean tokens per image or None, seconds per image). Reads files, so callers that ask
+    often (the tick boxes) keep the answer for a while instead of asking again."""
+    return average_tokens(Path(data_dir) / "transcripts"), seconds_per_image(data_dir)
+
+
+def estimate_run(images: int, settings: dict, data_dir: str | Path,
+                 stats: tuple[tuple[float, float] | None, float] | None = None) -> RunEstimate:
     block = settings["provider"]
     tracker = CostTracker(block.get("price_in_per_mtok", 0), block.get("price_out_per_mtok", 0),
                           block.get("daily_cost_cap_usd"), Path(data_dir) / "spend.json")
-    measured = average_tokens(Path(data_dir) / "transcripts")
+    measured, seconds = stats if stats is not None else run_stats(data_dir)
     tokens = measured or DEFAULT_TOKENS
     priced = bool(block.get("price_in_per_mtok") or block.get("price_out_per_mtok"))
-    return RunEstimate(images, images * seconds_per_image(data_dir),
+    return RunEstimate(images, images * seconds,
                        tracker.estimate(images, *tokens) if priced else None,
                        tracker.spent_today, block.get("daily_cost_cap_usd"), measured is not None)

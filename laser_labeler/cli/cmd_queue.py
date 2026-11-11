@@ -13,6 +13,7 @@ from cli.common import (data_dir_for, load_cli_settings, load_project_taxonomy, 
                         project_taxonomy_dir)
 from config import credentials
 from config.credentials import MissingCredentialError
+from core.schema.orientation import to_upright
 from core.local_files import collect_files, make_image_id
 from core.labeler.factory import build_escalation, build_label_fn
 from core.labeler.limits import MAX_AUTO_RETRIES, auto_wait_seconds
@@ -197,6 +198,7 @@ def _approved_sets(db, data_dir):
     for row in db.list(["approved", "edited"]):
         if row.sidecar_path and Path(row.sidecar_path).is_file():
             ls = read_sidecar(row.sidecar_path)
+            to_upright(ls, row.path)  # an older set was measured before photos were turned upright
             ls.status = row.status  # the queue is the source of truth for approval
             sets.append(ls)
     return sets

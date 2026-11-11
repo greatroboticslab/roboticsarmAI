@@ -26,6 +26,8 @@ SCHEME_LABELS = {"full": "Full: obj_... classes and las_<event> classes (default
 MATCH_LABELS = {"off": "Off: reuse a listed object or material if one fits, otherwise add the new one to your lists (good while filling them up)",
                 "object": "Object only: the object name must be on your list; material and color are taken as the model says",
                 "all": "Everything: object, material, color and incidence must all be on your lists"}
+COORD_LABELS = {"auto": "Work it out (default)", "pixels": "Pixels of the picture shown",
+                "thousand": "A 0 to 1000 grid across the picture", "fraction": "Fractions from 0 to 1"}
 RULE_LABELS = {"only_if_no_object_hit": "Label the table only if no object has a laser hit (default)",
                "always_label": "Always label the table", "never_label": "Never label the table"}
 
@@ -101,6 +103,10 @@ class AISettingsTab(QWidget):
         self.sign_in_btn = QPushButton("Enter or change keys on the Sign in tab")
         self.table_rule = _combo(RULE_LABELS)
         self.match = _combo(MATCH_LABELS)
+        self.coords = _combo(COORD_LABELS)
+        self.coords.setToolTip("Agent mode only: what the numbers in the model's boxes mean. Some models answer on a "
+                               "0 to 1000 grid or in fractions instead of pixels, which puts boxes in the wrong place. "
+                               "'Work it out' compares them with the spots the app found.")
         self.scheme = _combo(SCHEME_LABELS)
         self.scheme_help = QLabel("component1 = a direct hit: the beam lands on the object (two direct hits on the same object are both "
                                   "component1). component2 = every bounce: light reflected, refracted or scattered "
@@ -164,6 +170,7 @@ class AISettingsTab(QWidget):
         rules = QGroupBox("Labeling rules")
         rform = QFormLayout(rules)
         rform.addRow("Taxonomy match", self.match)
+        rform.addRow("Box numbers from the model are", self.coords)
         rform.addRow("Label scheme", self.scheme)
         rform.addRow("", self.scheme_help)
         rform.addRow("Laser box size (fraction of the object it hits, 0 = tight)", self.box_size)
@@ -233,6 +240,7 @@ class AISettingsTab(QWidget):
         self.price_out.setValue(float(p.get("price_out_per_mtok", 0)))
         self.cap.setValue(float(p.get("daily_cost_cap_usd", 0)))
         self._pick(self.table_rule, lab["table_rule"])
+        self._pick(self.coords, lab.get("model_coordinates", "auto"))
         self._pick(self.match, lab.get("taxonomy_match", "object"))
         self._pick(self.scheme, lab.get("scheme", "full"))
         self.box_size.setValue(float(lab.get("laser_box_object_fraction", 0.0)))
@@ -307,6 +315,7 @@ class AISettingsTab(QWidget):
             s["run"]["max_candidates"] = self.max_spots.value()
             s["run"]["crop_px"] = self.crop_px.value()
             s["labeling"]["table_rule"] = self.table_rule.currentData()
+            s["labeling"]["model_coordinates"] = self.coords.currentData()
             s["labeling"]["taxonomy_match"] = self.match.currentData()
             s["labeling"]["scheme"] = self.scheme.currentData()
             s["labeling"]["laser_box_object_fraction"] = round(self.box_size.value(), 2)

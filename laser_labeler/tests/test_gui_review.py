@@ -260,6 +260,9 @@ def test_hit_point_question_is_answered_by_clicking(ctx, tab, tmp_path):
     tab.answer_selected()
     assert tab.canvas.mode() == "point"
     tab._point_clicked(140, 110)
+    assert ctx.db.get("blank").status == "needs_input"  # a click is only a mark: nothing is sent until confirmed
+    assert tab.canvas.marks() == [(140, 110)]
+    tab.add_marked_lasers()
     assert ctx.db.get("blank").status == "pending"
     assert tab.rows == [] and tab.image_id == ""  # it left "Needs your input", and nothing else is waiting
     assert "Ready for review" in tab.message.text()
@@ -493,3 +496,99 @@ def test_upload_dialog_leaves_local_file_images_out(app, ctx, tab):
     assert "no image file is uploaded" in text and "updates the labels of the existing Roboflow image" in text
     assert "fromfile" not in ids or "excluded fromfile" in text
     dialog.close()
+
+
+# ---------------------------------------------------------------- marking laser spots
+def test_marks_accumulate_undo_and_remove_by_clicking_near(tab):
+    tab.select_image("a")
+    tab.set_mode("mark")
+    assert tab.canvas.mode() == "point" and tab.marks_bar.isVisibleTo(tab)
+    assert "does not set the laser's box" in tab.marks_label.text()  # the reminder: a click is a place, not a box
+    tab._point_clicked(100, 80)
+    tab._point_clicked(200, 120)
+    assert tab.canvas.marks() == [(100, 80), (200, 120)] and "2 spots marked" in tab.marks_label.text()
+    assert not tab.marks_add_btn.isVisibleTo(tab)  # only shown while a question is being answered
+    tab.undo_mark()
+    assert tab.canvas.marks() == [(100, 80)]
+    tab._point_clicked(101, 81)  # on top of an existing mark: removes it
+    assert tab.canvas.marks() == []
+    tab._point_clicked(5, 5)
+    tab.clear_marks()
+    assert tab.canvas.marks() == [] and not tab.marks_undo_btn.isEnabled()
+
+
+def test_marks_are_sent_with_the_rerun_and_then_cleared(tab, ctx):
+    from core.review.service import take_rerun_points
+    tab.select_image("a")
+    tab.set_mode("mark")
+    tab._point_clicked(100, 80)
+    tab._point_clicked(200, 120)
+    assert tab.rerun_with("")  # marks alone are enough, no note needed
+    assert take_rerun_points(ctx.data_dir, "a") == [(100, 80), (200, 120)]
+    assert ctx.db.get("a").status == "queued"
+    assert tab.canvas.marks() == [] and not tab.marks_bar.isVisibleTo(tab)
+    assert "places you marked" in tab.message.text()
+
+
+def test_marks_are_dropped_when_another_image_is_opened(tab):
+    tab.select_image("a")
+    tab.set_mode("mark")
+    tab._point_clicked(100, 80)
+    tab.select_image("b")
+    assert tab.canvas.marks() == [] and tab.canvas.mode() == "view" and not tab.marks_bar.isVisibleTo(tab)
+
+
+def test_leaving_the_marking_mode_keeps_marks_for_a_rerun(tab):
+    tab.select_image("a")
+    tab.set_mode("mark")
+    tab._point_clicked(100, 80)
+    tab.set_mode("view")
+    assert tab.canvas.marks() == [(100, 80)] and tab.marks_bar.isVisibleTo(tab)
+
+
+def test_mark_button_is_off_with_no_image(tab):
+    tab._show_nothing()
+    tab.image_id = ""
+    tab._update_buttons()
+    assert not tab.mode_buttons["mark"].isEnabled()
+    tab.set_mode("mark")
+    assert tab.canvas.mode() != "point"
+
+
+# ---------------------------------------------------------------- fitting a box by hand
+def test_fit_box_by_hand_replaces_only_the_box(tab):
+    tab.select_image("a")
+    laser = tab.draft.laser_boxes[0]
+    before = (laser.kind, laser.id, dict(laser.metrics))
+    tab.canvas.select(laser.id)
+    tab.refit_selected()
+    assert tab.canvas.mode() == "draw"
+    tab._box_drawn((50, 40, 33, 22))
+    assert tab.draft.laser_boxes[0].box == (50, 40, 33, 22) and tab.dirty
+    assert (tab.draft.laser_boxes[0].kind, tab.draft.laser_boxes[0].id) == before[:2]  # label kept
+    assert len(tab.draft.laser_boxes) == 1 and tab.canvas.mode() == "edit"  # nothing was added
+    assert tab.apply_changes()
+    assert read_sidecar(tab.ctx.data_dir / "sidecars" / "a.json").laser_boxes[0].box == (50, 40, 33, 22)
+
+
+def test_fit_box_needs_a_selected_box_and_can_be_cancelled(tab):
+    tab.select_image("a")
+    tab.canvas.select("")
+    tab.refit_selected()
+    assert "Select a box first" in tab.message.text() and tab.canvas.mode() != "draw"
+    tab.canvas.select(tab.draft.laser_boxes[0].id)
+    tab.refit_selected()
+    tab.set_mode("view")  # picking another mode cancels
+    tab._box_drawn((5, 5, 10, 10))  # now an ordinary draw in whatever kind: must not touch the laser box
+    assert tab.draft.laser_boxes[0].box != (5, 5, 10, 10)
+
+
+def test_fitting_a_moved_box_settles_its_flag(tab):
+    from core.models import Question
+    tab.select_image("a")
+    laser = tab.draft.laser_boxes[0]
+    tab.draft.questions.append(Question("qm_" + laser.id, "moved", laser.id))
+    tab.canvas.select(laser.id)
+    tab.refit_selected()
+    tab._box_drawn((60, 50, 20, 20))
+    assert next(q for q in tab.draft.questions if q.id == "qm_" + laser.id).answer == "box fitted by hand"

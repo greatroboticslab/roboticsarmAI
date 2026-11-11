@@ -176,7 +176,7 @@ def _entry_block(entry: dict, image_dir: Path | None) -> list:
     stamp = entry.get("time", "")[11:19] + "Z" if entry.get("time") else ""
     kind = entry.get("type")
     if kind != "message":
-        label = {"answer": "USER ANSWER", "reviewer_note": "REVIEWER NOTE", "error": "ERROR", "fallback": "FALLBACK",
+        label = {"answer": "USER ANSWER", "reviewer_note": "REVIEWER NOTE", "reviewer_marks": "REVIEWER MARKS", "error": "ERROR", "fallback": "FALLBACK",
                  "invalid_reply": "INVALID REPLY"}.get(kind, str(kind).upper())
         return [Paragraph(f"<b>{_text(stamp)} {label}</b>  {_text(_clip(entry.get('text', '')))}", BODY), Spacer(1, 3)]
     role = entry.get("role", "?")

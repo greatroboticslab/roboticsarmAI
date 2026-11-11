@@ -2,6 +2,13 @@
 
 Desktop app that proposes bounding-box labels for laser images, lets you review them, and uploads approved labels to Roboflow. See the build spec for the full design.
 
+## Video walkthrough
+
+<!-- Paste the link to your YouTube video below, replacing the placeholder. To show a clickable thumbnail instead,
+     use: [![Laser Labeler walkthrough](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://www.youtube.com/watch?v=VIDEO_ID) -->
+
+Watch the walkthrough: **YOUR_YOUTUBE_LINK_HERE**
+
 ## Status
 
 | Phase | State |
@@ -60,6 +67,14 @@ In every mode free text is made a legal class-name word (lowercase letters and d
 **Spread-out lasers**: the spot does not have to be a tight dot. The detector grows each bright region from its peak, accepts soft round or oval glows up to 5% of the image, merges nested lobes of one glow into one spot, and judges "bright enough" against local pixel-to-pixel noise (so a textured scene no longer hides the laser). A candidate must stand out from a ring of pixels around it, so gradients and bright objects are not mistaken for a laser. Thresholds are constants at the top of `core/tools/laser_detect.py` (`MIN_NOISES`, `NEST_PEAK_RATIO`).
 
 The status bar shows the Roboflow project, the active prompt version, the provider and model, and today's spend.
+
+**Marking where a laser is.** In Review, "Mark laser spots" lets you click as many places as you like. A click only tells the app where a laser is so it can check there; it is not the laser's box, size or event (the app measures the spot, the model decides what it is, and you can edit the box afterwards). Click a mark again to remove it. Marks are sent with "Re-run with a note..." (no note needed), or turned into laser boxes with "Add these as lasers" when you answer the "where does the beam first hit?" question.
+
+**Box positions.** Photos are turned upright by their EXIF orientation before anything is measured, so boxes line up with what Roboflow shows. Labels made by an older version are moved onto the upright picture when they are opened or uploaded (images already uploaded need Overwrite to fix them). If a vision model answers in a different number system (a 0 to 1000 grid or 0 to 1 fractions) in agent mode, AI settings has "Box numbers from the model are" (default: work it out from the spots the app found).
+
+**Boxes in the wrong place.** In agent mode, a laser box far from every spot the app found is moved onto the nearest spot, set to low confidence and flagged ("box moved onto a spot") so you check it. If a box is still wrong, select it and press "Fit selected box by hand": draw a new box and the label (object, material, event) stays as generated; only the box changes. The app also recognises a model that answered on a 0-1000 grid, in 0-1 fractions, or on a copy the server shrank, and converts it.
+
+**Big lists.** Loading hundreds or thousands of Roboflow images and ticking them all no longer freezes the window (settings are cached, the grid lays out in batches and ticks everything in one update).
 
 ## First steps on your machine
 

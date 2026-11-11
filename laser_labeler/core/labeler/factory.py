@@ -18,7 +18,7 @@ from core.providers.base import VisionProvider
 from core.providers.cost import CostTracker
 from core.providers.registry import build_provider
 from core.queue_db import QueueRow, overall_confidence
-from core.review.service import take_rerun_note
+from core.review.service import take_rerun_note, take_rerun_points
 from core.labeler.fit import FitMemory
 from core.schema.class_names import ClassNameError
 from core.schema.taxonomy import Taxonomy, TaxonomyError, add_entry
@@ -85,6 +85,7 @@ def build_label_fn(settings: dict, provider: VisionProvider, taxonomy: Taxonomy,
     def label_fn(row: QueueRow) -> ImageLabelSet:
         common = dict(taxonomy=taxonomy, settings=settings, image_id=row.image_id, tags=row.tags, mode=mode,
                       prompt_dir=prompt_dir, on_entry=on_entry, user_note=take_rerun_note(data_dir, row.image_id),
+                      hint_points=take_rerun_points(data_dir, row.image_id),
                       on_taxonomy_add=save_new_word)
         # a rate limit is raised, not recorded as a failed image: the run loop pauses and asks to resume
         result, transcript = label_image_unsaved(row.path, provider=provider, guard=guard, raise_on_limit=True, fit=fit, **common)

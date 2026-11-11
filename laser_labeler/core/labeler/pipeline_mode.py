@@ -30,11 +30,21 @@ def _user_message(ctx: LabelContext, candidates) -> Message:
                          target=ctx.crop_px)
         images.append(ImagePart(encode_png(crop.image)))
         lines.append(f"Image {n} is a zoomed crop around {cand.id} (peak brightness {cand.peak:.2f}, "
-                     f"{cand.area} px core, {cand.saturated_fraction:.0%} saturated).")
+                     f"{cand.area} px core, {cand.saturated_fraction:.0%} saturated)"
+                     + (", a place the reviewer pointed at." if cand.marked else "."))
+    marked = [c.id for c in candidates if c.marked]
+    if marked:
+        lines.append(MARKS_NOTE.format(ids=", ".join(marked)))
     if ctx.user_note:
         lines.append(f"Note from the reviewer about this image (follow it): {ctx.user_note}")
     lines.append("Classify every candidate and reply with the JSON object described above.")
     return Message("user", "\n".join(lines), images=images)
+
+
+MARKS_NOTE = ("The reviewer pointed at {ids}: a laser is somewhere there. A pointed-at place is only a point on a laser, "
+              "not its size or its box (the app measured the box from the pixels). Look at each of those crops and decide "
+              "from the picture what is there: whether it is a laser, its event, and the object it lands on. Do not assume "
+              "a pointed-at place is the direct hit, and other candidates can still be lasers.")
 
 
 def _no_laser(ctx: LabelContext) -> RawResult:

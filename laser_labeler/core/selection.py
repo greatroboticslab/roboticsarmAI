@@ -36,15 +36,16 @@ def label_state(entry: Entry, scheme: str | None = None) -> str:
 
 def filter_entries(entries: Iterable[Entry], *, only_unlabeled: bool = False, split: str = "", tag: str = "",
                    text: str = "", queued: Iterable[str] = (), hide_queued: bool = True,
-                   scheme: str | None = None) -> list[Entry]:
+                   scheme: str | None = None, states: dict[str, str] | None = None) -> list[Entry]:
     """Entries to show. "Unlabeled only" keeps unlabeled images and ones of unknown state (never silently drops them);
-    with a `scheme` it also keeps images labeled only in an older style, and drops those labeled in the current one."""
+    with a `scheme` it also keeps images labeled only in an older style, and drops those labeled in the current one.
+    `states` (entry key -> label state, already worked out for that scheme) saves doing it again for a long list."""
     queued_ids, needle = set(queued), text.strip().lower()
     out = []
     for e in entries:
         if hide_queued and e.key in queued_ids:
             continue
-        if only_unlabeled and label_state(e, scheme) == LABELED:
+        if only_unlabeled and (states.get(e.key) if states and e.key in states else label_state(e, scheme)) == LABELED:
             continue
         if split and e.split != split:
             continue

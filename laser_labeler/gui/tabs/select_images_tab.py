@@ -36,6 +36,9 @@ class SelectImagesTab(QWidget):
         self._shown: list[Entry] = []
         self._worker: ProgressWorker | None = None
         self._syncing = False
+        self._scheme = self.scheme()
+        self._states: dict[str, str] = {}  # entry key -> label state in the current scheme (remote entries only)
+        self._needs = 0  # how many remote entries are not labeled in the current system
         self.ask_unknown: Callable[[int], str] = self._ask_unknown  # replaced in tests
         self.ask_labeled: Callable[[int, str], str] = self._ask_labeled  # replaced in tests
 
@@ -120,8 +123,7 @@ class SelectImagesTab(QWidget):
         self.local_radio.toggled.connect(self._source_changed)
         self.choose_btn.clicked.connect(self.choose_files)
         self.load_btn.clicked.connect(self.load_remote)
-        for radio in (self.all_radio, self.unlabeled_radio):
-            radio.toggled.connect(lambda _v: self.refresh_view())
+        self.unlabeled_radio.toggled.connect(lambda _v: self.refresh_view())  # the pair toggles together: refresh once
         for combo in (self.split_box, self.tag_box):
             combo.currentIndexChanged.connect(lambda _i: self.refresh_view())
         self.search.textChanged.connect(lambda _t: self.refresh_view())
@@ -133,16 +135,34 @@ class SelectImagesTab(QWidget):
         self.add_btn.clicked.connect(self.add_to_queue)
         self.cancel_btn.clicked.connect(lambda: self._worker and self._worker.cancel())
         self.ctx.queue_changed.connect(self.refresh_view)
-        self.ctx.settings_changed.connect(self._refresh_source)
-        self.ctx.settings_changed.connect(self.refresh_view)
+        self.ctx.settings_changed.connect(self._settings_changed)
 
     def _source_changed(self) -> None:
         self.entries, self.ticked = [], set()
+        self._compute_states()
         self._refresh_source()
         self.refresh_view()
 
     def scheme(self) -> str:
         return self.ctx.settings()["labeling"].get("scheme", "full")
+
+    def _compute_states(self) -> None:
+        """Work out every remote image's label state once. (Doing it per image, per refresh, reading the settings file
+        each time, is what made big Roboflow lists freeze.)"""
+        scheme = self.scheme()
+        self._scheme = scheme
+        self._states = {e.key: label_state(e, scheme) for e in self.entries if e.remote is not None}
+        self._needs = sum(state != LABELED for state in self._states.values())
+
+    def _state(self, entry: Entry) -> str:
+        return self._states.get(entry.key, "")
+
+    def _settings_changed(self) -> None:
+        old = getattr(self, "_scheme", None)
+        self._refresh_source()
+        if self.scheme() != old:
+            self._compute_states()
+        self.refresh_view()
 
     def _refresh_source(self) -> None:
         self.unlabeled_radio.setToolTip(
@@ -162,6 +182,7 @@ class SelectImagesTab(QWidget):
     def set_entries(self, entries: list[Entry]) -> None:
         self.entries = entries
         self.ticked &= {e.key for e in entries}
+        self._compute_states()
         for combo, options in ((self.split_box, split_options(entries)), (self.tag_box, tag_options(entries))):
             combo.blockSignals(True)
             combo.clear()
@@ -209,25 +230,26 @@ class SelectImagesTab(QWidget):
 
     def _remote_loaded(self, images: list) -> None:
         self._job_done()
+        self.unlabeled_radio.blockSignals(True)  # start from the images that still need labels; "All images" shows the rest
+        self.unlabeled_radio.setChecked(True)
+        self.unlabeled_radio.blockSignals(False)
         self.set_entries([Entry(i.id, i.name or i.id, None, i.split, list(i.tags), i.labels, i) for i in images])
-        self.unlabeled_radio.setChecked(True)  # start from the images that still need labels; "All images" shows the rest
-        states = [label_state(e, self.scheme()) for e in self.entries]
+        states = list(self._states.values())
         self.message.setText(
             f"Loaded {len(images)} image(s) from Roboflow: {states.count(LABELED)} already labeled in the current system, "
             f"{states.count(OLDER)} labeled in an older style, {len(images) - states.count(LABELED) - states.count(OLDER)} "
             "without labels or of unknown state. Showing the ones that need labeling.")
 
     def refresh_view(self) -> None:
-        queued = {r.image_id for r in self.ctx.db.list()}
+        queued = self.ctx.db.ids()
         split = self.split_box.currentText() if self.split_box.currentText() != ALL else ""
         tag = self.tag_box.currentText() if self.tag_box.currentText() != ALL else ""
-        scheme = self.scheme()
         self._shown = filter_entries(self.entries, only_unlabeled=self.unlabeled_radio.isChecked(), split=split, tag=tag,
                                      text=self.search.text(), queued=queued, hide_queued=self.hide_queued.isChecked(),
-                                     scheme=scheme)
+                                     scheme=self._scheme, states=self._states)
         items = []
         for e in self._shown:
-            state = label_state(e, scheme) if e.remote is not None else ""
+            state = self._state(e)
             mark = {"unknown": "? ", "labeled": "* ", "older": "~ "}.get(state, "")
             tip = f"{e.name}\nsplit: {e.split or '-'}\ntags: {', '.join(e.tags) or '-'}"
             if state:
@@ -258,8 +280,7 @@ class SelectImagesTab(QWidget):
         self.ticked = (self.ticked | set(keys)) if on else (self.ticked - set(keys))
         self._syncing = True  # the grid reports its own changes; do not let that overwrite the new set
         try:
-            self.grid.set_checked(self.grid.keys(), False)
-            self.grid.set_checked([k for k in self.grid.keys() if k in self.ticked], True)
+            self.grid.set_checked_exactly(self.ticked)
         finally:
             self._syncing = False
         self._update_counts()
@@ -268,10 +289,8 @@ class SelectImagesTab(QWidget):
         self._set_ticks(next_unticked(self._shown, self.ticked, self.chunk.value()), True)
 
     def _update_counts(self) -> None:
-        total_queued = len(self.ctx.db.list())
-        remote = [e for e in self.entries if e.remote is not None]
-        needs = sum(label_state(e, self.scheme()) != LABELED for e in remote)
-        extra = f", {needs} need labeling" if remote else ""
+        total_queued = sum(self.ctx.db.counts().values())
+        extra = f", {self._needs} need labeling" if self._states else ""
         self.count_label.setText(f"{len(self.ticked)} ticked, {len(self._shown)} shown, {len(self.entries)} loaded{extra}, "
                                  f"{total_queued} already in the queue")
         n = len(self.ticked)
@@ -307,28 +326,29 @@ class SelectImagesTab(QWidget):
     def add_to_queue(self) -> int:
         """Queue the ticked images. Returns how many were added (remote downloads finish in the background)."""
         chosen = [e for e in self.entries if e.key in self.ticked]
-        done = [e for e in chosen if e.remote is not None and label_state(e, self.scheme()) == LABELED]
+        scheme = self.scheme()
+        done = {e.key for e in chosen if e.remote is not None and self._state(e) == LABELED}
         if done:  # only label what is not labeled yet, unless the person says otherwise
-            answer = self.ask_labeled(len(done), self.scheme())
+            answer = self.ask_labeled(len(done), scheme)
             if answer == "cancel":
                 return 0
             if answer == "skip":
-                chosen = [e for e in chosen if e not in done]
-                self.ticked -= {e.key for e in done}
-                self.grid.set_checked([e.key for e in done], False)
-        unknown = [e for e in chosen if e.remote is not None and label_state(e) == UNKNOWN]
+                chosen = [e for e in chosen if e.key not in done]
+                self.ticked -= done
+                self.grid.set_checked(done, False)
+        unknown = {e.key for e in chosen if e.remote is not None and label_state(e) == UNKNOWN}
         if unknown:
             answer = self.ask_unknown(len(unknown))
             if answer == "cancel":
                 return 0
             if answer == "skip":
-                chosen = [e for e in chosen if e not in unknown]
+                chosen = [e for e in chosen if e.key not in unknown]
         if not chosen:
             self.message.setText("Nothing to add.")
             return 0
         local = [e for e in chosen if e.remote is None]
         remote = [e for e in chosen if e.remote is not None]
-        self._older_added = sum(label_state(e, self.scheme()) == OLDER for e in remote)
+        self._older_added = sum(self._state(e) == OLDER for e in remote)
         tags = [t.strip() for t in self.tag_edit.text().split(",") if t.strip()]
         added = self.ctx.db.add_images([NewImage(e.key, e.name, e.path or "", "local", tags) for e in local]) if local else 0
         self.ticked -= {e.key for e in local}
@@ -370,8 +390,7 @@ class SelectImagesTab(QWidget):
                      "them, tick Overwrite in the upload window to replace those labels.")
         self._older_added = 0
         self.message.setText(text)
-        self.ctx.queue_changed.emit()
-        self.refresh_view()
+        self.ctx.queue_changed.emit()  # this tab listens too, so it redraws once, not twice
 
     # ------------------------------------------------------------------ background jobs
     def _start_job(self, job: Callable, on_done: Callable, text: str) -> None:

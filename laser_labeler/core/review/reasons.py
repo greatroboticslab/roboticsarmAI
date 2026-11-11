@@ -11,6 +11,7 @@ LOW_CONFIDENCE = "low confidence"
 COLOR = "color unclear"
 TAXONOMY = "value not in your lists"
 INCIDENCE = "incidence not valid"
+MOVED = "box moved onto a spot"
 MODEL = "the model asked"
 
 
@@ -19,6 +20,8 @@ def question_kind(q: Question) -> str:
     qid = q.id or ""
     if qid == "q_no_laser" or q.field_name == "hit_point":
         return NO_LASER
+    if qid.startswith("qm_"):
+        return MOVED
     if qid.startswith("ql_"):
         return LOW_CONFIDENCE
     if qid.startswith("qc_"):

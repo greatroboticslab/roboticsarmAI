@@ -10,6 +10,7 @@ from pathlib import Path
 
 from core.labeler.components import apply_components
 from core.labeler.laser_size import grow_laser_boxes
+from core.labeler.snap import snap_lasers
 from core.labeler.context import LabelContext
 from core.labeler.table_rule import apply_table_rule
 from core.schema.class_names import normalise_token
@@ -63,6 +64,9 @@ def _color_for(ctx: LabelContext, item: dict, box, color_conf: float, questions:
     questions.append(Question(f"qc_{item['id']}", "The color of this region is ambiguous. Which is it?",
                               item["id"], "color", list(ctx.taxonomy.colors), True))
     return sample.name or "unknown"
+
+
+MOVED_CONFIDENCE = 0.3  # a laser box the app had to move is never more certain than this
 
 
 NOT_A_NAME = {"unknown", "unsure", "none", "null", "na", "n/a", "unidentified"}
@@ -165,7 +169,25 @@ def finalize(ctx: LabelContext, raw: RawResult, *, image_id: str, camera_id: str
              color_confidence: float = 0.25, question_confidence: float = 0.4, scheme: str = "full",
              laser_object_fraction: float = 0.0) -> ImageLabelSet:
     questions = list(raw.questions)
-    lasers = _measure_lasers(ctx, raw.laser_boxes)
+    laser_items, snaps = snap_lasers(raw.laser_boxes, ctx.detection.candidates)
+    lasers = _measure_lasers(ctx, laser_items)
+    notes = raw.notes
+    for snap in snaps:  # a laser box far from every spot: moved onto the nearest spot, or left, and flagged either way
+        laser = next(ls for ls in lasers if ls.id == snap.laser_id)
+        laser.metrics["confidence"] = min(laser.metrics.get("confidence", 0.0), MOVED_CONFIDENCE)
+        far = f"about {snap.distance:.0f} px from the nearest laser spot the app found"
+        if snap.moved:
+            text = (f"The model's box for this laser was {far}, so the app moved it onto that spot. Check that it is "
+                    "the right place. If not, use 'Fit selected box by hand'.")
+            laser.notes = (laser.notes + " Box moved onto the nearest detected spot.").strip()
+        else:
+            text = (f"The model's box for this laser was {far} and every spot was already used, so it was left where "
+                    "the model put it. Check it, and use 'Fit selected box by hand' if it is wrong.")
+        questions.append(Question(f"qm_{snap.laser_id}", text, snap.laser_id))
+    if snaps:
+        moved = sum(s.moved for s in snaps)
+        notes = (notes + f" {moved} laser box(es) were far from any laser spot and were moved onto the nearest one"
+                 + (f"; {len(snaps) - moved} could not be moved." if moved < len(snaps) else ".")).strip()
     if scheme in ("components", "merged"):  # direct hit = component1, every bounce = component2
         lasers = apply_components(lasers)
     items = replace_misplaced_objects(ctx, raw.object_boxes, lasers)
@@ -186,4 +208,4 @@ def finalize(ctx: LabelContext, raw: RawResult, *, image_id: str, camera_id: str
         is_grayscale=ctx.image.is_grayscale, background_level=ctx.stats.background_level,
         exposure=ctx.image.exposure, laser_boxes=lasers, object_boxes=objects, questions=questions,
         status="needs_input" if questions else "pending", scheme=scheme, image_width=ctx.image.width,
-        image_height=ctx.image.height, notes=raw.notes)
+        image_height=ctx.image.height, notes=notes, pixel_space="upright")

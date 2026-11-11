@@ -6,10 +6,12 @@ for its boxes. Every method here keeps the two, the manifest, the measurements C
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
+from core.schema.orientation import to_upright
 from core.camera import load_image
 from core.labeler.context import build_context
 from core.labeler.components import SCHEMES, component_for_kind
@@ -90,6 +92,7 @@ class ReviewService:
         if not path.is_file():
             raise ReviewError(f"{row.name} has no labels yet (status: {row.status})")
         ls = read_sidecar(path)
+        to_upright(ls, row.path)  # an older set was measured before photos were turned upright
         ls.status = row.status  # type: ignore[assignment]
         ls.pdf_path = row.pdf_path or ls.pdf_path
         return ls
@@ -242,11 +245,15 @@ class ReviewService:
         return warnings
 
     def _answer_hit_point(self, row: QueueRow, ls: ImageLabelSet, answer: str) -> None:
+        """The answer is one or more places, "x,y" separated by ";". Each is only a place where a laser is."""
         try:
-            x, y = (float(v) for v in answer.replace(";", ",").split(","))
+            points = [tuple(float(v) for v in part.split(",")) for part in answer.split(";") if part.strip()]
+            if not points or any(len(p) != 2 for p in points):
+                raise ValueError
         except ValueError:
-            raise ReviewError("Click on the image where the beam first hits (the answer should look like 120,85).") from None
-        add_laser_at_point(ls, row.path, self.settings, x, y)
+            raise ReviewError("Click on the image where a laser is (the answer should look like 120,85, "
+                              "or several places separated by ;).") from None
+        add_lasers_at_points(ls, row.path, self.settings, clean_points(points))
 
     def _apply_field(self, ls: ImageLabelSet, target_id: str, field: str, value: str, add_to_taxonomy: bool) -> list[str]:
         obj = next((o for o in ls.object_boxes if o.id == target_id), None)
@@ -322,12 +329,17 @@ class ReviewService:
             raise ReviewError(str(exc)) from None
 
     # ------------------------------------------------------------ re-run and PDF
-    def rerun(self, image_id: str, note: str = "") -> None:
-        """Label this image again, passing the reviewer's note to the model. The old answer is replaced."""
+    def rerun(self, image_id: str, note: str = "", points: Iterable = ()) -> None:
+        """Label this image again, passing the reviewer's note and marked places to the model. The old answer is replaced.
+
+        `points` are places (x, y in original pixels) where the reviewer says a laser is. They are only places to
+        check: the labeler measures each spot from the pixels and the model decides what it is."""
         row = self.row(image_id)
         self._check_move(row, "queued")
+        kept = clean_points(points)  # refuse bad input before anything is changed
         if note.strip():
             set_rerun_note(self.data_dir, image_id, note)
+        set_rerun_points(self.data_dir, image_id, kept)
         self.db.requeue([image_id])
 
     def rebuild_pdf(self, image_id: str) -> Path:
@@ -401,6 +413,57 @@ def set_rerun_note(data_dir: str | Path, image_id: str, note: str) -> None:
     path.write_text(json.dumps(notes, indent=2), encoding="utf-8")
 
 
+def _points_file(data_dir: str | Path) -> Path:
+    return Path(data_dir) / "rerun_points.json"
+
+
+def _read_points(data_dir: str | Path) -> dict[str, list[list[float]]]:
+    try:
+        data = json.loads(_points_file(data_dir).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def clean_points(points: Iterable) -> list[tuple[float, float]]:
+    """Points as (x, y) floats in original pixels; anything that is not a finite pair is refused."""
+    out: list[tuple[float, float]] = []
+    for point in points:
+        try:
+            x, y = float(point[0]), float(point[1])
+        except (TypeError, ValueError, IndexError):
+            raise ReviewError("A marked place must be an x, y pair of numbers.") from None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ReviewError("A marked place must be an x, y pair of numbers.")
+        out.append((x, y))
+    return out
+
+
+def set_rerun_points(data_dir: str | Path, image_id: str, points: Iterable) -> None:
+    """Remember the places a reviewer marked ("a laser is here") for this image's next run."""
+    marks = _read_points(data_dir)
+    kept = clean_points(points)
+    if kept:
+        marks[image_id] = [[x, y] for x, y in kept]
+    else:
+        marks.pop(image_id, None)
+    path = _points_file(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(marks, indent=2), encoding="utf-8")
+
+
+def take_rerun_points(data_dir: str | Path, image_id: str) -> list[tuple[float, float]]:
+    """The marked places waiting for this image, removed so they are used once."""
+    marks = _read_points(data_dir)
+    found = marks.pop(image_id, [])
+    if found:
+        _points_file(data_dir).write_text(json.dumps(marks, indent=2), encoding="utf-8")
+    try:
+        return clean_points(found)
+    except ReviewError:
+        return []
+
+
 def take_rerun_note(data_dir: str | Path, image_id: str) -> str:
     """The pending note for this image, removed so it is used once."""
     notes = _read_notes(data_dir)
@@ -467,22 +530,50 @@ def apply_scheme(ls: ImageLabelSet, scheme: str) -> bool:
     return before != (ls.scheme, [b.component for b in ls.laser_boxes])
 
 
-def add_laser_at_point(ls: ImageLabelSet, image_path: str | Path, settings: dict, x: float, y: float) -> LaserBox:
-    """A laser box where the user clicked: snapped to a detected spot if one is close, else a small square."""
+def add_lasers_at_points(ls: ImageLabelSet, image_path: str | Path, settings: dict,
+                         points: Sequence[tuple[float, float]]) -> list[LaserBox]:
+    """A laser box for each place a reviewer clicked. A click only says where a laser is, not how big it is: each click
+    snaps to a detected spot when one is close (its measured box is used) and otherwise gets a small square.
+    The first click is taken as the direct hit and the others as "other" (change the event in the editor).
+    Two clicks on the same spot make one box."""
     image = load_image(image_path)
     ctx = build_context(image, Taxonomy(), max_image_px=settings["provider"]["max_image_px"],
                         max_candidates=settings["run"]["max_candidates"])
-    best, best_d = None, HIT_SEARCH_RADIUS
-    for cand in ctx.detection.candidates:
-        d = ((cand.center[0] - x) ** 2 + (cand.center[1] - y) ** 2) ** 0.5
-        if d <= best_d:
-            best, best_d = cand, d
-    half = DEFAULT_HIT_BOX / 2
-    box = best.box if best else (x - half, y - half, DEFAULT_HIT_BOX, DEFAULT_HIT_BOX)
     ls.image_width, ls.image_height = ls.image_width or image.width, ls.image_height or image.height
-    made = add_laser_box(ls, image_path, settings, box, "first_incidence")
+    made: list[LaserBox] = []
+    boxes: list[tuple] = []
+    half = DEFAULT_HIT_BOX / 2
+    for x, y in points:
+        best, best_d = None, HIT_SEARCH_RADIUS
+        for cand in ctx.detection.candidates:
+            d = ((cand.center[0] - x) ** 2 + (cand.center[1] - y) ** 2) ** 0.5
+            if d <= best_d:
+                best, best_d = cand, d
+        box = tuple(best.box) if best else (x - half, y - half, DEFAULT_HIT_BOX, DEFAULT_HIT_BOX)
+        if any(_overlap(box, other) > 0.5 for other in boxes):
+            continue
+        boxes.append(box)
+        kind = "first_incidence" if not made else "other"
+        made.append(add_laser_box(ls, image_path, settings, box, kind))
     ls.questions = [q for q in ls.questions if q.id != "q_no_laser" or q.answer is not None]
     return made
+
+
+def add_laser_at_point(ls: ImageLabelSet, image_path: str | Path, settings: dict, x: float, y: float) -> LaserBox:
+    """A laser box where the user clicked: snapped to a detected spot if one is close, else a small square."""
+    made = add_lasers_at_points(ls, image_path, settings, [(x, y)])
+    if made:
+        return made[0]
+    raise ReviewError("There is already a laser box there.")
+
+
+def _overlap(a, b) -> float:
+    """Intersection over union of two (x, y, w, h) boxes."""
+    ix = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    return inter / union if union > 0 else 0.0
 
 
 def add_object_box(ls: ImageLabelSet, image_path: str | Path, taxonomy: Taxonomy, box, settings: dict) -> ObjectBox:

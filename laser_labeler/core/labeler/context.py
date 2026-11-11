@@ -12,10 +12,11 @@ from typing import Sequence
 import numpy as np
 
 from core.camera import ImageData, ImageStats, image_stats, intensity_map
+from core.labeler.coords import resolve_space, to_shown_px
 from core.models import Question
 from core.schema.taxonomy import Taxonomy
 from core.tools.crop import downscale_to_max
-from core.tools.laser_detect import Detection, detect_laser
+from core.tools.laser_detect import Detection, apply_marks, detect_laser
 
 
 @dataclass
@@ -32,6 +33,10 @@ class LabelContext:
     taxonomy_added: list[tuple[str, str]] = field(default_factory=list)  # ("object" | "material", value) added in "off" mode
     questions: list[Question] = field(default_factory=list)  # filled by the ask_user tool
     user_note: str = ""  # reviewer's note when an image is re-run
+    hint_points: list[tuple[float, float]] = field(default_factory=list)  # places the reviewer clicked: "a laser is here" (original px)
+    coordinates: str = "auto"  # the space the model's boxes are written in: auto | pixels | thousand | fraction
+    coordinates_used: str = "pixels"  # what the last reply was read as (set by `from_model`)
+    coordinates_why: str = ""
     _detection: Detection | None = None
     _intensity: np.ndarray | None = None
 
@@ -49,10 +54,24 @@ class LabelContext:
     def detection(self) -> Detection:
         if self._detection is None:
             self._detection = detect_laser(self.rgb, self.stats, max_candidates=self.max_candidates)
+            if self.hint_points:  # the reviewer pointed at lasers: they are looked at first and always shown to the model
+                marked = apply_marks(self._detection, self.rgb, self.stats, self.hint_points)
+                self.max_candidates = max(self.max_candidates, min(12, len(marked)))
         return self._detection
 
     def to_original(self, box: Sequence[float]) -> tuple[float, float, float, float]:
         return tuple(v / self.factor for v in box)  # type: ignore[return-value]
+
+    def read_model_boxes(self, laser_boxes: Sequence[Sequence[float]], other_boxes: Sequence[Sequence[float]]) -> None:
+        """Decide which space this reply's boxes are in (see core/labeler/coords.py); `from_model` then uses it."""
+        spots = [(c.box[0] * self.factor + c.box[2] * self.factor / 2.0, c.box[1] * self.factor + c.box[3] * self.factor / 2.0)
+                 for c in self.detection.candidates]
+        self.coordinates_used, self.coordinates_why = resolve_space(
+            laser_boxes, other_boxes, spots, self.shown.shape[1], self.shown.shape[0], self.coordinates)
+
+    def from_model(self, box: Sequence[float]) -> tuple[float, float, float, float]:
+        """A box as the model wrote it -> original pixels."""
+        return self.to_original(to_shown_px(box, self.coordinates_used, self.shown.shape[1], self.shown.shape[0]))
 
     def to_shown(self, box: Sequence[float]) -> list[int]:
         return [int(round(v * self.factor)) for v in box]

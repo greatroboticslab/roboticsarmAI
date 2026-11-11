@@ -5,7 +5,7 @@ pans by dragging empty space, and has four modes:
   view  - click a box to select it
   edit  - the selected box can be dragged to move, or by its edges and corners to resize
   draw  - drag a new box on empty space (emits boxDrawn)
-  point - a click emits pointClicked (used to answer "where does the beam first hit?")
+  point - a click emits pointClicked (used to mark where a laser is: a point, never a box)
 """
 from __future__ import annotations
 
@@ -13,13 +13,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import (QGraphicsItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem,
-                             QGraphicsView, QWidget)
+from PyQt6.QtGui import QBrush, QColor, QImage, QImageReader, QPainter, QPen, QPixmap
+from PyQt6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsRectItem, QGraphicsScene,
+                             QGraphicsSimpleTextItem, QGraphicsView, QWidget)
+
+def _read_upright(path: str) -> QImage:
+    """The picture exactly as the labeler measured it: decoded the same way and turned upright by its EXIF orientation
+    (the way Roboflow and browsers show it; Qt alone does not, and does not read it from every file type)."""
+    try:
+        from core.camera import load_image
+        rgb = load_image(path).rgb
+        return QImage(rgb.tobytes(), rgb.shape[1], rgb.shape[0], rgb.shape[1] * 3, QImage.Format.Format_RGB888).copy()
+    except Exception:
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        return reader.read()
+
 
 LASER_COLOR = QColor("#ff3b6b")
 OBJECT_COLOR = QColor("#18b8a6")
 SELECTED_COLOR = QColor("#ffd23f")
+MARK_COLOR = QColor("#4cc9f0")
+MARK_PX = 8  # on-screen radius of a marked place; a click this close to a mark removes it
 MIN_SIZE = 2.0
 HANDLE_PX = 9  # on-screen size of a resize handle
 GRAB_PX = 7  # how close (on screen) the cursor must be to an edge to resize
@@ -50,6 +65,7 @@ class ImageCanvas(QGraphicsView):
         self._pix_item = None
         self._size = (0, 0)
         self._boxes: dict[str, BoxSpec] = {}
+        self._marks: list[tuple[float, float]] = []  # places a person pointed at: "a laser is here" (image pixels)
         self._items: list = []
         self._selected = ""
         self._mode = "view"
@@ -63,10 +79,11 @@ class ImageCanvas(QGraphicsView):
         """Show an image file (or a QImage). Returns False when it cannot be read."""
         self._scene.clear()
         self._items, self._pix_item, self._rubber = [], None, None
+        self._marks = []
         if source is None:
             self._size = (0, 0)
             return False
-        image = source if isinstance(source, QImage) else QImage(str(source))
+        image = source if isinstance(source, QImage) else _read_upright(str(source))
         if image.isNull():
             self._size = (0, 0)
             return False
@@ -84,6 +101,18 @@ class ImageCanvas(QGraphicsView):
         self._boxes = {b.id: b for b in boxes}
         self._selected = selected if selected in self._boxes else ""
         self._redraw()
+
+    def set_marks(self, points: list[tuple[float, float]]) -> None:
+        """Show numbered markers where a person pointed. A marker is a point, so it is drawn as a ring, not a box."""
+        self._marks = [(float(x), float(y)) for x, y in points]
+        self._redraw()
+
+    def marks(self) -> list[tuple[float, float]]:
+        return list(self._marks)
+
+    def mark_tolerance(self) -> float:
+        """How close (in image pixels) a click must be to an existing mark to count as clicking that mark."""
+        return MARK_PX / self._scale()
 
     def boxes(self) -> list[BoxSpec]:
         return list(self._boxes.values())
@@ -144,6 +173,22 @@ class ImageCanvas(QGraphicsView):
                 self._items.append(text)
             if selected and self._mode == "edit":
                 self._add_handles(spec.box)
+        for number, (mx, my) in enumerate(self._marks, 1):
+            ring = QGraphicsEllipseItem(-MARK_PX, -MARK_PX, 2 * MARK_PX, 2 * MARK_PX)
+            ring.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            ring.setPen(QPen(MARK_COLOR, 2))
+            ring.setBrush(QBrush(QColor(76, 201, 240, 60)))
+            ring.setPos(mx, my)
+            ring.setZValue(5)
+            self._scene.addItem(ring)
+            self._items.append(ring)
+            label = QGraphicsSimpleTextItem(str(number))
+            label.setBrush(QBrush(MARK_COLOR))
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            label.setPos(mx + MARK_PX, my - MARK_PX * 2)
+            label.setZValue(5)
+            self._scene.addItem(label)
+            self._items.append(label)
 
     def _add_handles(self, box) -> None:
         x, y, w, h = box

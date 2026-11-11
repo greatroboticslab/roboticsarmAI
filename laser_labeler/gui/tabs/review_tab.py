@@ -18,6 +18,7 @@ from core.queue_db import QueueRow
 from core.reports.sidecar import read_sidecar
 from core.providers.hints import failure_hint
 from core.review.reasons import reason_line
+from core.schema.orientation import to_upright
 from core.review.service import (ReviewError, add_laser_box, add_object_box, apply_scheme, delete_box)
 from core.roboflow.upload import UploadSummary, build_upload_plan, upload_annotations
 from gui.context import AppContext
@@ -37,6 +38,11 @@ SORTS = {"Least confident first": "confidence_asc", "Most confident first": "con
 PAGE = 150
 
 
+MARK_REMINDER = ("A click only tells the app where a laser is, so it can check there. It does not set the laser's box, "
+                 "size or event: the app measures the spot itself and the model decides what it is. Click as many "
+                 "places as there are lasers; click a mark again to remove it.")
+
+
 class ReviewTab(QWidget):
     def __init__(self, ctx: AppContext, parent: QWidget | None = None, *, key_fn: Callable[[], str] | None = None,
                  upload_fn: Callable = upload_annotations) -> None:
@@ -49,7 +55,9 @@ class ReviewTab(QWidget):
         self.image_id = ""
         self.draft: ImageLabelSet | None = None
         self.dirty = False
-        self._question_id = ""  # a hit-point question waiting for a click on the image
+        self._question_id = ""  # a hit-point question waiting for clicks on the image
+        self._refit_id = ""  # the box whose shape is being drawn again by hand (its label is kept)
+        self._marks: list[tuple[float, float]] = []  # places clicked as "a laser is here" (image pixels)
         self._loading = False
         self.confirm_taxonomy: Callable[[list[str]], bool] = self._ask_taxonomy  # replaced in tests
         self.confirm_clear: Callable[[int], bool] = self._ask_clear  # replaced in tests
@@ -121,17 +129,23 @@ class ReviewTab(QWidget):
         modes = QHBoxLayout()
         group = QButtonGroup(self)
         for key, label in (("view", "Look"), ("edit", "Move / resize boxes"), ("draw_object", "Draw object box"),
-                           ("draw_laser", "Draw laser box")):
+                           ("draw_laser", "Draw laser box"), ("mark", "Mark laser spots")):
             b = QPushButton(label)
             b.setCheckable(True)
             group.addButton(b)
             modes.addWidget(b)
             self.mode_buttons[key] = b
         self.mode_buttons["view"].setChecked(True)
+        self.mode_buttons["mark"].setToolTip("Click each place a laser is. Only the place is used, not a box: "
+                                             "the app finds the spot's size itself.")
         self.delete_btn, self.fit_btn = QPushButton("Delete selected box (Del)"), QPushButton("Fit")
         self.scheme_btn = QPushButton("Use current label scheme")
         self.scheme_btn.setToolTip("Switch this image to the label scheme in AI settings (full, components or merged) "
                                    "without calling the model. Images keep the scheme they were labeled with.")
+        self.refit_btn = QPushButton("Fit selected box by hand")
+        self.refit_btn.setToolTip("Draw a new box for the selected label. Its label (object, material, event and "
+                                  "links) stays exactly as generated; only the box changes.")
+        modes.addWidget(self.refit_btn)
         modes.addWidget(self.delete_btn)
         modes.addWidget(self.scheme_btn)
         modes.addWidget(self.fit_btn)
@@ -151,6 +165,23 @@ class ReviewTab(QWidget):
         cc.addWidget(self.header)
         cc.addWidget(self.problems)
         cc.addLayout(modes)
+        self.marks_bar = QWidget()
+        mb = QVBoxLayout(self.marks_bar)
+        mb.setContentsMargins(0, 0, 0, 0)
+        self.marks_label = QLabel()
+        self.marks_label.setWordWrap(True)
+        self.marks_label.setStyleSheet("color: #0b7285")
+        mrow = QHBoxLayout()
+        self.marks_undo_btn, self.marks_clear_btn = QPushButton("Undo last mark"), QPushButton("Clear marks")
+        self.marks_add_btn = QPushButton("Add these as lasers")
+        self.marks_add_btn.setToolTip("Answer the question with these places: one laser box is added at each.")
+        for w in (self.marks_undo_btn, self.marks_clear_btn, self.marks_add_btn):
+            mrow.addWidget(w)
+        mrow.addStretch(1)
+        mb.addWidget(self.marks_label)
+        mb.addLayout(mrow)
+        self.marks_bar.hide()
+        cc.addWidget(self.marks_bar)
         conversation = QWidget()
         conv = QVBoxLayout(conversation)
         conv.setContentsMargins(0, 0, 0, 0)
@@ -231,6 +262,7 @@ class ReviewTab(QWidget):
         for key, button in self.mode_buttons.items():
             button.clicked.connect(lambda _c, k=key: self.set_mode(k))
         self.delete_btn.clicked.connect(self.delete_selected)
+        self.refit_btn.clicked.connect(self.refit_selected)
         self.scheme_btn.clicked.connect(self.use_current_scheme)
         self.fit_btn.clicked.connect(self.canvas.fit)
         self.approve_btn.clicked.connect(self.approve)
@@ -245,6 +277,9 @@ class ReviewTab(QWidget):
         self.canvas.boxSelected.connect(self._canvas_selected)
         self.canvas.boxDrawn.connect(self._box_drawn)
         self.canvas.pointClicked.connect(self._point_clicked)
+        self.marks_undo_btn.clicked.connect(self.undo_mark)
+        self.marks_clear_btn.clicked.connect(self.clear_marks)
+        self.marks_add_btn.clicked.connect(self.add_marked_lasers)
         self.boxes.currentItemChanged.connect(lambda cur, _o: self._box_picked(cur.data(Qt.ItemDataRole.UserRole) if cur else ""))
         self.editor.edited.connect(self._editor_edited)
         self.apply_btn.clicked.connect(self.apply_changes)
@@ -316,6 +351,7 @@ class ReviewTab(QWidget):
         if row.sidecar_path and Path(row.sidecar_path).is_file():
             try:
                 ls = read_sidecar(row.sidecar_path)
+                to_upright(ls, row.path)
                 boxes = [("laser", b.box, ls.image_width, ls.image_height) for b in ls.laser_boxes]
                 boxes += [("object", o.box, ls.image_width, ls.image_height) for o in ls.object_boxes]
             except (OSError, ValueError):
@@ -355,6 +391,8 @@ class ReviewTab(QWidget):
             self.select_image(self.rows[0].image_id, force=True)
         else:
             self.image_id = ""
+            self.canvas.set_mode("view")
+            self._end_marking()
             self._show_nothing()
 
     def _queue_changed(self) -> None:
@@ -403,9 +441,10 @@ class ReviewTab(QWidget):
         row = self.ctx.db.get(image_id)
         if row is None:
             return False
-        self.image_id, self.dirty, self._question_id = image_id, False, ""
+        self.image_id, self.dirty, self._refit_id = image_id, False, ""
         self.mode_buttons["view"].setChecked(True)
         self.canvas.set_mode("view")
+        self._end_marking()
         self._select_in_widgets(image_id)
         image_ok = self.canvas.set_image(row.path)
         try:
@@ -500,12 +539,58 @@ class ReviewTab(QWidget):
 
     # ------------------------------------------------------------------ editing the draft
     def set_mode(self, key: str) -> None:
-        if key.startswith("draw") and self.draft is None:
+        if (key.startswith("draw") and self.draft is None) or (key == "mark" and not self.image_id):
             self.mode_buttons["view"].setChecked(True)
             return
+        self._refit_id = ""  # choosing a mode cancels a box fit in progress
+        if key != "mark" and self._question_id:
+            self._question_id = ""  # leaving the marking mode drops the question wait (the marks stay for a re-run)
         self.mode_buttons[key].setChecked(True)
-        self.canvas.set_mode({"view": "view", "edit": "edit", "draw_object": "draw", "draw_laser": "draw"}[key])
+        self.canvas.set_mode({"view": "view", "edit": "edit", "draw_object": "draw", "draw_laser": "draw",
+                              "mark": "point"}[key])
         self._draw_kind = "laser" if key == "draw_laser" else "object"
+        self._update_marks_bar()
+
+    # ------------------------------------------------------------------ marked laser spots
+    def _update_marks_bar(self) -> None:
+        marking = self.canvas.mode() == "point"
+        self.marks_bar.setVisible(marking or bool(self._marks))
+        count = len(self._marks)
+        head = (f"{count} spot{'s' if count != 1 else ''} marked. " if count else "No spots marked yet. ")
+        if self._question_id:
+            head = "Where does the beam first hit? Click each laser spot, then press 'Add these as lasers'. " + head
+        self.marks_label.setText(head + MARK_REMINDER)
+        self.marks_undo_btn.setEnabled(bool(count))
+        self.marks_clear_btn.setEnabled(bool(count))
+        self.marks_add_btn.setVisible(bool(self._question_id))
+        self.marks_add_btn.setEnabled(bool(count))
+        self.canvas.set_marks(self._marks)
+
+    def _end_marking(self) -> None:
+        """Forget the marks and any question wait (a new image, or after they were used)."""
+        self._marks, self._question_id = [], ""
+        self._update_marks_bar()
+
+    def undo_mark(self) -> None:
+        if self._marks:
+            self._marks.pop()
+            self._update_marks_bar()
+
+    def clear_marks(self) -> None:
+        self._marks = []
+        self._update_marks_bar()
+
+    def add_marked_lasers(self) -> None:
+        """Answer the 'where does the beam first hit' question with every marked place."""
+        if not (self._question_id and self._marks):
+            return
+        qid = self._question_id
+        answer = ";".join(f"{x:.0f},{y:.0f}" for x, y in self._marks)
+        self._end_marking()
+        self.mode_buttons["view"].setChecked(True)
+        self.canvas.set_mode("view")
+        self._update_marks_bar()
+        self._submit_answer(qid, answer, False)
 
     def toggle_edit(self) -> None:
         self.set_mode("view" if self.canvas.mode() == "edit" else "edit")
@@ -530,8 +615,42 @@ class ReviewTab(QWidget):
         self._show_problems(self.ctx.service().taxonomy_problems(self.draft))
         self._mark_dirty()
 
+    def refit_selected(self) -> None:
+        """Draw a new box for the selected label by hand. The label stays as generated; only its box is replaced."""
+        box_id = self.canvas.selected()
+        if self.draft is None or self._find_box(box_id) is None:
+            self.message.setText("Select a box first (click it on the image or in the list), then press this again.")
+            return
+        self._refit_id = box_id
+        self.mode_buttons["view"].setChecked(True)
+        self.canvas.set_mode("draw")
+        self.message.setText(f"Drag a new box for {box_id} on the image. Its label stays as it is; only the box "
+                             "changes. Pick another mode to cancel.")
+
+    def _refit_done(self, rect: tuple) -> None:
+        box_id, self._refit_id = self._refit_id, ""
+        item = self._find_box(box_id)
+        if item is None or self.draft is None:
+            return
+        width, height = self.canvas.image_size()
+        x, y, w, h = (int(round(v)) for v in rect)
+        x, y = max(0, min(x, width - 1)), max(0, min(y, height - 1))
+        item.box = (x, y, max(1, min(w, width - x)), max(1, min(h, height - y)))  # type: ignore[assignment]
+        for q in self.draft.questions:  # a flag about where this box sits is settled by the person fitting it
+            if q.target_id == box_id and q.id.startswith("qm_") and q.answer is None:
+                q.answer = "box fitted by hand"
+        self.set_mode("edit")
+        self._mark_dirty()
+        self._refresh_all(keep_box=box_id)
+        self.canvas.select(box_id)
+        self.message.setText(f"The box of {box_id} was replaced; its label is unchanged. Press Apply changes to save "
+                             "(a laser box is measured again then).")
+
     def _box_drawn(self, rect: tuple) -> None:
         if self.draft is None:
+            return
+        if self._refit_id:
+            self._refit_done(rect)
             return
         row, service = self.ctx.db.get(self.image_id), self.ctx.service()
         try:
@@ -654,7 +773,8 @@ class ReviewTab(QWidget):
             self.questions.addItem(item)
         open_count = sum(q.answer is None for q in (self.draft.questions if self.draft else []))
         self.right.setTabText(1, f"Questions ({open_count})" if open_count else "Questions")
-        self.question_hint.setText("" if self._question_id == "" else "Click on the image where the beam first hits.")
+        self.question_hint.setText("" if self._question_id == "" else
+                                   "Click each laser spot on the image, then press 'Add these as lasers'.")
 
     def answer_selected(self) -> None:
         item = self.questions.currentItem()
@@ -668,18 +788,25 @@ class ReviewTab(QWidget):
             return
         if question.field_name == "hit_point":
             self._question_id = question.id
+            self.mode_buttons["mark"].setChecked(True)
             self.canvas.set_mode("point")
-            self.question_hint.setText("Click on the image where the beam first hits.")
+            self.question_hint.setText("Click each laser spot on the image, then press 'Add these as lasers'.")
+            self._update_marks_bar()
             return
         dialog = QuestionDialog(question, self)
         if dialog.exec():
             self._submit_answer(question.id, dialog.answer(), dialog.add_to_taxonomy())
 
     def _point_clicked(self, x: float, y: float) -> None:
-        if self._question_id:
-            qid, self._question_id = self._question_id, ""
-            self.canvas.set_mode("view")
-            self._submit_answer(qid, f"{x:.0f},{y:.0f}", False)
+        """A click adds a mark; a click on an existing mark removes it. Nothing is sent until the person confirms."""
+        reach = self.canvas.mark_tolerance()
+        for i, (mx, my) in enumerate(self._marks):
+            if (mx - x) ** 2 + (my - y) ** 2 <= reach ** 2:
+                del self._marks[i]
+                break
+        else:
+            self._marks.append((float(x), float(y)))
+        self._update_marks_bar()
 
     def _submit_answer(self, question_id: str, answer: str, add_taxonomy: bool) -> None:
         try:
@@ -782,20 +909,33 @@ class ReviewTab(QWidget):
     def rerun(self) -> None:
         if not self.image_id:
             return
-        note, ok = QInputDialog.getMultiLineText(self, "Re-run with a note", "Tell the model what to look at differently (optional):")
+        count = len(self._marks)
+        prompt = "Tell the model what to look at differently (optional):"
+        if count:
+            prompt = (f"{count} spot{'s' if count != 1 else ''} marked on the image will be sent with the re-run. "
+                      "They only tell the model where a laser is so it checks there; they are not the laser's box, "
+                      "size or event.\n\n" + prompt)
+        note, ok = QInputDialog.getMultiLineText(self, "Re-run with a note", prompt)
         if not ok:
             return
         self.rerun_with(note)
 
-    def rerun_with(self, note: str) -> bool:
+    def rerun_with(self, note: str, points=None) -> bool:
+        """Queue the image again with a note and the marked laser spots (the ones on screen unless given)."""
         index = self._current_index()
         self.dirty = False
+        marks = [(float(x), float(y)) for x, y in (self._marks if points is None else points)]
         try:
-            self.ctx.service().rerun(self.image_id, note)
+            self.ctx.service().rerun(self.image_id, note, marks)
         except ReviewError as exc:
             self.message.setText(str(exc))
             return False
-        self.message.setText("Queued again. It will be labeled by the next run (or the one in progress), with your note.")
+        self._end_marking()
+        self.mode_buttons["view"].setChecked(True)
+        self.canvas.set_mode("view")
+        self._update_marks_bar()
+        self.message.setText("Queued again. It will be labeled by the next run (or the one in progress), "
+                             "with your note" + (" and the places you marked as where a laser is." if marks else "."))
         self._emit_quietly()
         self._next_after_action(index)
         return True
@@ -922,8 +1062,9 @@ class ReviewTab(QWidget):
         self.open_pdf_btn.setEnabled(bool(row and row.pdf_path))
         self.apply_btn.setEnabled(have and self.dirty)
         self.revert_btn.setEnabled(have and self.dirty)
-        for w in (self.delete_btn, *self.mode_buttons.values()):
+        for w in (self.delete_btn, self.refit_btn, *(b for k, b in self.mode_buttons.items() if k != "mark")):
             w.setEnabled(have)
+        self.mode_buttons["mark"].setEnabled(bool(row))
         wanted = self.ctx.settings()["labeling"].get("scheme", "full")
         self.scheme_btn.setText(f"Switch to '{wanted}' scheme")
         self.scheme_btn.setEnabled(have and self.draft.scheme != wanted)

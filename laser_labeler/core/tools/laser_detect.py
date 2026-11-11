@@ -22,6 +22,9 @@ SEED_RADIUS = 5  # px: a spot must be the brightest within this distance
 WINDOW = 60  # px: half-size of the window used to grow a core
 MAX_ELONGATION = 6.0  # cores more elongated than this are beams, not spots
 CORE_FRACTIONS = (0.5, 0.65, 0.8, 0.9)  # share of (peak - background) that bounds the core
+MARK_LOOK_RADIUS = 24  # px: how far from a person's click the brightest place is looked for
+MARK_SNAP = 40  # px: a click this close to a detected spot's centre (or inside its box) means that spot
+MARK_BOX = 24  # px: side of the small square used when the pixels around a click show no clear core
 
 
 @dataclass
@@ -32,6 +35,7 @@ class LaserCandidate:
     area: int
     peak: float  # 0..1
     saturated_fraction: float
+    marked: bool = False  # a person pointed at it ("a laser is here"); the point says where, not how big
 
 
 @dataclass
@@ -268,3 +272,54 @@ def detect_laser(
     lines = _find_lines(v, stats, k_noise) if find_lines else []
     return Detection(candidates=candidates, lines=lines, threshold=thr, stats=stats, contrast=max(contrast, 0.0),
                      seeds=seeds, rejected=rejected)
+
+
+def candidate_at(rgb: np.ndarray, stats: ImageStats, x: float, y: float, index: int) -> LaserCandidate:
+    """A candidate where a person pointed. A click only says where a laser is, so the brightest place within
+    MARK_LOOK_RADIUS of it is found and its core grown the usual way; when the pixels show no clear core a small
+    square around that place is used. The person's point never becomes the box itself."""
+    v = intensity_map(rgb)
+    h, w = v.shape
+    cx, cy = min(max(int(round(x)), 0), w - 1), min(max(int(round(y)), 0), h - 1)
+    x0, x1 = max(cx - MARK_LOOK_RADIUS, 0), min(cx + MARK_LOOK_RADIUS + 1, w)
+    y0, y1 = max(cy - MARK_LOOK_RADIUS, 0), min(cy + MARK_LOOK_RADIUS + 1, h)
+    sub = v[y0:y1, x0:x1]
+    iy, ix = np.unravel_index(int(sub.argmax()), sub.shape)
+    seed = (x0 + int(ix), y0 + int(iy))
+    window = max(WINDOW, int(0.1 * max(h, w)))
+    grown = _grow_core(v, seed, stats.background_level, int(0.05 * v.size), window)
+    if grown is not None and len(grown[1]) >= 3 and len(grown[1]) <= int(0.05 * v.size):
+        ys, xs, peak = grown
+        made = _candidate(index, xs, ys, peak, v)
+    else:
+        half = MARK_BOX // 2
+        bx, by = min(max(seed[0] - half, 0), max(w - MARK_BOX, 0)), min(max(seed[1] - half, 0), max(h - MARK_BOX, 0))
+        bw, bh = min(MARK_BOX, w), min(MARK_BOX, h)
+        patch = v[by:by + bh, bx:bx + bw]
+        made = LaserCandidate(id=f"c{index}", center=(bx + bw / 2, by + bh / 2), box=(bx, by, bw, bh), area=int(patch.size),
+                              peak=float(v[seed[1], seed[0]]), saturated_fraction=float((patch >= 0.996).mean()))
+    made.marked = True
+    return made
+
+
+def apply_marks(detection: Detection, rgb: np.ndarray, stats: ImageStats, points) -> list[LaserCandidate]:
+    """Put the places a person pointed at into the detection and put them first. A point on a spot that was found
+    marks that spot (no second box for it); a point elsewhere gets a candidate of its own. Returns the marked ones."""
+    marked: list[LaserCandidate] = []
+    for x, y in points:
+        hit = None
+        for cand in detection.candidates:
+            bx, by, bw, bh = cand.box
+            near = math.hypot(cand.center[0] - x, cand.center[1] - y) <= MARK_SNAP
+            if near or (bx <= x <= bx + bw and by <= y <= by + bh):
+                hit = cand
+                break
+        if hit is None:
+            index = 1 + max((int(c.id[1:]) for c in detection.candidates if c.id[1:].isdigit()), default=0)
+            hit = candidate_at(rgb, stats, x, y, index)
+            detection.candidates.append(hit)
+        hit.marked = True
+        if hit not in marked:
+            marked.append(hit)
+    detection.candidates.sort(key=lambda c: not c.marked)  # stable: marked first, brightest-first order kept within groups
+    return marked

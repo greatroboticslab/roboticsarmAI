@@ -64,6 +64,8 @@ def validate_settings(settings: dict[str, Any]) -> None:
         raise SettingsError("labeling.scheme must be 'full', 'components' or 'merged'")
     if settings["labeling"].get("taxonomy_match", "object") not in ("off", "object", "all"):
         raise SettingsError("labeling.taxonomy_match must be 'off', 'object' or 'all'")
+    if settings["labeling"].get("model_coordinates", "auto") not in ("auto", "pixels", "thousand", "fraction"):
+        raise SettingsError("labeling.model_coordinates must be 'auto', 'pixels', 'thousand' or 'fraction'")
     fraction = settings["labeling"].get("laser_box_object_fraction", 0.0)
     if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 <= fraction <= 0.5:
         raise SettingsError("labeling.laser_box_object_fraction must be a number from 0 to 0.5")

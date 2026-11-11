@@ -140,6 +140,11 @@ class QueueDB:
             record = self._db.execute("SELECT * FROM images WHERE image_id = ?", (image_id,)).fetchone()
         return _row(record) if record else None
 
+    def ids(self) -> set[str]:
+        """Every image id in the queue (one cheap column, for hiding images that are already queued)."""
+        with self._lock:
+            return {r[0] for r in self._db.execute("SELECT image_id FROM images")}
+
     def counts(self) -> dict[str, int]:
         with self._lock:
             found = dict(self._db.execute("SELECT status, COUNT(*) FROM images GROUP BY status").fetchall())

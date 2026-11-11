@@ -76,6 +76,7 @@ def label_image_unsaved(
     guard: CostGuard | None = None,
     prompt_dir: str | Path | None = None,
     user_note: str = "",
+    hint_points: Sequence[tuple[float, float]] = (),
     on_entry: Callable[[dict], None] | None = None,
     raise_on_limit: bool = False,
     on_taxonomy_add: Callable[[str, str], None] | None = None,
@@ -100,9 +101,14 @@ def label_image_unsaved(
                             color_placeholder=labeling["color_placeholder"], max_candidates=size.max_candidates,
                             crop_px=size.crop_px)
         ctx.taxonomy_match = labeling.get("taxonomy_match", "object")
+        ctx.coordinates = labeling.get("model_coordinates", "auto")
         ctx.user_note = user_note.strip()
+        ctx.hint_points = [(float(x), float(y)) for x, y in hint_points]
         if ctx.user_note:
             transcript.add_event("reviewer_note", ctx.user_note)
+        if ctx.hint_points:
+            transcript.add_event("reviewer_marks", "The reviewer marked where a laser is (a point on each, not its box): "
+                                 + "; ".join(f"({x:.0f}, {y:.0f})" for x, y in ctx.hint_points))
         transcript.add_event("detection", ctx.detection.explain())  # what the app saw, before any model is asked
         return ctx, transcript
 
@@ -149,7 +155,7 @@ def label_image_unsaved(
         used_mode, version = "", ""
         result = ImageLabelSet(image_id, Path(path).name, camera, image.is_grayscale, ctx.stats.background_level,
                                image.exposure, status="failed", image_width=image.width,
-                               image_height=image.height, notes=f"failed: {exc}")
+                               image_height=image.height, notes=f"failed: {exc}", pixel_space="upright")
     if fit_note and result.status != "failed":
         result.notes = (result.notes + " " + fit_note).strip()
     result.provider, result.model = provider.name, provider.model

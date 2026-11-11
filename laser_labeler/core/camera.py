@@ -14,7 +14,7 @@ import math
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 EXIF_IFD = 0x8769
 EXIF_FIELDS = {0x829A: "exposure_time", 0x829D: "f_number", 0x8827: "iso", 0x9201: "shutter_speed_value"}
@@ -99,10 +99,41 @@ def read_exposure(pil: Image.Image) -> dict[str, float] | None:
     return found or None
 
 
+ORIENTATION = 0x0112
+
+
+def exif_orientation(pil: Image.Image) -> int:
+    """The EXIF orientation number (1 = as stored, 5 to 8 = turned a quarter turn), 1 when there is none."""
+    try:
+        value = int(pil.getexif().get(ORIENTATION, 1))
+    except Exception:
+        return 1
+    return value if 1 <= value <= 8 else 1
+
+
+def oriented(pil: Image.Image) -> Image.Image:
+    """The picture the way a viewer (Roboflow, a browser, a phone) shows it: turned upright by its EXIF orientation.
+    Boxes are drawn and uploaded on that picture, so every pixel position in this app is measured on it too."""
+    if exif_orientation(pil) == 1:
+        return pil
+    try:
+        return ImageOps.exif_transpose(pil)
+    except Exception:  # damaged EXIF: use the picture as stored
+        return pil
+
+
+def oriented_size(path: str | Path) -> tuple[int, int]:
+    """(width, height) of the picture as a viewer shows it, without decoding the pixels."""
+    with Image.open(path) as pil:
+        w, h = pil.size
+        return (h, w) if exif_orientation(pil) >= 5 else (w, h)
+
+
 def load_image(path: str | Path) -> ImageData:
     with Image.open(path) as pil:
         pil.load()
         exposure = read_exposure(pil)
+        pil = oriented(pil)
         mode_gray = pil.mode in ("L", "LA", "I;16", "I")
         arr = _to_uint8(pil if pil.mode in ("L", "I;16", "I") else pil.convert("RGB"))
     if arr.ndim == 2:

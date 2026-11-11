@@ -4,14 +4,16 @@ Tabs get one AppContext and talk to each other only through its signals, so no t
 """
 from __future__ import annotations
 
+import copy
+import time
 from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from config import credentials
-from config.settings import load_settings, save_settings
-from core.estimate import estimate_run
+from config.settings import DEFAULTS_PATH, load_settings, save_settings
+from core.estimate import estimate_run, run_stats
 from core.labeler.factory import make_tracker
 from core.prompts.versions import active_version
 from core.providers.cost import CostTracker
@@ -38,16 +40,33 @@ class AppContext(QObject):
         self.parts_dir = self.root / "prompts" / "parts"
         self.versions_dir = self.root / "prompts" / "versions"
         self._db: QueueDB | None = None
+        self._settings_cache: tuple[tuple, dict] | None = None
+        self._stats_cache: tuple[float, tuple] | None = None  # (when read, run_stats)
+        self.queue_changed.connect(self._forget_stats)
 
     # ------------------------------------------------------------------ settings
+    @staticmethod
+    def _stamp(path: Path) -> tuple:
+        try:
+            st = path.stat()
+            return st.st_mtime_ns, st.st_size
+        except OSError:
+            return ()
+
     def settings(self) -> dict:
-        return load_settings(self.settings_path)
+        """The settings, parsed again only when a settings file changed (parsing the YAML takes milliseconds, and
+        the tabs ask for the settings very often). The caller gets its own copy and may change it freely."""
+        stamp = (self._stamp(DEFAULTS_PATH), self._stamp(self.settings_path))
+        if self._settings_cache is None or self._settings_cache[0] != stamp:
+            self._settings_cache = (stamp, load_settings(self.settings_path))
+        return copy.deepcopy(self._settings_cache[1])
 
     def update_settings(self, change: Callable[[dict], None]) -> dict:
         """Apply `change` to the full settings dict and save it. Secrets are refused by save_settings."""
         settings = self.settings()
         change(settings)
         save_settings(settings, self.settings_path)
+        self._settings_cache = None
         self.settings_changed.emit()
         return settings
 
@@ -81,8 +100,16 @@ class AppContext(QObject):
     def tracker(self) -> CostTracker:
         return make_tracker(self.settings()["provider"], self.data_dir)
 
-    def estimate(self, images: int):
-        return estimate_run(images, self.settings(), self.data_dir)
+    def _forget_stats(self) -> None:
+        self._stats_cache = None
+
+    def estimate(self, images: int, max_age_s: float = 30.0):
+        """Time and cost for `images`. What past runs measured (it means reading transcript files) is reused for
+        `max_age_s` seconds, since the tick boxes ask for an estimate on every click."""
+        now = time.monotonic()
+        if self._stats_cache is None or now - self._stats_cache[0] > max_age_s:
+            self._stats_cache = (now, run_stats(self.data_dir))
+        return estimate_run(images, self.settings(), self.data_dir, stats=self._stats_cache[1])
 
     def prompt_version_text(self) -> str:
         active = active_version(self.versions_dir)

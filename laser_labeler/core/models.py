@@ -129,6 +129,7 @@ class ImageLabelSet:
     run_mode: str = ""  # "pipeline" or "agent": the mode that produced this set
     notes: str = ""
     scheme: str = "full"  # label scheme it was made with: full | components | merged
+    pixel_space: str = "stored"  # "upright" = boxes are on the picture turned upright by its EXIF orientation (as Roboflow shows it); "stored" = older sets, measured before turning
     scheme_version: int = 2  # 1 = components were core/halo/beam parts (migrated on load), 2 = direct hit / bounce
 
     def __post_init__(self) -> None:

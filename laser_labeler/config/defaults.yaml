@@ -39,6 +39,7 @@ labeling:
   taxonomy_match: object     # off = reuse a matching entry, add new objects/materials to your lists without asking; object = only an unknown object asks; all = material, color and incidence too
   scheme: full                        # full = obj_... and las_<event> | components = obj_... plus component1/2/3 | merged = component boxes named <obj_...>__componentN
   laser_box_object_fraction: 0.33     # plain laser boxes grow to this fraction of the object box they hit (max 0.5); 0 = tight boxes
+  model_coordinates: auto             # what numbers the model's boxes use: auto | pixels (of the picture shown) | thousand (0-1000) | fraction (0-1)
   keep_awake: true
 
 data_dir: data
